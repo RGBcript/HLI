@@ -113,7 +113,7 @@ fn lifecycle_survives_daemon_restart() {
         "--workspace", &ws_id, "--thread", &th_id,
     ]);
     let ev_id = ev["event_id"].as_str().unwrap().to_string();
-    let br = ctx.json(&["branch", "create", "alternative", "--thread", &th_id, "--from", &ev_id]);
+    let br = ctx.json(&["branch", "create", "alternative", "--from", &ev_id]);
     let br_id = br["id"].as_str().unwrap().to_string();
 
     let before = ctx.json(&["branch", "show", &br_id]);
@@ -127,6 +127,10 @@ fn lifecycle_survives_daemon_restart() {
     assert_eq!(after["branch"]["head_sequence"].as_i64().unwrap(), before_seq);
     assert_eq!(after["chain_head"].as_str().unwrap(), before_head);
     assert_eq!(after["branch"]["name"].as_str().unwrap(), "alternative");
+    let snap_id = after["branch"]["snapshot_id"].as_str().expect("snapshot_id");
+    assert!(snap_id.starts_with("snap_"));
+    let seq = after["branch"]["head_sequence"].as_i64().unwrap();
+    assert!(ctx.home.join("snapshots").join(&br_id).join(format!("{seq}.json")).exists());
 
     let verify = ctx.json(&["verify", "--workspace", &ws_id]);
     assert_eq!(verify["ok"].as_bool(), Some(true));

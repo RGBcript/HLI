@@ -95,8 +95,11 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         ("branch", Some("create")) => {
             let name = args.get(2).ok_or("falta el nombre")?;
-            let thread = need_flag(args, "--thread")?;
+            let thread = flag(args, "--thread");
             let from = flag(args, "--from");
+            if thread.is_none() && from.is_none() {
+                return Err("falta --thread o --from".into());
+            }
             print_value(
                 &call(
                     "branch.create",

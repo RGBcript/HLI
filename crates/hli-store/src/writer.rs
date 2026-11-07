@@ -415,6 +415,14 @@ impl State {
             None,
         )?;
         tx.commit()?;
+        // Snapshot obligatorio al ramificar (§16.1 de la especificación).
+        let snap = self.snapshot(&br.id)?;
+        self.conn.execute(
+            "UPDATE branches SET snapshot_id = ?1 WHERE id = ?2",
+            params![snap.id, br.id],
+        )?;
+        let mut br = br;
+        br.snapshot_id = Some(snap.id);
         Ok(br)
     }
 

@@ -189,6 +189,18 @@ impl Reader {
         })
     }
 
+    pub fn event(&self, id: &str) -> Result<Event> {
+        self.with(|c| {
+            c.query_row(
+                &format!("SELECT {} FROM events WHERE event_id = ?1", crate::writer::EVENT_COLS),
+                [id],
+                row_to_event,
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("event {id}")))
+        })
+    }
+
     pub fn verify(&self, workspace_id: &str) -> Result<VerifyReport> {
         let events = self.events(workspace_id, None)?;
         let mut prev = zero_hash();

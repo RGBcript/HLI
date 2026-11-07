@@ -139,7 +139,16 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
         }
         "thread.list" => Ok(serde_json::to_value(r.threads(&s(args, "workspace_id")?)?)?),
         "branch.create" => {
-            let b = w.create_branch(&s(args, "thread_id")?, &s(args, "name")?, o(args, "from_event"))?;
+            let thread_id = match o(args, "thread_id") {
+                Some(t) => t,
+                None => {
+                    let from = s(args, "from_event")?;
+                    r.event(&from)?
+                        .thread_id
+                        .ok_or_else(|| HliError::invalid("el evento no pertenece a ningún thread"))?
+                }
+            };
+            let b = w.create_branch(&thread_id, &s(args, "name")?, o(args, "from_event"))?;
             Ok(serde_json::to_value(b)?)
         }
         "branch.list" => Ok(serde_json::to_value(r.branches(&s(args, "thread_id")?)?)?),
