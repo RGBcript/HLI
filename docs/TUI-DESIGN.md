@@ -1,112 +1,113 @@
 # HLI — Diseño de la TUI (0.5)
 
-**Fecha:** 2026-11-07 · **Crate:** `crates/hli-tui` · **Estado:** implementada y probada en buffer.
+**Crate:** `crates/hli-tui` · **Estado:** interacción completa, gate visual pendiente de terminal real.
 
-## 1. Identidad
+## 1. Modelo de foco
 
-| Rol | Color | Uso |
-|---|---|---|
-| Fondo | negro azulado | terminal, no se pinta explícitamente |
-| Texto | gris claro `#C9D1D9` | cuerpo |
-| Primario | azul eléctrico `#2F81F7` | cabecera, foco, títulos |
-| Éxito | verde `#3FB950` | run completado |
-| Advertencia | ámbar `#D29922` | esperando aprobación |
-| Error | rojo `#F85149` | run fallido |
-| MCH | violeta `#A371F7` | perfiles e instancias |
-| Memoria | cian `#39C5CF` | memorias |
-| Artefactos | gris azulado `#8B949E` | metadatos |
+Un único foco activo:
 
-Accesibilidad:
+```rust
+enum FocusArea { Navigation, Collection, Inspector, DetailTabs, CommandBar }
+```
 
-- `NO_COLOR` desactiva todos los colores.
-- Modo monocromático: solo `BOLD`, sin color.
-- Los estados se muestran con **texto** además de color (`completed`, `superseded`, `waiting_approval`).
-- Sin animaciones; el refresco no mueve el contenido.
-- Navegación completa por teclado.
+- `Tab` / `Shift+Tab` ciclan en orden.
+- El foco se representa con **borde doble**, título `▸` y estilo `BOLD`.
+- En monocromo sigue viéndose `▸`; el color nunca es el único indicador.
 
 ## 2. Layout
 
-Con `width >= 100`:
+| Ancho / alto | Modo | Composición |
+|---|---|---|
+| ≥ 120 × 24 | `Full` | Navigation 24 % · Collection 30 % · Inspector 46 %; abajo tabs + detalle |
+| 90–119 | `Medium` | Navigation 30 % · Inspector+detalle 70 % |
+| 60–89 | `Compact` | un panel visible + selector `n/5 Focus` + tabs |
+| < 60 o < 16 filas | `Reduced` | un panel + tabs + command bar |
+| < 40 o < 10 filas | `TooSmall` | `Terminal too small / Required: 40x10 / Current: WxH / q quit` |
 
-```
-┌ HLI · workspace · branch · provider · daemon ┐
-│ Workspaces │ Run        │ pestaña activa     │
-│ Threads    │ estado     │                    │
-│ Branches   │ tokens     │                    │
-├──────────────────────────────────────────────┤
-│ > comando                                    │
-└──────────────────────────────────────────────┘
-```
+Cabecera: `HLI │ workspace / thread / branch │ provider/model │ daemon: up`, truncada por la
+derecha conservando HLI, daemon y estado.
 
-Con `width < 100`: una sola columna; la fila de pestañas sustituye a los paneles simultáneos.
+## 3. Paneles
 
-## 3. Vistas
+- **Navigation:** workspaces, threads y árbol de ramas (`●`, `├─`, `└─`; ASCII `*`, `|-`, `` `- ``).
+- **Collection:** runs de la rama; título `Runs` (sin duplicar `Run`).
+- **Inspector:** objeto seleccionado; título dinámico `Run run_...`, `Memory mem_...`,
+  `Artifact art_...`, `MCH memory-main`.
+- **DetailTabs:** contenido de la pestaña activa.
 
-| Pestaña | Contenido |
+## 4. Tabs
+
+Siempre visibles: `[Run] Events Context Memory Artifacts MCH`. La activa va entre corchetes.
+En compacto: `3/6 Context`. Controles: `←→`, `1..6` (fuera del command bar), `Alt+1..6` previsto.
+
+## 5. Hint bar
+
+Sobre el command bar, cambia con el foco:
+
+| Foco | Texto |
 |---|---|
-| Run | id, estado, provider/model, revisión, tokens, coste, latencia, manifiesto |
-| Events | secuencia, tipo, actor, timestamps (últimos 20, orden inverso) |
-| Context | presupuesto, estimado, `user_input`, memorias, slices y razón, excluidos, `payload_hash` |
-| Memory | agrupada por `active`, `superseded`, `revoked`, `proposed`; autoridad y `superseded_at` |
-| Artifacts | id, MIME, bytes, SHA-256; sin previsualización binaria |
-| MCH | Profile, Instance, Process y Endpoint separados |
+| Navigation | `↑↓ select · → expand · Enter open · Tab panel · ? help` |
+| Collection | `↑↓ select · Enter open · Tab panel · : command` |
+| Inspector | `↑↓ scroll · ←→ tabs · ? help` |
+| DetailTabs | `←→ tabs · 1..6 direct · ? help` |
+| CommandBar | `Enter run · Esc cancel · ↑↓ history` |
 
-Árbol de ramas: `●` activo, `├─`/`└─` para hermanas, con nombre y `head_sequence`. Los símbolos van
-acompañados de texto; no se usan como único indicador.
+## 6. Command bar
 
-## 4. Command bar
+- `:` enfoca; `Esc` cancela; `Enter` ejecuta.
+- Historial local con `↑↓`.
+- `↑` recupera el último comando; `↓` avanza o limpia.
+- Éxito en texto normal, error en rojo (o `error:` en mono).
+- Sugerencia cuando está vacío: `:workspace create demo`.
+- **Reutiliza el binario `hli`**: no hay segundo parser.
+- `/texto` aplica filtro a la vista de Events sin ejecutar CLI.
 
-La barra inferior no implementa un parser propio: divide la línea respetando comillas y ejecuta el
-**binario `hli`** con esos argumentos, heredando `HLI_HOME`. El parser real es el de `hli-cli`.
-`workspace open <id>` se traduce a `workspace get <id>`.
+## 7. Listas y scroll
 
-## 5. Actualización
+- Selección con `▸`; indicador `n/total`.
+- Scroll en Events con `↑↓` cuando el foco está en Inspector/DetailTabs.
+- La selección de run se preserva por `run_id` tras el polling; si el id desaparece, cae a 0.
 
-- Runs activos: 500 ms.
-- Eventos: 1 s.
-- Listas estables: 4 s.
+## 8. Estados vacíos
 
-Sin subscripciones MCP ni eventos remotos. Es polling; el streaming queda para otra fase.
+| Panel | Título | Acción |
+|---|---|---|
+| Navigation | `No workspaces` | `:workspace create <name>` |
+| Collection | `No runs on this branch` | `:run start "<task>"` |
+| Memory | `No memories selected` | `:memory search <query>` |
 
-## 6. Preferencias
+Las acciones son comandos reales del CLI.
 
-Diseñadas en TOML:
+## 9. Ayuda
 
-```toml
-[ui]
-theme = "dark"
-color = "auto"
-density = "compact"
-motion = "reduced"
-default_tab = "run"
-```
+`?` abre una superposición con navegación, tabs, command bar, estados y símbolos. Se cierra con
+`Esc`, `?` o `q`.
 
-**No implementadas todavía.** La TUI usa `NO_COLOR` y valores por defecto; el archivo de
-preferencias queda pendiente y no se guarda en el workspace ni en el Event Store.
+## 10. Accesibilidad
 
-## 7. Dependencias
+- `NO_COLOR` y `TERM=dumb`.
+- Modo monocromático con `BOLD` y `▸`.
+- ASCII: `●→*`, `✓→OK`, `↻→RUN`, `×→X`, `├─→|-`, `└─→`-`.
+- JSON/JSONL del CLI sin ANSI (sin cambios).
+- Sin dependencia de ratón.
 
-`ratatui 0.29` + `crossterm 0.28`. **No se añadió `tokio`**: el cliente es TCP bloqueante y el
-polling es síncrono. Tokio se incorporará si se migra a streaming; añadirlo ahora sería una
-dependencia sin uso.
+## 11. Preferencias
 
-## 8. Pruebas
+Diseñadas en TOML (`[ui] theme/color/density/motion/default_tab`), **no implementadas**. Se leen
+variables de entorno (`NO_COLOR`, `HLI_ASCII`, `TERM`). No se guardan en el workspace ni en el
+Event Store.
 
-`crates/hli-tui/tests/render.rs`, con `TestBackend`:
+## 12. Pruebas
 
-- `tui_small_terminal_does_not_panic` (40×12)
-- `tui_no_color_mode`
-- `tui_renders_run_state`
-- `tui_renders_superseded_memory`
-- `tui_distinguishes_mch_entities`
-- `tui_uses_daemon_api_only` (Cargo.toml sin `rusqlite` ni `hli-store`)
-- `command_bar_reuses_cli_parser`
-- `json_output_remains_unchanged`
+23 pruebas en `cargo test -p hli-tui`, incluidas las 15 de interacción: foco único, ciclo y
+retroceso, indicador sin color, estado vacío accionable, títulos sin duplicar, tabs visibles,
+layout compacto, terminal diminuta, selección tras polling, scroll, ayuda, cancelación, historial
+y ASCII.
 
-## 9. Límites
+## 13. Límites
 
-- Sin edición de memoria desde la TUI; solo inspección.
-- Sin filtros interactivos en Events (la vista muestra los últimos 20).
-- Sin preferencias persistidas.
-- Sin streaming; el refresco puede perder eventos entre polls.
-- La command bar ejecuta un subproceso por comando; no hay sesión interactiva.
+- Sin streaming: polling 500 ms / 1 s / 4 s.
+- Sin edición de memoria desde la TUI.
+- Filtro de Events por substring de tipo, no por expresión.
+- La command bar ejecuta un subproceso por comando.
+- `Alt+1..6` documentado, no implementado (los dígitos simples cubren el caso).
