@@ -54,7 +54,10 @@ fn run(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     });
     std::fs::write(home.join("daemon.json"), serde_json::to_vec_pretty(&info)?)?;
 
-    eprintln!("hli-daemon escuchando en 127.0.0.1:{port} (home={})", home.display());
+    eprintln!(
+        "hli-daemon escuchando en 127.0.0.1:{port} (home={})",
+        home.display()
+    );
 
     for stream in listener.incoming() {
         match stream {
@@ -72,7 +75,12 @@ fn run(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>, home: PathBuf) -> std::io::Result<()> {
+fn handle(
+    stream: TcpStream,
+    writer: Writer,
+    reader: Arc<Reader>,
+    home: PathBuf,
+) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut out = stream.try_clone()?;
     let mut lines = BufReader::new(stream).lines();
@@ -101,7 +109,8 @@ fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>, home: PathBuf)
                 out.flush()?;
             }
             Err(e) => {
-                let resp = json!({"id": id, "ok": false, "error": {"code": e.code, "message": e.message}});
+                let resp =
+                    json!({"id": id, "ok": false, "error": {"code": e.code, "message": e.message}});
                 writeln!(out, "{}", serde_json::to_string(&resp)?)?;
                 out.flush()?;
             }
@@ -117,7 +126,6 @@ fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>, home: PathBuf)
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn make_receipt(
     provider: &str,
@@ -169,10 +177,35 @@ fn make_receipt(
     }
 }
 
+fn sdk_allows(sdk: &str) -> bool {
+    // Acepta >=0.4 <0.5, ^0.4, 0.4; rechaza rangos que excluyan 0.4.
+    let s = sdk.trim();
+    if let Some(rest) = s.strip_prefix(">=") {
+        let min = rest.split_whitespace().next().unwrap_or("").trim();
+        if let Some(max) = s.split('<').nth(1) {
+            let max = max.trim();
+            let ok_min = min.parse::<f64>().map(|v| v <= 0.4).unwrap_or(false);
+            let ok_max = max.parse::<f64>().map(|v| v > 0.4).unwrap_or(false);
+            return ok_min && ok_max;
+        }
+        return min.parse::<f64>().map(|v| v <= 0.4).unwrap_or(false);
+    }
+    if let Some(rest) = s.strip_prefix('^') {
+        return rest
+            .trim()
+            .parse::<f64>()
+            .map(|v| (v - 0.4).abs() < 1e-9 || (0.3..0.4).contains(&v))
+            .unwrap_or(false);
+    }
+    s.contains("0.4")
+}
+
 fn read_secret(home: &std::path::Path, handle: &str) -> Result<(String, String), HliError> {
     let env_key = format!("HLI_SECRET_{}", handle.to_uppercase().replace('-', "_"));
     let value = std::env::var(&env_key).ok().or_else(|| {
-        std::fs::read_to_string(home.join("secrets").join(handle)).ok().map(|s| s.trim().to_string())
+        std::fs::read_to_string(home.join("secrets").join(handle))
+            .ok()
+            .map(|s| s.trim().to_string())
     });
     let value = value.ok_or_else(|| HliError::not_found(&format!("secreto {handle}")))?;
     let mut h = sha2::Sha256::new();
@@ -198,19 +231,32 @@ fn s(args: &Value, key: &str) -> Result<String, HliError> {
 }
 
 fn o(args: &Value, key: &str) -> Option<String> {
-    args.get(key).and_then(|v| v.as_str()).map(|v| v.to_string())
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
 }
 
-fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> Result<Value, HliError> {
+fn dispatch(
+    cmd: &str,
+    args: &Value,
+    w: &Writer,
+    r: &Reader,
+    home: &std::path::Path,
+) -> Result<Value, HliError> {
     match cmd {
         "daemon.ping" => Ok(json!({"pong": true, "version": "0.1.0", "pid": std::process::id()})),
         "daemon.stop" => Ok(json!({"stopping": true})),
         "workspace.create" => {
-            let ws = w.create_workspace(&s(args, "name")?, args.get("root").and_then(|v| v.as_str()).unwrap_or("."))?;
+            let ws = w.create_workspace(
+                &s(args, "name")?,
+                args.get("root").and_then(|v| v.as_str()).unwrap_or("."),
+            )?;
             Ok(serde_json::to_value(ws)?)
         }
         "workspace.list" => Ok(serde_json::to_value(r.workspaces()?)?),
-        "workspace.get" => Ok(serde_json::to_value(r.workspace(&s(args, "workspace_id")?)?)?),
+        "workspace.get" => Ok(serde_json::to_value(
+            r.workspace(&s(args, "workspace_id")?)?,
+        )?),
         "thread.create" => {
             let t = w.create_thread(&s(args, "workspace_id")?, &s(args, "title")?)?;
             Ok(serde_json::to_value(t)?)
@@ -221,16 +267,18 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                 Some(t) => t,
                 None => {
                     let from = s(args, "from_event")?;
-                    r.event(&from)?
-                        .thread_id
-                        .ok_or_else(|| HliError::invalid("el evento no pertenece a ningún thread"))?
+                    r.event(&from)?.thread_id.ok_or_else(|| {
+                        HliError::invalid("el evento no pertenece a ningún thread")
+                    })?
                 }
             };
             let b = w.create_branch(&thread_id, &s(args, "name")?, o(args, "from_event"))?;
             Ok(serde_json::to_value(b)?)
         }
         "branch.list" => Ok(serde_json::to_value(r.branches(&s(args, "thread_id")?)?)?),
-        "branch.show" => Ok(serde_json::to_value(r.branch_state(&s(args, "branch_id")?)?)?),
+        "branch.show" => Ok(serde_json::to_value(
+            r.branch_state(&s(args, "branch_id")?)?,
+        )?),
         "branch.snapshot" => Ok(serde_json::to_value(w.snapshot(&s(args, "branch_id")?)?)?),
         "event.append" => {
             let payload = args.get("payload").cloned().unwrap_or(json!({}));
@@ -244,11 +292,13 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             )?;
             Ok(serde_json::to_value(ev)?)
         }
-        "event.list" => Ok(serde_json::to_value(
-            r.events(&s(args, "workspace_id")?, args.get("branch_id").and_then(|v| v.as_str()))?,
-        )?),
+        "event.list" => Ok(serde_json::to_value(r.events(
+            &s(args, "workspace_id")?,
+            args.get("branch_id").and_then(|v| v.as_str()),
+        )?)?),
         "artifact.put" => {
-            let info = w.put_artifact(&s(args, "workspace_id")?, PathBuf::from(s(args, "path")?))?;
+            let info =
+                w.put_artifact(&s(args, "workspace_id")?, PathBuf::from(s(args, "path")?))?;
             Ok(serde_json::to_value(info)?)
         }
         "artifact.list" => Ok(Value::Array(r.artifacts(&s(args, "workspace_id")?)?)),
@@ -259,21 +309,34 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             if bytes.len() > 4 * 1024 * 1024 {
                 return Err(HliError::invalid("artefacto demasiado grande para slice"));
             }
-            let kind = args.get("kind").and_then(|v| v.as_str()).unwrap_or("full_text_if_small");
-            let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("selected").to_string();
+            let kind = args
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("full_text_if_small");
+            let reason = args
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("selected")
+                .to_string();
             let (content, selector) = match kind {
                 "line_range" => {
                     let text = String::from_utf8_lossy(&bytes);
                     let lines: Vec<&str> = text.lines().collect();
                     let start = args.get("start").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let end = args.get("end").and_then(|v| v.as_u64()).unwrap_or(lines.len() as u64) as usize;
+                    let end = args
+                        .get("end")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(lines.len() as u64) as usize;
                     let end = end.min(lines.len());
                     let sel = json!({"kind": "line_range", "start": start, "end": end});
                     (lines[start.min(end)..end].join("\n").into_bytes(), sel)
                 }
                 "byte_range" => {
                     let start = args.get("start").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let end = args.get("end").and_then(|v| v.as_u64()).unwrap_or(bytes.len() as u64) as usize;
+                    let end = args
+                        .get("end")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(bytes.len() as u64) as usize;
                     let end = end.min(bytes.len());
                     let sel = json!({"kind": "byte_range", "start": start, "end": end});
                     (bytes[start.min(end)..end].to_vec(), sel)
@@ -285,7 +348,13 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             };
             let workspace_id = s(args, "workspace_id")?;
             let slice = w.create_slice(
-                &aid, &workspace_id, &meta.sha256, &meta.mime, selector, content, &reason,
+                &aid,
+                &workspace_id,
+                &meta.sha256,
+                &meta.mime,
+                selector,
+                content,
+                &reason,
             )?;
             Ok(serde_json::to_value(slice)?)
         }
@@ -299,16 +368,32 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             Ok(serde_json::to_value(rep)?)
         }
         "memory.commit" => {
-            let supersedes = args.get("supersedes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            let contradicts = args.get("contradicts").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let supersedes = args
+                .get("supersedes")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let contradicts = args
+                .get("contradicts")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             let m = w.commit_memory(
                 &s(args, "workspace_id")?,
-                args.get("scope").and_then(|v| v.as_str()).unwrap_or("workspace"),
+                args.get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("workspace"),
                 o(args, "scope_id"),
                 &s(args, "type")?,
                 &s(args, "content")?,
-                supersedes.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
-                contradicts.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                supersedes
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect(),
+                contradicts
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect(),
                 o(args, "source_authority"),
                 o(args, "subject"),
                 o(args, "relation"),
@@ -317,7 +402,9 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             Ok(serde_json::to_value(m)?)
         }
         "memory.get" => Ok(serde_json::to_value(r.memory(&s(args, "memory_id")?)?)?),
-        "memory.list" => Ok(serde_json::to_value(r.memories(&s(args, "workspace_id")?)?)?),
+        "memory.list" => Ok(serde_json::to_value(
+            r.memories(&s(args, "workspace_id")?)?,
+        )?),
         "memory.search" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
             Ok(serde_json::to_value(r.search_memories(
@@ -335,31 +422,61 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             )?;
             Ok(serde_json::to_value(m)?)
         }
-        "memory.forget" => Ok(serde_json::to_value(w.forget_memory(&s(args, "memory_id")?)?)?),
+        "memory.forget" => Ok(serde_json::to_value(
+            w.forget_memory(&s(args, "memory_id")?)?,
+        )?),
         "run.start" => {
             let ws = s(args, "workspace_id")?;
             let th = s(args, "thread_id")?;
             let br = s(args, "branch_id")?;
             let prompt = s(args, "prompt")?;
-            let budget = args.get("budget_tokens").and_then(|v| v.as_i64()).unwrap_or(2_048);
-            let provider_name = args.get("provider").and_then(|v| v.as_str()).unwrap_or("sim").to_string();
+            let budget = args
+                .get("budget_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(2_048);
+            let provider_name = args
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("sim")
+                .to_string();
             let default_model = match provider_name.as_str() {
                 "ollama" => "gemma4:31b-cloud",
                 "openai" => "gpt-4o-mini",
                 _ => "sim-1",
             };
-            let model = args.get("model").and_then(|v| v.as_str()).unwrap_or(default_model).to_string();
-            let base_url = args.get("base_url").and_then(|v| v.as_str()).unwrap_or(
-                if provider_name == "ollama" { "http://127.0.0.1:11434" } else { "https://api.openai.com/v1" }
-            ).to_string();
-            let timeout = args.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(120);
-            let temperature = args.get("temperature").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let max_tokens = args.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(256);
+            let model = args
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or(default_model)
+                .to_string();
+            let base_url = args
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or(if provider_name == "ollama" {
+                    "http://127.0.0.1:11434"
+                } else {
+                    "https://api.openai.com/v1"
+                })
+                .to_string();
+            let timeout = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(120);
+            let temperature = args
+                .get("temperature")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let max_tokens = args
+                .get("max_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(256);
 
             let mut secret_handles: Vec<Value> = Vec::new();
             let mut api_key = String::new();
             if provider_name == "openai" {
-                let handle = args.get("secret").and_then(|v| v.as_str())
+                let handle = args
+                    .get("secret")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| HliError::invalid("openai requiere --secret HANDLE"))?;
                 let (value, version) = read_secret(home, handle)?;
                 api_key = value;
@@ -368,36 +485,50 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
 
             let run = w.create_run(&ws, &th, &br, &prompt)?;
             let ws_obj = r.workspace(&ws)?;
-            let instructions = ws_obj.config.get("instructions")
-                .and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let instructions = ws_obj
+                .config
+                .get("instructions")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             let visible = r.visible_events(&br, run.branch_revision)?;
-            let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5).max(1) as usize;
+            let top_k = args
+                .get("top_k")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5)
+                .max(1) as usize;
             let memories = r.search_memories(&ws, &prompt, top_k)?;
             let candidate_memory_ids: Vec<String> = memories
                 .iter()
                 .filter_map(|m| m["id"].as_str().map(str::to_string))
                 .collect();
-            let mut manifest = build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
+            let mut manifest =
+                build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
 
             // La trayectoria visible completa queda como evidencia; el contexto se presupuesta.
             manifest.visible_event_ids = visible.iter().map(|e| e.event_id.clone()).collect();
-            let no_policy = args.get("no_policy").and_then(|v| v.as_bool()).unwrap_or(false);
+            let no_policy = args
+                .get("no_policy")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let task = hli_agent::classify_task(&prompt);
-            if !no_policy { match task {
-                "memory_lookup" => {
-                    // La trayectoria visible se conserva; el presupuesto recorta por tamaño.
-                    manifest.recent_events.truncate(2);
-                    manifest.memories.truncate(3);
+            if !no_policy {
+                match task {
+                    "memory_lookup" => {
+                        // La trayectoria visible se conserva; el presupuesto recorta por tamaño.
+                        manifest.recent_events.truncate(2);
+                        manifest.memories.truncate(3);
+                    }
+                    "artifact_analysis" | "code_fix" | "summarization" => {
+                        manifest.recent_events.clear();
+                        manifest.memories.truncate(1);
+                    }
+                    _ => {
+                        manifest.recent_events.truncate(2);
+                        manifest.memories.truncate(2);
+                    }
                 }
-                "artifact_analysis" | "code_fix" | "summarization" => {
-                    manifest.recent_events.clear();
-                    manifest.memories.truncate(1);
-                }
-                _ => {
-                    manifest.recent_events.truncate(2);
-                    manifest.memories.truncate(2);
-                }
-            } }
+            }
             for m in manifest.memories.iter_mut() {
                 if let Some(o) = m.as_object_mut() {
                     if let Some(c) = o.get("content").and_then(|v| v.as_str()) {
@@ -410,7 +541,10 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             }
 
             // Slices de artefacto: evidencia seleccionada, persistida y verificable.
-            let no_slices = args.get("no_slices").and_then(|v| v.as_bool()).unwrap_or(false);
+            let no_slices = args
+                .get("no_slices")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let slice_pairs = if no_slices {
                 vec![]
             } else {
@@ -419,10 +553,18 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                     None => vec![],
                 }
             };
-            if args.get("no_memories").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if args
+                .get("no_memories")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 manifest.memories.clear();
             }
-            if args.get("no_events").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if args
+                .get("no_events")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 manifest.recent_events.clear();
             }
             manifest.artifact_slices = slice_pairs
@@ -445,23 +587,33 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             }
             let payload_check = hli_agent::build_payload(&manifest, &reloaded);
             if hli_core::canon::hash_canonical(&payload_check) != manifest.payload_hash {
-                return Err(HliError::conflict("el payload no coincide con el manifiesto"));
+                return Err(HliError::conflict(
+                    "el payload no coincide con el manifiesto",
+                ));
             }
             let rendered = hli_agent::render_payload(&manifest, &reloaded);
 
             let prev_provider = r.last_provider(&th).ok().flatten();
             if prev_provider.as_deref() != Some(provider_name.as_str()) {
-                w.run_event(&run.id, "provider.handoff", json!({
-                    "run_id": run.id, "from": prev_provider,
-                    "to": provider_name, "model": model
-                }))?;
+                w.run_event(
+                    &run.id,
+                    "provider.handoff",
+                    json!({
+                        "run_id": run.id, "from": prev_provider,
+                        "to": provider_name, "model": model
+                    }),
+                )?;
             }
 
-            w.run_event(&run.id, "model.requested", json!({
-                "run_id": run.id, "manifest_id": manifest.manifest_id,
-                "payload_hash": manifest.payload_hash,
-                "provider": provider_name, "model": model
-            }))?;
+            w.run_event(
+                &run.id,
+                "model.requested",
+                json!({
+                    "run_id": run.id, "manifest_id": manifest.manifest_id,
+                    "payload_hash": manifest.payload_hash,
+                    "provider": provider_name, "model": model
+                }),
+            )?;
 
             let system = "Eres HLI. Responde en español, breve y factual.";
             let system_owned = system.to_string();
@@ -473,45 +625,94 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             };
 
             let mut tool_call = None;
-            let (text, usage, used_provider, used_model, adapter) = match provider_name.as_str() {
+            let call_result: Result<
+                (String, hli_provider::Usage, String, String, String),
+                HliError,
+            > = match provider_name.as_str() {
                 "sim" => {
                     let p = SimProvider;
                     let pr = hli_agent::ProviderRequest {
-                        run_id: run.id.clone(), prompt: prompt.clone(), manifest: manifest.clone(),
+                        run_id: run.id.clone(),
+                        prompt: prompt.clone(),
+                        manifest: manifest.clone(),
                     };
-                    let resp = p.complete(&pr)?;
-                    tool_call = resp.tool_call;
-                    let u = hli_provider::Usage {
-                        input_tokens: hli_provider::estimate_tokens(&system_owned) + manifest.estimated_tokens,
-                        output_tokens: hli_provider::estimate_tokens(&resp.text),
-                        cached_tokens: 0,
-                        latency_first_token_ms: 0,
-                        latency_total_ms: 0,
-                        finish_reason: "stop".into(),
-                        raw_usage_available: false,
-                        usage_source: "estimated".into(),
-                    };
-                    (resp.text, u, "sim".to_string(), "sim-1".to_string(), "0.2.0".to_string())
+                    match p.complete(&pr) {
+                        Ok(resp) => {
+                            tool_call = resp.tool_call;
+                            let u = hli_provider::Usage {
+                                input_tokens: hli_provider::estimate_tokens(&system_owned)
+                                    + manifest.estimated_tokens,
+                                output_tokens: hli_provider::estimate_tokens(&resp.text),
+                                cached_tokens: 0,
+                                latency_first_token_ms: 0,
+                                latency_total_ms: 0,
+                                finish_reason: "stop".into(),
+                                raw_usage_available: false,
+                                usage_source: "estimated".into(),
+                            };
+                            Ok((
+                                resp.text,
+                                u,
+                                "sim".to_string(),
+                                "sim-1".to_string(),
+                                "0.2.0".to_string(),
+                            ))
+                        }
+                        Err(e) => Err(e),
+                    }
                 }
                 "ollama" => {
                     let p = hli_provider::OllamaProvider::new(&base_url, &model, timeout);
-                    let resp = p.chat(&req)?;
-                    (resp.text, resp.usage, resp.provider, resp.model, resp.adapter_version)
+                    p.chat(&req)
+                        .map(|r| (r.text, r.usage, r.provider, r.model, r.adapter_version))
                 }
                 "openai" => {
                     let p = hli_provider::OpenAiProvider::new(&base_url, &model, &api_key, timeout);
-                    let resp = p.chat(&req)?;
-                    (resp.text, resp.usage, resp.provider, resp.model, resp.adapter_version)
+                    p.chat(&req)
+                        .map(|r| (r.text, r.usage, r.provider, r.model, r.adapter_version))
                 }
-                other => return Err(HliError::invalid(format!("proveedor desconocido: {other}"))),
+                other => Err(HliError::invalid(format!("proveedor desconocido: {other}"))),
+            };
+            let (text, usage, used_provider, used_model, adapter) = match call_result {
+                Ok(v) => v,
+                Err(e) => {
+                    let usage = hli_provider::Usage::default();
+                    let cost = hli_provider::cost_of(None, &usage);
+                    let receipt = make_receipt(
+                        &provider_name,
+                        &model,
+                        "error",
+                        &manifest,
+                        &json!({"error": e.message}),
+                        &usage,
+                        &cost,
+                        secret_handles,
+                        vec![],
+                        vec![],
+                        vec![],
+                        candidate_memory_ids,
+                        vec![],
+                    );
+                    let done = w.finish_run(
+                        &run.id,
+                        "failed",
+                        Some(json!({"error": e.message})),
+                        Some(receipt),
+                    )?;
+                    return Ok(serde_json::to_value(done)?);
+                }
             };
 
             let price = load_price(home, &used_provider, &used_model);
             let cost = hli_provider::cost_of(price.as_ref(), &usage);
-            w.run_event(&run.id, "model.responded", json!({
-                "run_id": run.id, "provider": used_provider, "model": used_model,
-                "usage": usage, "cost": cost
-            }))?;
+            w.run_event(
+                &run.id,
+                "model.responded",
+                json!({
+                    "run_id": run.id, "provider": used_provider, "model": used_model,
+                    "usage": usage, "cost": cost
+                }),
+            )?;
 
             let mut result = json!({
                 "text": text, "manifest_id": manifest.manifest_id,
@@ -520,12 +721,20 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let mut state = "completed";
 
             if let Some(call) = tool_call {
-                w.run_event(&run.id, "tool.requested", json!({
-                    "run_id": run.id, "tool": call.name, "arguments": call.arguments
-                }))?;
+                w.run_event(
+                    &run.id,
+                    "tool.requested",
+                    json!({
+                        "run_id": run.id, "tool": call.name, "arguments": call.arguments
+                    }),
+                )?;
                 match permission_for(&call.name) {
                     Permission::Deny => {
-                        w.run_event(&run.id, "tool.denied", json!({"run_id": run.id, "tool": call.name}))?;
+                        w.run_event(
+                            &run.id,
+                            "tool.denied",
+                            json!({"run_id": run.id, "tool": call.name}),
+                        )?;
                         state = "failed";
                         result["error"] = json!("herramienta denegada por política");
                     }
@@ -535,30 +744,57 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                     }
                     Permission::Allow => {
                         let outcome = execute_tool(std::path::Path::new(&ws_obj.root_path), &call);
-                        w.run_event(&run.id, "tool.completed", json!({
-                            "run_id": run.id, "tool": outcome.tool, "status": outcome.status,
-                            "stdout": outcome.stdout, "changed_files": outcome.changed_files,
-                            "error": outcome.error
-                        }))?;
+                        w.run_event(
+                            &run.id,
+                            "tool.completed",
+                            json!({
+                                "run_id": run.id, "tool": outcome.tool, "status": outcome.status,
+                                "stdout": outcome.stdout, "changed_files": outcome.changed_files,
+                                "error": outcome.error
+                            }),
+                        )?;
                         result["observation"] = serde_json::to_value(&outcome)?;
-                        if outcome.status != "success" { state = "failed"; }
+                        if outcome.status != "success" {
+                            state = "failed";
+                        }
                     }
                 }
             }
 
-            let used_memory_ids: Vec<String> = manifest.memories.iter()
-                .filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
-            let used_slice_ids: Vec<String> = manifest.artifact_slices.iter()
-                .filter_map(|s| s["slice_id"].as_str().map(str::to_string)).collect();
-            let used_event_ids: Vec<String> = manifest.recent_events.iter()
-                .filter_map(|e| e["event_id"].as_str().map(str::to_string)).collect();
-            let rejected_memory_ids: Vec<String> = candidate_memory_ids.iter()
-                .filter(|id| !used_memory_ids.contains(id)).cloned().collect();
+            let used_memory_ids: Vec<String> = manifest
+                .memories
+                .iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect();
+            let used_slice_ids: Vec<String> = manifest
+                .artifact_slices
+                .iter()
+                .filter_map(|s| s["slice_id"].as_str().map(str::to_string))
+                .collect();
+            let used_event_ids: Vec<String> = manifest
+                .recent_events
+                .iter()
+                .filter_map(|e| e["event_id"].as_str().map(str::to_string))
+                .collect();
+            let rejected_memory_ids: Vec<String> = candidate_memory_ids
+                .iter()
+                .filter(|id| !used_memory_ids.contains(id))
+                .cloned()
+                .collect();
             let receipt = make_receipt(
-                &used_provider, &used_model, &adapter, &manifest, &result,
-                &usage, &cost, secret_handles,
-                used_memory_ids, used_slice_ids, used_event_ids,
-                candidate_memory_ids, rejected_memory_ids,
+                &used_provider,
+                &used_model,
+                &adapter,
+                &manifest,
+                &result,
+                &usage,
+                &cost,
+                secret_handles,
+                used_memory_ids,
+                used_slice_ids,
+                used_event_ids,
+                candidate_memory_ids,
+                rejected_memory_ids,
             );
             let done = w.finish_run(&run.id, state, Some(result), Some(receipt))?;
             Ok(serde_json::to_value(done)?)
@@ -589,22 +825,51 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             }
             result["observation"] = serde_json::to_value(&outcome)?;
             let usage = hli_provider::Usage {
-                input_tokens: manifest.estimated_tokens, output_tokens: 0, cached_tokens: 0,
-                latency_first_token_ms: 0, latency_total_ms: 0, finish_reason: "stop".into(),
-                raw_usage_available: false, usage_source: "estimated".into(),
+                input_tokens: manifest.estimated_tokens,
+                output_tokens: 0,
+                cached_tokens: 0,
+                latency_first_token_ms: 0,
+                latency_total_ms: 0,
+                finish_reason: "stop".into(),
+                raw_usage_available: false,
+                usage_source: "estimated".into(),
             };
             let cost = hli_provider::cost_of(None, &usage);
-            let used_memory_ids: Vec<String> = manifest.memories.iter()
-                .filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
-            let used_slice_ids: Vec<String> = manifest.artifact_slices.iter()
-                .filter_map(|s| s["slice_id"].as_str().map(str::to_string)).collect();
-            let used_event_ids: Vec<String> = manifest.recent_events.iter()
-                .filter_map(|e| e["event_id"].as_str().map(str::to_string)).collect();
+            let used_memory_ids: Vec<String> = manifest
+                .memories
+                .iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect();
+            let used_slice_ids: Vec<String> = manifest
+                .artifact_slices
+                .iter()
+                .filter_map(|s| s["slice_id"].as_str().map(str::to_string))
+                .collect();
+            let used_event_ids: Vec<String> = manifest
+                .recent_events
+                .iter()
+                .filter_map(|e| e["event_id"].as_str().map(str::to_string))
+                .collect();
             let receipt = make_receipt(
-                "sim", "sim-1", "0.2.0", &manifest, &result, &usage, &cost, vec![],
-                used_memory_ids, used_slice_ids, used_event_ids, vec![], vec![],
+                "sim",
+                "sim-1",
+                "0.2.0",
+                &manifest,
+                &result,
+                &usage,
+                &cost,
+                vec![],
+                used_memory_ids,
+                used_slice_ids,
+                used_event_ids,
+                vec![],
+                vec![],
             );
-            let state = if outcome.status == "success" { "completed" } else { "failed" };
+            let state = if outcome.status == "success" {
+                "completed"
+            } else {
+                "failed"
+            };
             let done = w.finish_run(&run_id, state, Some(result), Some(receipt))?;
             Ok(serde_json::to_value(done)?)
         }
@@ -618,7 +883,9 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
         "manifest.get" => Ok(serde_json::to_value(r.manifest(&s(args, "manifest_id")?)?)?),
         "prices.list" => {
             let text = std::fs::read_to_string(home.join("prices.yaml")).unwrap_or_default();
-            Ok(serde_json::to_value(hli_provider::parse_prices_yaml(&text))?)
+            Ok(serde_json::to_value(hli_provider::parse_prices_yaml(
+                &text,
+            ))?)
         }
         "module.install" => {
             let path = PathBuf::from(s(args, "path")?);
@@ -628,19 +895,38 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let manifest_bytes = get("manifest.json")
                 .ok_or_else(|| HliError::invalid("paquete sin manifest.json"))?;
             let manifest: Value = serde_json::from_slice(&manifest_bytes)?;
-            let name = manifest["metadata"]["name"].as_str()
-                .ok_or_else(|| HliError::invalid("manifiesto sin nombre"))?.to_string();
-            let version = manifest["metadata"]["version"].as_str()
-                .ok_or_else(|| HliError::invalid("manifiesto sin versión"))?.to_string();
+            let name = manifest["metadata"]["name"]
+                .as_str()
+                .ok_or_else(|| HliError::invalid("manifiesto sin nombre"))?
+                .to_string();
+            let version = manifest["metadata"]["version"]
+                .as_str()
+                .ok_or_else(|| HliError::invalid("manifiesto sin versión"))?
+                .to_string();
             let sdk = manifest["spec"]["sdk"].as_str().unwrap_or("");
-            if !sdk.contains("0.4") {
+            if !sdk_allows(sdk) {
                 return Err(HliError::conflict(format!("SDK incompatible: {sdk}")));
             }
             let checks: Value = serde_json::from_slice(
-                &get("checksums.json").ok_or_else(|| HliError::invalid("paquete sin checksums.json"))?,
+                &get("checksums.json")
+                    .ok_or_else(|| HliError::invalid("paquete sin checksums.json"))?,
             )?;
-            for (p, h) in checks.as_object().ok_or_else(|| HliError::invalid("checksums inválido"))? {
-                let f = files.iter().find(|f| &f.path == p)
+            let checks_obj = checks
+                .as_object()
+                .ok_or_else(|| HliError::invalid("checksums inválido"))?;
+            if !checks_obj.contains_key("manifest.json") {
+                return Err(HliError::invalid("checksums no cubre manifest.json"));
+            }
+            let entry = manifest["spec"]["runtime"]["entry"].as_str().unwrap_or("");
+            if !checks_obj.contains_key(entry) {
+                return Err(HliError::invalid(format!(
+                    "checksums no cubre el binario {entry}"
+                )));
+            }
+            for (p, h) in checks_obj {
+                let f = files
+                    .iter()
+                    .find(|f| &f.path == p)
                     .ok_or_else(|| HliError::invalid(format!("falta {p} en el paquete")))?;
                 let got = format!("sha256:{}", hli_store::export::sha256_hex(&f.bytes));
                 if got != h.as_str().unwrap_or("") {
@@ -661,7 +947,10 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let lock_line = json!({"name": name, "version": version, "checksum": checksum});
             let mut lock = String::new();
             for m in r.modules()? {
-                lock.push_str(&json!({"name": m["name"], "version": m["version"], "checksum": m["checksum"]}).to_string());
+                lock.push_str(
+                    &json!({"name": m["name"], "version": m["version"], "checksum": m["checksum"]})
+                        .to_string(),
+                );
                 lock.push('\n');
             }
             if !lock.contains(&lock_line["name"].to_string()) {
@@ -672,10 +961,27 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             Ok(json!({"installed": name, "version": version, "path": dir.to_string_lossy()}))
         }
         "module.list" => Ok(Value::Array(r.modules()?)),
+        "module.verify" => {
+            let lock = std::fs::read_to_string(home.join("hli.lock")).unwrap_or_default();
+            let mods = r.modules()?;
+            for module in &mods {
+                let checksum = module["checksum"].as_str().unwrap_or("");
+                if !lock.contains(checksum) {
+                    return Err(HliError::conflict(format!(
+                        "lockfile inconsistente: falta {} {}",
+                        module["name"].as_str().unwrap_or("-"),
+                        module["version"].as_str().unwrap_or("-")
+                    )));
+                }
+            }
+            Ok(json!({"ok": true, "modules": mods.len()}))
+        }
         "module.inspect" => Ok(r.module(&s(args, "name")?)?),
         "module.test" => {
             let m = r.module(&s(args, "name")?)?;
-            let entry = m["manifest"]["spec"]["runtime"]["entry"].as_str().unwrap_or("bin/hli-memory.exe");
+            let entry = m["manifest"]["spec"]["runtime"]["entry"]
+                .as_str()
+                .unwrap_or("bin/hli-memory.exe");
             let bin = PathBuf::from(m["path"].as_str().unwrap_or("")).join(entry);
             let out = supervisor::health(&bin, home, "")?;
             Ok(json!({"module": m["name"], "ok": true, "probe": out}))
@@ -690,9 +996,17 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
         }
         "mch.create" => {
             let name = s(args, "name")?;
-            let module_name = args.get("module").and_then(|v| v.as_str()).unwrap_or("hli-memory").to_string();
+            let module_name = args
+                .get("module")
+                .and_then(|v| v.as_str())
+                .unwrap_or("hli-memory")
+                .to_string();
             let m = r.module(&module_name)?;
-            let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("memory").to_string();
+            let domain = args
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("memory")
+                .to_string();
             let ws = o(args, "workspace_id");
             let out = w.mch_create(&name, &module_name, &domain, ws, m["manifest"].clone())?;
             Ok(out)
@@ -704,7 +1018,9 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let m = r.mch(&name)?;
             let module = m["module"].as_str().unwrap_or("");
             let mm = r.module(module)?;
-            let entry = mm["manifest"]["spec"]["runtime"]["entry"].as_str().unwrap_or("bin/hli-memory.exe");
+            let entry = mm["manifest"]["spec"]["runtime"]["entry"]
+                .as_str()
+                .unwrap_or("bin/hli-memory.exe");
             let bin = PathBuf::from(mm["path"].as_str().unwrap_or("")).join(entry);
             let ws = m["workspace_id"].as_str().unwrap_or("");
             let probe = supervisor::health(&bin, home, ws)?;
@@ -721,26 +1037,70 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let name = s(args, "name")?;
             let op = s(args, "operation")?;
             let m = r.mch(&name)?;
-            let allowed = m["manifest"]["spec"]["operations"].as_array().cloned().unwrap_or_default();
-            if !allowed.iter().any(|o| o["name"].as_str() == Some(op.as_str())) {
-                return Err(HliError::new("undeclared_operation",
-                    format!("operación no declarada por el módulo: {op}")));
+            if m["state"].as_str() != Some("ready") {
+                return Err(HliError::conflict("MCH no está ready; ejecuta mch serve"));
+            }
+            let allowed = m["manifest"]["spec"]["operations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if !allowed
+                .iter()
+                .any(|o| o["name"].as_str() == Some(op.as_str()))
+            {
+                return Err(HliError::new(
+                    "undeclared_operation",
+                    format!("operación no declarada por el módulo: {op}"),
+                ));
             }
             let module = m["module"].as_str().unwrap_or("");
             let mm = r.module(module)?;
-            let entry = mm["manifest"]["spec"]["runtime"]["entry"].as_str().unwrap_or("bin/hli-memory.exe");
+            let entry = mm["manifest"]["spec"]["runtime"]["entry"]
+                .as_str()
+                .unwrap_or("bin/hli-memory.exe");
             let bin = PathBuf::from(mm["path"].as_str().unwrap_or("")).join(entry);
-            let ws = args.get("workspace_id").and_then(|v| v.as_str()).unwrap_or(
-                m["workspace_id"].as_str().unwrap_or(""));
+            let ws = args
+                .get("workspace_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(m["workspace_id"].as_str().unwrap_or(""));
             let arguments = args.get("arguments").cloned().unwrap_or(json!({}));
-            let out = supervisor::invoke(&bin, home, ws, &op, &arguments, std::time::Duration::from_secs(30))?;
-            Ok(json!({"instance": name, "operation": op, "result": out.result,
-                       "duration_ms": out.duration_ms}))
+            let out = supervisor::invoke(
+                &bin,
+                home,
+                ws,
+                &op,
+                &arguments,
+                std::time::Duration::from_secs(30),
+            )?;
+            Ok(
+                json!({"instance": name, "operation": op, "result": out.result,
+                       "duration_ms": out.duration_ms}),
+            )
         }
         "status" => {
             let ws = r.workspaces()?;
             Ok(json!({"workspaces": ws.len(), "version": "0.1.0"}))
         }
-        other => Err(HliError::new("unknown_command", format!("comando desconocido: {other}"))),
+        other => Err(HliError::new(
+            "unknown_command",
+            format!("comando desconocido: {other}"),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod sdk_tests {
+    use super::sdk_allows;
+
+    #[test]
+    fn accepts_compatible_sdk() {
+        assert!(sdk_allows(">=0.4 <0.5"));
+        assert!(sdk_allows("^0.4"));
+    }
+
+    #[test]
+    fn module_rejects_incompatible_sdk() {
+        assert!(!sdk_allows(">=9.0 <9.1"));
+        assert!(!sdk_allows(">=0.5 <0.6"));
     }
 }

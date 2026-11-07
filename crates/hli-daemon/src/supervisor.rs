@@ -2,7 +2,7 @@
 //! Sin carga dinámica, sin libloading.
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -19,7 +19,6 @@ pub struct RunOutcome {
 struct Io {
     stdin: std::process::ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
-    stderr: BufReader<std::process::ChildStderr>,
 }
 
 impl Io {
@@ -31,29 +30,15 @@ impl Io {
     fn recv(&mut self) -> std::io::Result<Value> {
         let mut line = String::new();
         if self.stdout.read_line(&mut line)? == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "módulo cerró stdout"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "módulo cerró stdout",
+            ));
         }
         serde_json::from_str(&line)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
-    fn stderr_text(&mut self) -> String {
-        let mut out = String::new();
-        let mut buf = [0u8; 4096];
-        use std::io::Read;
-        let mut taken = 0usize;
-        while taken < 64 * 1024 {
-            match self.stderr.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    out.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    taken += n;
-                }
-                Err(_) => break,
-            }
-        }
-        out
-    }
 }
 
 /// Ejecuta initialize → invoke → shutdown con timeout y límite de salida.
@@ -66,7 +51,10 @@ pub fn invoke(
     timeout: Duration,
 ) -> Result<RunOutcome> {
     if !bin.exists() {
-        return Err(HliError::not_found(&format!("binario del módulo {}", bin.display())));
+        return Err(HliError::not_found(&format!(
+            "binario del módulo {}",
+            bin.display()
+        )));
     }
     let mut child = Command::new(bin)
         .env("HLI_HOME", home)
@@ -76,9 +64,14 @@ pub fn invoke(
         .spawn()
         .map_err(|e| HliError::internal(format!("no se pudo lanzar el módulo: {e}")))?;
 
-    let stdin = child.stdin.take().ok_or_else(|| HliError::internal("sin stdin"))?;
-    let stdout = child.stdout.take().ok_or_else(|| HliError::internal("sin stdout"))?;
-    let stderr = child.stderr.take().ok_or_else(|| HliError::internal("sin stderr"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| HliError::internal("sin stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| HliError::internal("sin stdout"))?;
 
     let (tx, rx) = mpsc::channel::<std::result::Result<Value, String>>();
     let ws = workspace_id.to_string();
@@ -89,7 +82,6 @@ pub fn invoke(
         let mut io = Io {
             stdin,
             stdout: BufReader::new(stdout),
-            stderr: BufReader::new(stderr),
         };
         let run = (|| -> std::result::Result<Value, String> {
             io.send(&json!({"jsonrpc":"2.0","id":"init","method":"initialize",
@@ -99,15 +91,18 @@ pub fn invoke(
             if init.get("error").is_some() {
                 return Err(format!("initialize: {}", init["error"]));
             }
-            io.send(&json!({"jsonrpc":"2.0","id":"inv","method":"invoke","params":{
-                "name": op,
-                "arguments": args,
-                "_meta":{
-                    "hli.dev/workspaceId": ws,
-                    "hli.dev/requestId": "req_1",
-                    "hli.dev/idempotencyKey": format!("idem_{op}")
-                }
-            }})).map_err(|e| e.to_string())?;
+            io.send(
+                &json!({"jsonrpc":"2.0","id":"inv","method":"invoke","params":{
+                    "name": op,
+                    "arguments": args,
+                    "_meta":{
+                        "hli.dev/workspaceId": ws,
+                        "hli.dev/requestId": "req_1",
+                        "hli.dev/idempotencyKey": format!("idem_{op}")
+                    }
+                }}),
+            )
+            .map_err(|e| e.to_string())?;
             let resp = io.recv().map_err(|e| e.to_string())?;
             let _ = io.send(&json!({"jsonrpc":"2.0","id":"bye","method":"shutdown"}));
             let _ = io.recv();
@@ -137,7 +132,10 @@ pub fn invoke(
         Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            Err(HliError::new("timeout", "el módulo no respondió en el plazo"))
+            Err(HliError::new(
+                "timeout",
+                "el módulo no respondió en el plazo",
+            ))
         }
     }
 }
@@ -148,9 +146,6 @@ pub fn health(bin: &Path, home: &Path, workspace_id: &str) -> Result<Value> {
         .map(|o| json!({"ok": true, "stderr": o.stderr, "duration_ms": o.duration_ms, "result": o.result}))
 }
 
-pub fn module_bin(install_dir: &Path, entry: &str) -> PathBuf {
-    install_dir.join(entry)
-}
 
 #[allow(dead_code)]
 fn _unused(_c: &mut Child) {}
