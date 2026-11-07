@@ -7,16 +7,67 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use hli_core::{HliError, Result};
+use hli_core::{time::now_iso, HliError, Result};
 use serde_json::{json, Value};
+
+#[derive(Clone, Debug)]
+pub struct SupervisorPolicy {
+    pub health_interval: Duration,
+    pub health_timeout: Duration,
+    pub degraded_after: u32,
+    pub restart_after: u32,
+    pub max_restarts: u32,
+    pub initial_backoff: Duration,
+}
+
+impl Default for SupervisorPolicy {
+    fn default() -> Self {
+        Self {
+            health_interval: Duration::from_secs(30),
+            health_timeout: Duration::from_secs(5),
+            degraded_after: 2,
+            restart_after: 3,
+            max_restarts: 3,
+            initial_backoff: Duration::from_secs(1),
+        }
+    }
+}
+
+fn env_ms(key: &str, def: Duration) -> Duration {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(def)
+}
+
+fn env_u32(key: &str, def: u32) -> u32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(def)
+}
+
+fn policy() -> SupervisorPolicy {
+    let d = SupervisorPolicy::default();
+    SupervisorPolicy {
+        health_interval: env_ms("HLI_MCH_HEALTH_INTERVAL_MS", d.health_interval),
+        health_timeout: env_ms("HLI_MCH_HEALTH_TIMEOUT_MS", d.health_timeout),
+        degraded_after: env_u32("HLI_MCH_DEGRADED_AFTER", d.degraded_after),
+        restart_after: env_u32("HLI_MCH_RESTART_AFTER", d.restart_after),
+        max_restarts: env_u32("HLI_MCH_MAX_RESTARTS", d.max_restarts),
+        initial_backoff: env_ms("HLI_MCH_BACKOFF_MS", d.initial_backoff),
+    }
+}
 
 pub struct MchHandle {
     pub pid: u32,
+    pub generation: u64,
     pub child: Mutex<Child>,
     pub stdin: Mutex<ChildStdin>,
     pub pending: Mutex<HashMap<String, SyncSender<Result<Value>>>>,
@@ -25,6 +76,13 @@ pub struct MchHandle {
     pub next_id: AtomicU64,
     pub started: Instant,
     pub capabilities: Mutex<Value>,
+    pub state: Mutex<String>,
+    pub health_failures: AtomicU32,
+    pub restart_count: AtomicU32,
+    pub stop_flag: AtomicBool,
+    pub last_health_at: Mutex<Option<String>>,
+    pub last_health_ok: AtomicBool,
+    pub last_error: Mutex<Option<String>>,
 }
 
 pub type Shared = Arc<MchHandle>;
@@ -79,8 +137,10 @@ pub fn start(name: &str, bin: &Path, home: &Path, workspace: &str) -> Result<Sha
         .take()
         .ok_or_else(|| HliError::internal("MCH sin stderr"))?;
 
+    let generation = next_generation(name);
     let h = Arc::new(MchHandle {
         pid,
+        generation,
         child: Mutex::new(child),
         stdin: Mutex::new(stdin),
         pending: Mutex::new(HashMap::new()),
@@ -89,6 +149,13 @@ pub fn start(name: &str, bin: &Path, home: &Path, workspace: &str) -> Result<Sha
         next_id: AtomicU64::new(1),
         started: Instant::now(),
         capabilities: Mutex::new(Value::Null),
+        state: Mutex::new("starting".into()),
+        health_failures: AtomicU32::new(0),
+        restart_count: AtomicU32::new(0),
+        stop_flag: AtomicBool::new(false),
+        last_health_at: Mutex::new(None),
+        last_health_ok: AtomicBool::new(false),
+        last_error: Mutex::new(None),
     });
 
     let reader = h.clone();
@@ -158,6 +225,13 @@ pub fn start(name: &str, bin: &Path, home: &Path, workspace: &str) -> Result<Sha
         let _ = stop(name);
         return Err(e);
     }
+    *h.state.lock().unwrap() = "ready".into();
+    let hn = name.to_string();
+    let hb = bin.to_path_buf();
+    let hh = home.to_path_buf();
+    let hw = workspace.to_string();
+    let hs = h.clone();
+    std::thread::spawn(move || health_loop(hn, hb, hh, hw, hs));
     Ok(h)
 }
 
@@ -229,6 +303,7 @@ pub fn stop(name: &str) -> Result<()> {
         Some(h) => h,
         None => return Ok(()),
     };
+    h.stop_flag.store(true, Ordering::SeqCst);
     let _ = request(&h, "shutdown", json!({}), Duration::from_secs(2));
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -256,11 +331,75 @@ pub fn status(name: &str) -> Option<Value> {
     get(name).map(|h| {
         json!({
             "pid": h.pid,
+            "state": h.state.lock().unwrap().clone(),
             "alive": h.alive.load(Ordering::SeqCst),
+            "generation": h.generation,
             "uptime_ms": h.started.elapsed().as_millis() as i64,
+            "health_failures": h.health_failures.load(Ordering::SeqCst),
+            "restart_count": h.restart_count.load(Ordering::SeqCst),
+            "last_health_at": h.last_health_at.lock().unwrap().clone(),
+            "last_health_ok": h.last_health_ok.load(Ordering::SeqCst),
+            "last_error": h.last_error.lock().unwrap().clone(),
             "stderr_tail": h.stderr_tail.lock().unwrap().clone(),
         })
     })
+}
+
+fn next_generation(name: &str) -> u64 {
+    static G: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    let g = G.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut m = g.lock().unwrap();
+    let e = m.entry(name.to_string()).or_insert(0);
+    *e += 1;
+    *e
+}
+
+fn health_loop(
+    name: String,
+    bin: std::path::PathBuf,
+    home: std::path::PathBuf,
+    ws: String,
+    h: Shared,
+) {
+    let p = policy();
+    loop {
+        std::thread::sleep(p.health_interval);
+        if h.stop_flag.load(Ordering::SeqCst) || !h.alive.load(Ordering::SeqCst) {
+            return;
+        }
+        let res = request(&h, "health", json!({}), p.health_timeout);
+        *h.last_health_at.lock().unwrap() = Some(now_iso());
+        match res {
+            Ok(_) => {
+                h.health_failures.store(0, Ordering::SeqCst);
+                h.last_health_ok.store(true, Ordering::SeqCst);
+                let mut st = h.state.lock().unwrap();
+                if *st == "degraded" {
+                    *st = "ready".into();
+                }
+            }
+            Err(e) => {
+                h.last_health_ok.store(false, Ordering::SeqCst);
+                *h.last_error.lock().unwrap() = Some(e.message.clone());
+                let n = h.health_failures.fetch_add(1, Ordering::SeqCst) + 1;
+                if n >= p.degraded_after {
+                    *h.state.lock().unwrap() = "degraded".into();
+                }
+                if n >= p.restart_after {
+                    let rc = h.restart_count.fetch_add(1, Ordering::SeqCst) + 1;
+                    if rc > p.max_restarts {
+                        *h.state.lock().unwrap() = "failed".into();
+                        return;
+                    }
+                    *h.state.lock().unwrap() = "restarting".into();
+                    let backoff = p.initial_backoff * 2u32.pow(rc - 1);
+                    std::thread::sleep(backoff);
+                    let _ = restart(&name, &bin, &home, &ws);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 pub fn logs(name: &str) -> Option<String> {

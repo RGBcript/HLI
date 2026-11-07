@@ -1,6 +1,6 @@
 # HLI — Informe de Beta 0.9
 
-**Código:** `9441f5c` · **Fecha:** 2026-11-07 · **Estado:** Beta en progreso, sin tag.
+**Código inicial del bloque:** `e368ff1` · **Fecha:** 2026-11-07 · **Estado:** Beta en progreso, sin tag.
 
 ## Completado en esta etapa
 
@@ -10,7 +10,7 @@
 | Proveedor configurable | hecho | `providers.toml`, `provider add/list/inspect/test/set-default/remove`, default persistente, `secret_handle`; 2 pruebas e2e |
 | Formato y clippy | verde | `cargo fmt --check`, `cargo clippy -D warnings` |
 | Runs asíncronos y cancelación | hecho | `--async`, `status`, `wait`, `cancel`, `list --state`; tabla de transiciones; timeout; recuperación a `interrupted`; 4 pruebas e2e |
-| MCH persistente (nucleo) | parcial | proceso reutilizado con el mismo PID, lifecycle initialize/capabilities/configure/health, restart, stop y deteccion de caida; 2 pruebas e2e; ver `MCH-SUPERVISOR.md` |
+| MCH persistente (nucleo) | parcial | proceso reutilizado, lifecycle completo, health periodico, degraded y restart acotado; autostart y fixture pendientes |
 | Tests | verde | 85 pruebas; e2e aislados por `HLI_HOME` |
 
 ## Pendiente para cerrar 0.9
@@ -18,7 +18,7 @@
 | Bloque | Estado | Nota |
 |---|---|---|
 | Gate visual manual | **no ejecutado** | Guía y entorno listos en `docs/TUI-MANUAL-GATE.md`; requiere Windows Terminal |
-| Supervisor MCH persistente | parcial | Lifecycle completo hecho; faltan health periódico, degraded, restart automático, autostart y módulo de prueba |
+| Supervisor MCH persistente | parcial | Lifecycle y health periódico hechos; degraded/restart con lógica pero sin fixture de fallo; faltan autostart y pruebas |
 | Firma de módulos Ed25519 | pendiente | Sin `signature.json`, trust store ni políticas `allow/warn/require` |
 | Migraciones | pendiente | Sin `migrate status/apply/backup/verify` ni fixture de versión anterior |
 | Empaquetado Windows | pendiente | Sin `install.ps1`, `uninstall.ps1`, `dist` completo ni checksums |

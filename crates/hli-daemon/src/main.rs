@@ -1448,7 +1448,13 @@ fn dispatch(
         "mch.status" => {
             let name = s(args, "name")?;
             let instance = r.mch(&name)?;
-            Ok(json!({"instance": instance, "process": supervisor::status(&name)}))
+            let process = supervisor::status(&name);
+            if let Some(p) = &process {
+                if let Some(st) = p["state"].as_str() {
+                    let _ = w.mch_set_state(&name, st, p["pid"].as_i64());
+                }
+            }
+            Ok(json!({"instance": instance, "process": process}))
         }
         "mch.restart" => {
             let name = s(args, "name")?;

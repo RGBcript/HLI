@@ -87,9 +87,25 @@ Tras `capabilities`, el daemon valida que todas las operaciones declaradas en el
 |---|---|
 | Núcleo persistente | hecho |
 | Lifecycle completo | hecho |
-| Health periódico | pendiente |
-| Degraded | pendiente |
-| Restart automático | pendiente |
+| Health periódico | hecho; configurable por `HLI_MCH_HEALTH_INTERVAL_MS`, `HLI_MCH_HEALTH_TIMEOUT_MS` |
+| Degraded | lógica implementada; falta fixture que falle health |
+| Restart automático | lógica implementada (3 fallos, backoff 1/2/4, máximo 3); sin prueba de fallo |
 | Autostart | pendiente |
 | Módulo de prueba | pendiente |
 | Gate completo | incompleto |
+
+
+## Política de supervisión
+
+`SupervisorPolicy` con defaults operativos y overrides por entorno para tests:
+
+| Parámetro | Default | Override |
+|---|---|---|
+| `health_interval` | 30 s | `HLI_MCH_HEALTH_INTERVAL_MS` |
+| `health_timeout` | 5 s | `HLI_MCH_HEALTH_TIMEOUT_MS` |
+| `degraded_after` | 2 | `HLI_MCH_DEGRADED_AFTER` |
+| `restart_after` | 3 | `HLI_MCH_RESTART_AFTER` |
+| `max_restarts` | 3 | `HLI_MCH_MAX_RESTARTS` |
+| `initial_backoff` | 1 s | `HLI_MCH_BACKOFF_MS` |
+
+Cada proceso tiene `process_generation`; cada reinicio la incrementa. `mch status` devuelve estado, PID, generación, fallos de health y último error.
