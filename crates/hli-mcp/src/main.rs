@@ -3,7 +3,7 @@
 //! Baseline: 2025-11-25 (`initialize`) y `server/discover` para clientes modernos.
 //! No mantiene estado de protocolo: cada tool call lleva sus identificadores.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
@@ -75,17 +75,23 @@ fn read_message(r: &mut impl BufRead) -> std::io::Result<Option<String>> {
     if len == 0 {
         return Ok(None);
     }
+    if len > 8 * 1024 * 1024 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame MCP demasiado grande",
+        ));
+    }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(Some(String::from_utf8_lossy(&buf).to_string()))
 }
 
 fn write_message(w: &mut impl Write, body: &str) -> std::io::Result<()> {
-    write!(w, "Content-Length: {}\r\n\r\n{}", body.as_bytes().len(), body)?;
+    write!(w, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
     w.flush()
 }
 
-fn handle(method: &str, params: &Value, home: &PathBuf) -> Result<Value, (i64, String)> {
+fn handle(method: &str, params: &Value, home: &std::path::Path) -> Result<Value, (i64, String)> {
     match method {
         "initialize" => Ok(json!({
             "protocolVersion": "2025-11-25",
@@ -119,7 +125,9 @@ fn handle(method: &str, params: &Value, home: &PathBuf) -> Result<Value, (i64, S
         "resources/read" => {
             let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
             let out = read_resource(uri, home)?;
-            Ok(json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": out.to_string()}]}))
+            Ok(
+                json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": out.to_string()}]}),
+            )
         }
         "prompts/list" => Ok(json!({"prompts": [
             {"name": "hli.plan", "description": "Planificar sobre un workspace HLI"},
@@ -138,38 +146,81 @@ fn tools() -> Value {
         })
     };
     json!([
-        t("workspace_list", "Lista los workspaces", json!({}), json!([])),
-        t("thread_read", "Lista los threads de un workspace",
-          json!({"workspace_id": {"type": "string"}}), json!(["workspace_id"])),
-        t("memory_search", "Busca memorias activas",
-          json!({"workspace_id": {"type": "string"}, "query": {"type": "string"}}),
-          json!(["workspace_id", "query"])),
-        t("memory_commit", "Registra una memoria",
-          json!({"workspace_id": {"type": "string"}, "type": {"type": "string"},
+        t(
+            "workspace_list",
+            "Lista los workspaces",
+            json!({}),
+            json!([])
+        ),
+        t(
+            "thread_read",
+            "Lista los threads de un workspace",
+            json!({"workspace_id": {"type": "string"}}),
+            json!(["workspace_id"])
+        ),
+        t(
+            "memory_search",
+            "Busca memorias activas",
+            json!({"workspace_id": {"type": "string"}, "query": {"type": "string"}}),
+            json!(["workspace_id", "query"])
+        ),
+        t(
+            "memory_commit",
+            "Registra una memoria",
+            json!({"workspace_id": {"type": "string"}, "type": {"type": "string"},
                  "content": {"type": "string"}, "scope": {"type": "string"}}),
-          json!(["workspace_id", "type", "content"])),
-        t("run_start", "Inicia un run en una rama",
-          json!({"workspace_id": {"type": "string"}, "thread_id": {"type": "string"},
+            json!(["workspace_id", "type", "content"])
+        ),
+        t(
+            "run_start",
+            "Inicia un run en una rama",
+            json!({"workspace_id": {"type": "string"}, "thread_id": {"type": "string"},
                  "branch_id": {"type": "string"}, "prompt": {"type": "string"}}),
-          json!(["workspace_id", "thread_id", "branch_id", "prompt"])),
-        t("run_get", "Obtiene un run y su manifiesto",
-          json!({"run_id": {"type": "string"}}), json!(["run_id"])),
-        t("artifact_read", "Lee un artefacto (texto o hex)",
-          json!({"artifact_id": {"type": "string"}}), json!(["artifact_id"])),
-        t("module_list", "Lista módulos instalados", json!({}), json!([])),
+            json!(["workspace_id", "thread_id", "branch_id", "prompt"])
+        ),
+        t(
+            "run_get",
+            "Obtiene un run y su manifiesto",
+            json!({"run_id": {"type": "string"}}),
+            json!(["run_id"])
+        ),
+        t(
+            "artifact_read",
+            "Lee un artefacto (texto o hex)",
+            json!({"artifact_id": {"type": "string"}}),
+            json!(["artifact_id"])
+        ),
+        t(
+            "module_list",
+            "Lista módulos instalados",
+            json!({}),
+            json!([])
+        ),
         t("mch_list", "Lista instancias MCH", json!({}), json!([])),
-        t("mch_inspect", "Inspecciona una instancia MCH",
-          json!({"name": {"type": "string"}}), json!(["name"])),
-        t("mch_invoke", "Invoca una operación de una instancia MCH",
-          json!({"name": {"type": "string"}, "operation": {"type": "string"},
-                 "arguments": {"type": "object"}}), json!(["name", "operation"]))
+        t(
+            "mch_inspect",
+            "Inspecciona una instancia MCH",
+            json!({"name": {"type": "string"}}),
+            json!(["name"])
+        ),
+        t(
+            "mch_invoke",
+            "Invoca una operación de una instancia MCH",
+            json!({"name": {"type": "string"}, "operation": {"type": "string"},
+                 "arguments": {"type": "object"}}),
+            json!(["name", "operation"])
+        )
     ])
 }
 
-fn call_tool(name: &str, args: &Value, home: &PathBuf) -> Result<Value, (i64, String)> {
+fn call_tool(name: &str, args: &Value, home: &std::path::Path) -> Result<Value, (i64, String)> {
     match name {
         "workspace_list" => daemon(home, "workspace.list", json!({})),
-        "thread_read" => daemon(home, "thread.list", json!({"workspace_id": args["workspace_id"]})),
+        "thread_read" => daemon(
+            home,
+            "thread.list",
+            json!({"workspace_id": args["workspace_id"]}),
+        ),
         "memory_search" => daemon(
             home,
             "memory.search",
@@ -196,21 +247,33 @@ fn call_tool(name: &str, args: &Value, home: &PathBuf) -> Result<Value, (i64, St
             }),
         ),
         "run_get" => daemon(home, "run.get", json!({"run_id": args["run_id"]})),
-        "artifact_read" => daemon(home, "artifact.read", json!({"artifact_id": args["artifact_id"]})),
+        "artifact_read" => daemon(
+            home,
+            "artifact.read",
+            json!({"artifact_id": args["artifact_id"]}),
+        ),
         "module_list" => daemon(home, "module.list", json!({})),
         "mch_list" => daemon(home, "mch.list", json!({})),
         "mch_inspect" => daemon(home, "mch.inspect", json!({"name": args["name"]})),
-        "mch_invoke" => daemon(home, "mch.invoke", json!({
-            "name": args["name"], "operation": args["operation"],
-            "arguments": args.get("arguments").cloned().unwrap_or(json!({}))
-        })),
+        "mch_invoke" => daemon(
+            home,
+            "mch.invoke",
+            json!({
+                "name": args["name"], "operation": args["operation"],
+                "arguments": args.get("arguments").cloned().unwrap_or(json!({}))
+            }),
+        ),
         other => Err((-32602, format!("tool desconocida: {other}"))),
     }
 }
 
-fn read_resource(uri: &str, home: &PathBuf) -> Result<Value, (i64, String)> {
-    let rest = uri.strip_prefix("hli://").ok_or((-32602, "uri inválida".to_string()))?;
-    let (kind, id) = rest.split_once('/').ok_or((-32602, "uri inválida".to_string()))?;
+fn read_resource(uri: &str, home: &std::path::Path) -> Result<Value, (i64, String)> {
+    let rest = uri
+        .strip_prefix("hli://")
+        .ok_or((-32602, "uri inválida".to_string()))?;
+    let (kind, id) = rest
+        .split_once('/')
+        .ok_or((-32602, "uri inválida".to_string()))?;
     match kind {
         "workspace" => daemon(home, "workspace.get", json!({"workspace_id": id})),
         "thread" => daemon(home, "thread.get", json!({"thread_id": id})),
@@ -222,27 +285,34 @@ fn read_resource(uri: &str, home: &PathBuf) -> Result<Value, (i64, String)> {
     }
 }
 
-fn daemon(home: &PathBuf, cmd: &str, args: Value) -> Result<Value, (i64, String)> {
+fn daemon(home: &std::path::Path, cmd: &str, args: Value) -> Result<Value, (i64, String)> {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpStream;
 
     let info = std::fs::read_to_string(home.join("daemon.json"))
         .map_err(|_| (-32000, "daemon no está en marcha".to_string()))?;
     let v: Value = serde_json::from_str(&info).map_err(|e| (-32000, e.to_string()))?;
-    let port = v["port"].as_u64().ok_or((-32000, "daemon.json sin puerto".to_string()))? as u16;
+    let port = v["port"]
+        .as_u64()
+        .ok_or((-32000, "daemon.json sin puerto".to_string()))? as u16;
     let mut s = TcpStream::connect(("127.0.0.1", port)).map_err(|e| (-32000, e.to_string()))?;
     let req = json!({"id": "mcp", "cmd": cmd, "args": args});
     writeln!(s, "{}", req).map_err(|e| (-32000, e.to_string()))?;
     s.flush().map_err(|e| (-32000, e.to_string()))?;
     let mut line = String::new();
-    BufReader::new(s).read_line(&mut line).map_err(|e| (-32000, e.to_string()))?;
+    BufReader::new(s)
+        .read_line(&mut line)
+        .map_err(|e| (-32000, e.to_string()))?;
     let resp: Value = serde_json::from_str(&line).map_err(|e| (-32000, e.to_string()))?;
     if resp["ok"].as_bool() == Some(true) {
         Ok(resp["data"].clone())
     } else {
         Err((
             -32000,
-            resp["error"]["message"].as_str().unwrap_or("error del daemon").to_string(),
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or("error del daemon")
+                .to_string(),
         ))
     }
 }
