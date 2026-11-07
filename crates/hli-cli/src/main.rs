@@ -283,6 +283,10 @@ fn run(args: &[String]) -> Result<(), String> {
                     "base_url": flag(args, "--base-url"),
                     "secret": flag(args, "--secret"),
                     "artifact_id": flag(args, "--artifact"),
+                    "no_memories": args.contains(&"--no-memories".to_string()),
+                    "no_events": args.contains(&"--no-events".to_string()),
+                    "no_slices": args.contains(&"--no-slices".to_string()),
+                    "no_policy": args.contains(&"--no-policy".to_string()),
                     "temperature": flag(args, "--temperature").and_then(|v| v.parse::<f64>().ok()),
                     "max_tokens": flag(args, "--max-tokens").and_then(|v| v.parse::<i64>().ok())
                 }),

@@ -356,8 +356,9 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
 
             // La trayectoria visible completa queda como evidencia; el contexto se presupuesta.
             manifest.visible_event_ids = visible.iter().map(|e| e.event_id.clone()).collect();
+            let no_policy = args.get("no_policy").and_then(|v| v.as_bool()).unwrap_or(false);
             let task = hli_agent::classify_task(&prompt);
-            match task {
+            if !no_policy { match task {
                 "memory_lookup" => {
                     // La trayectoria visible se conserva; el presupuesto recorta por tamaño.
                     manifest.recent_events.truncate(2);
@@ -371,7 +372,7 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                     manifest.recent_events.truncate(2);
                     manifest.memories.truncate(2);
                 }
-            }
+            } }
             for m in manifest.memories.iter_mut() {
                 if let Some(o) = m.as_object_mut() {
                     if let Some(c) = o.get("content").and_then(|v| v.as_str()) {
@@ -384,10 +385,21 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             }
 
             // Slices de artefacto: evidencia seleccionada, persistida y verificable.
-            let slice_pairs = match args.get("artifact_id").and_then(|v| v.as_str()) {
-                Some(aid) => r.slices_for_artifact(aid)?,
-                None => vec![],
+            let no_slices = args.get("no_slices").and_then(|v| v.as_bool()).unwrap_or(false);
+            let slice_pairs = if no_slices {
+                vec![]
+            } else {
+                match args.get("artifact_id").and_then(|v| v.as_str()) {
+                    Some(aid) => r.slices_for_artifact(aid)?,
+                    None => vec![],
+                }
             };
+            if args.get("no_memories").and_then(|v| v.as_bool()).unwrap_or(false) {
+                manifest.memories.clear();
+            }
+            if args.get("no_events").and_then(|v| v.as_bool()).unwrap_or(false) {
+                manifest.recent_events.clear();
+            }
             manifest.artifact_slices = slice_pairs
                 .iter()
                 .map(|(sl, _)| serde_json::to_value(sl).unwrap_or(json!({})))

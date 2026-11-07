@@ -41,9 +41,11 @@ Cada llamada real queda ligada a:
 - `Reproducibility Receipt` con proveedor, modelo, adaptador, usage, coste y `result_hash`;
 - `provider.handoff` cuando cambia el proveedor del thread.
 
-**Garantía de payload:** antes de llamar al proveedor, el daemon verifica
-`hash(JCS(user_input)) == manifest.user_input.content_hash`. Si no coincide, el run falla con
-`conflict`. El proveedor no puede recibir contenido distinto del manifiesto.
+**Garantía de payload (vigente):** antes de llamar al proveedor, el daemon reconstruye el
+`ModelRequestPayload` completo (`instructions`, `user_input`, `memories`, `recent_events`,
+`summaries`, `artifact_slices`) desde el manifiesto y los slices persistidos, y verifica
+`payload_hash = SHA-256(JCS(payload))`. Si no coincide, el run falla con `conflict`.
+`user_input.content_hash` se conserva solo como verificación interna de ese campo.
 
 ## Secretos
 
@@ -67,7 +69,7 @@ cambian; las credenciales son por llamada, no por sesión.
 
 - El proveedor recibe un **payload canónico** (`instructions`, `user_input`, `memories`,
   `recent_events`, `summaries`, `artifact_slices`), no el prompt suelto.
-- `payload_hash = SHA-256(JCS(payload))` se persiste en el manifiesto antes de `model.requested`.
+- `payload_hash = SHA-256(JCS(payload completo))` se persiste en el manifiesto antes de `model.requested`; es la garantía vigente. `user_input.content_hash` queda como verificación interna del campo.
 - Antes de llamar, el daemon reconstruye el payload desde el manifiesto y los slices persistidos;
   si el hash no coincide, el run falla.
 - `model.requested` incluye `payload_hash`.
