@@ -1,6 +1,6 @@
 # HLI — Release blockers
 
-**Commit auditado:** `a740d34` · **Fecha:** 2026-11-07
+**Código auditado:** `6a869d4` · **Fecha:** 2026-11-07 · **Veredicto:** RC READY WITH ACCEPTED LIMITATIONS
 
 ## Bloqueantes corregidos
 
@@ -25,31 +25,36 @@
 - `cargo test --workspace --release`: 73 en verde (requiere `cargo build --release --workspace` previo, porque los e2e lanzan el binario del daemon).
 - Gates 0.3 y 0.4: ok.
 
-## Bloqueantes abiertos
+## Auditoría de dependencias
 
-Ninguno **critical** o **high** reproducible en el código actual.
+`cargo audit` (cargo-audit 0.22.2): **0 vulnerabilidades**, 3 avisos.
+`cargo deny check` (cargo-deny 0.20.2): **advisories ok, bans ok, licenses ok, sources ok**, con los tres avisos ignorados de forma justificada en `deny.toml`.
 
-## Deuda no bloqueante
+| ID | Crate | Tipo | Dependencia | Alcanzabilidad | Parche | Decisión |
+|---|---|---|---|---|---|---|
+| RUSTSEC-2024-0436 | paste 1.0.15 | unmaintained | ratatui 0.29 → hli-tui | proc-macro de compilación; HLI no lo invoca | no; crate archivado, alternativa `pastey` vía ratatui nuevo | aceptar |
+| RUSTSEC-2026-0002 | lru 0.12.5 | unsound (`IterMut`) | ratatui 0.29 → hli-tui | HLI no usa `LruCache` ni `IterMut`; uso interno de ratatui no reproducido | no en 0.12; requiere ratatui con lru 0.19 | aceptar con revisión |
+| RUSTSEC-2026-0253 | lru 0.12.5 | unsound (`pop()`) | ratatui 0.29 → hli-tui | HLI no llama `LruCache::pop`; uso interno no reproducido | no en 0.12 | aceptar con revisión |
 
-- `cargo audit` y `cargo deny` no instalados; no se ejecutaron.
-- Sin `proptest`; propiedades cubiertas por pruebas dirigidas.
-- `artifact.put` no confina la ruta de origen (operación local del usuario).
-- Sin límite de tamaño en `read_container`/`import` (un paquete enorme consume memoria).
-- `shell.execute` sigue denegado; no hay sandbox de SO.
-- TUI sin streaming; polling 500 ms/1 s/4 s.
-- Preferencias TOML no implementadas.
-- `Alt+1..6` documentado, no implementado.
+No se actualizaron dependencias de forma masiva. Los tres avisos son transitivos de `ratatui 0.29` y solo afectan a `hli-tui`; se revisan al actualizar ratatui, no antes.
+
+## Limitaciones aceptadas
+
+- **Gate visual manual de la TUI:** guía y entorno preparados (`docs/TUI-MANUAL-GATE.md`), pero la ejecución en Windows Terminal depende del usuario. No se declara pasado.
+- **Avisos transitivos de ratatui:** dos `unsound` en `lru 0.12.5` y uno de mantenimiento en `paste`, sin parche dentro de la rama 0.12; no alcanzables directamente.
+- **`artifact.put`:** no confina la ruta de origen (operación local del usuario).
+- **`read_container`/`import`:** sin límite de tamaño; un paquete enorme consume memoria.
+- **`shell.execute`:** denegado; no hay sandbox de SO.
+- **TUI:** sin streaming; polling 500 ms / 1 s / 4 s.
+- **Preferencias TOML:** no implementadas.
+- **`Alt+1..6`:** documentado, no implementado.
 
 ## No evaluable
 
-- Gate visual de la TUI en terminal real: el entorno no ofrece TTY estable.
-- Integración con un harness anterior: su configuración no expone MCP en 0.2.1-rc.5.
-- Auditoría de dependencias de terceros.
+- Auditoría de dependencias de terceros más allá de RustSec (sin SBOM ni análisis de código de crates).
+- Integración con un harness anterior: su configuración 0.2.1-rc.5 no expone MCP.
+- Gate visual en terminal real: pendiente de ejecución manual.
 
 ## Recomendación
 
-**Release candidate: sí, con salvedades.**
-
-No queda ningún bug crítico o alto reproducible. Las salvedades son de evaluación, no de código:
-no se ejecutaron `cargo audit`/`deny`, no se probó `--release` y el gate visual de la TUI sigue
-pendiente de una terminal real. Para publicar, ejecutar esos tres puntos y repetir los gates.
+**RC READY WITH ACCEPTED LIMITATIONS.** No queda ningún bug crítico o alto reproducible. Las limitaciones son de evaluación (gate visual manual) y de dependencias transitivas sin parche en la rama actual. Esta comprobación autoriza una Release Candidate, no una publicación estable.

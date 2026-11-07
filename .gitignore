@@ -6,3 +6,4 @@
 *.hliar
 daemon.json
 daemon.log
+dist/

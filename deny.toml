@@ -1,0 +1,31 @@
+# Configuración de cargo-deny para HLI 0.5.
+# Las advisories ignoradas son transitivas de ratatui 0.29 y no alcanzables
+# desde el código de HLI; se revisan al actualizar ratatui.
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste está sin mantenimiento; es proc-macro transitiva de ratatui 0.29, sin vulnerabilidad conocida" },
+    { id = "RUSTSEC-2026-0002", reason = "lru 0.12.5 unsound en IterMut; HLI no usa LruCache ni IterMut directamente" },
+    { id = "RUSTSEC-2026-0253", reason = "lru 0.12.5 unsound en pop(); HLI no usa LruCache::pop directamente" },
+]
+
+[licenses]
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
