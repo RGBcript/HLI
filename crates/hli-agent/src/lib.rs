@@ -222,6 +222,7 @@ pub fn build_manifest(
         instructions: instructions.clone(),
         memories: memories.to_vec(),
         recent_events: recent,
+        visible_event_ids: Vec::new(),
         summaries: vec![],
         artifact_slices: vec![],
         excluded,

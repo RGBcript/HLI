@@ -354,10 +354,12 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let memories = r.search_memories(&ws, &prompt, 5)?;
             let mut manifest = build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
 
-            // Política adaptativa: no todos los contextos llevan lo mismo.
+            // La trayectoria visible completa queda como evidencia; el contexto se presupuesta.
+            manifest.visible_event_ids = visible.iter().map(|e| e.event_id.clone()).collect();
             let task = hli_agent::classify_task(&prompt);
             match task {
                 "memory_lookup" => {
+                    // La trayectoria visible se conserva; el presupuesto recorta por tamaño.
                     manifest.recent_events.truncate(2);
                     manifest.memories.truncate(3);
                 }

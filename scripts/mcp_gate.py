@@ -110,14 +110,14 @@ def main():
         run_b = run(env, "run", "start", "--workspace", ws, "--thread", th,
                     "--branch", b["id"], "--prompt", "hola")
         got_b = run(env, "run", "get", run_b["id"])
-        visible_b = [e["event_id"] for e in got_b["manifest"]["recent_events"]]
+        visible_b = got_b["manifest"]["visible_event_ids"]
         assert a_ev["event_id"] in visible_b, "ancestor_event_is_included"
         assert b_ev["event_id"] in visible_b, "own_event_included"
         assert c_ev["event_id"] not in visible_b, "sibling_branch_event_is_excluded"
 
         run_a = run(env, "run", "start", "--workspace", ws, "--thread", th,
                     "--branch", a["id"], "--prompt", "hola")
-        visible_a = [e["event_id"] for e in run(env, "run", "get", run_a["id"])["manifest"]["recent_events"]]
+        visible_a = run(env, "run", "get", run_a["id"])["manifest"]["visible_event_ids"]
         assert b_ev["event_id"] not in visible_a, "descendant_event_is_excluded"
 
         # post_revision: nuevo evento en B después de crear el run
@@ -125,7 +125,7 @@ def main():
                      "--branch", b["id"], "--prompt", "hola")
         late = run(env, "event", "append", "--type", "late", "--payload", '{"n":4}',
                    "--workspace", ws, "--thread", th, "--branch", b["id"])
-        visible_b2 = [e["event_id"] for e in run(env, "run", "get", run_b2["id"])["manifest"]["recent_events"]]
+        visible_b2 = run(env, "run", "get", run_b2["id"])["manifest"]["visible_event_ids"]
         assert late["event_id"] not in visible_b2, "post_revision_event_is_excluded"
 
         # --- prompt y memoria en el manifiesto ---
