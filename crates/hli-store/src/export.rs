@@ -28,15 +28,10 @@ pub fn container_bytes(files: &[ArchiveFile]) -> Vec<u8> {
 }
 
 pub fn safe_rel_path(path: &str) -> bool {
-    if path.is_empty() || path.contains("..") {
+    if path.is_empty() {
         return false;
     }
-    if path
-        .as_bytes()
-        .first()
-        .map(|b| *b == 47 || *b == 92)
-        .unwrap_or(true)
-    {
+    if path.starts_with('/') || path.starts_with('\\') {
         return false;
     }
     if path.len() >= 2 && path.as_bytes()[1] == b':' {
@@ -45,16 +40,55 @@ pub fn safe_rel_path(path: &str) -> bool {
     if path.contains("//") || path.contains("\\\\") {
         return false;
     }
+    for comp in path.split(['/', '\\']) {
+        if comp.is_empty() || comp == "." || comp == ".." {
+            return false;
+        }
+    }
     true
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ContainerLimits {
+    pub total_bytes: u64,
+    pub entry_bytes: u64,
+    pub entries: usize,
+}
+
+pub const HLIMOD_LIMITS: ContainerLimits = ContainerLimits {
+    total_bytes: 256 * 1024 * 1024,
+    entry_bytes: 128 * 1024 * 1024,
+    entries: 10_000,
+};
+
+pub const HLIAR_LIMITS: ContainerLimits = ContainerLimits {
+    total_bytes: 2 * 1024 * 1024 * 1024,
+    entry_bytes: 128 * 1024 * 1024,
+    entries: 10_000,
+};
+
 pub fn read_container(bytes: &[u8]) -> Result<Vec<ArchiveFile>> {
+    read_container_limited(bytes, HLIAR_LIMITS)
+}
+
+pub fn read_container_limited(bytes: &[u8], limits: ContainerLimits) -> Result<Vec<ArchiveFile>> {
+    if bytes.len() as u64 > limits.total_bytes {
+        return Err(HliError::invalid(format!(
+            "contenedor excede el limite total: {} > {}",
+            bytes.len(),
+            limits.total_bytes
+        )));
+    }
     if !bytes.starts_with(MAGIC) {
         return Err(HliError::invalid("contenedor hliar: firma incorrecta"));
     }
     let mut i = MAGIC.len();
     let mut files = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     while i < bytes.len() {
+        if files.len() >= limits.entries {
+            return Err(HliError::invalid("contenedor excede el limite de entradas"));
+        }
         let nl = bytes[i..]
             .iter()
             .position(|b| *b == b'\n')
@@ -63,13 +97,19 @@ pub fn read_container(bytes: &[u8]) -> Result<Vec<ArchiveFile>> {
             .map_err(|_| HliError::invalid("contenedor hliar: cabecera no UTF-8"))?;
         let mut parts = header.splitn(3, ' ');
         if parts.next() != Some("FILE") {
-            return Err(HliError::invalid("contenedor hliar: sección desconocida"));
+            return Err(HliError::invalid("contenedor hliar: seccion desconocida"));
         }
         let len: usize = parts
             .next()
             .ok_or_else(|| HliError::invalid("contenedor hliar: longitud ausente"))?
             .parse()
-            .map_err(|_| HliError::invalid("contenedor hliar: longitud inválida"))?;
+            .map_err(|_| HliError::invalid("contenedor hliar: longitud invalida"))?;
+        if len as u64 > limits.entry_bytes {
+            return Err(HliError::invalid(format!(
+                "entrada excede el limite: {len} > {}",
+                limits.entry_bytes
+            )));
+        }
         let path = parts
             .next()
             .ok_or_else(|| HliError::invalid("contenedor hliar: ruta ausente"))?
@@ -77,6 +117,15 @@ pub fn read_container(bytes: &[u8]) -> Result<Vec<ArchiveFile>> {
         if !safe_rel_path(&path) {
             return Err(HliError::invalid(format!(
                 "ruta insegura en contenedor: {path}"
+            )));
+        }
+        #[cfg(windows)]
+        let key = path.to_ascii_lowercase();
+        #[cfg(not(windows))]
+        let key = path.clone();
+        if !seen.insert(key) {
+            return Err(HliError::invalid(format!(
+                "entrada duplicada en contenedor: {path}"
             )));
         }
         let start = i + nl + 1;
@@ -153,6 +202,57 @@ mod tests {
     }
 }
 
+#[test]
+fn rejects_ambiguous_dot_component() {
+    assert!(!safe_rel_path("a/./b"));
+    assert!(!safe_rel_path("a/../b"));
+}
+
+#[test]
+fn rejects_duplicate_entries() {
+    let files = vec![
+        ArchiveFile {
+            path: "same".into(),
+            bytes: b"x".to_vec(),
+        },
+        ArchiveFile {
+            path: "same".into(),
+            bytes: b"y".to_vec(),
+        },
+    ];
+    let raw = container_bytes(&files);
+    assert!(read_container(&raw).is_err());
+}
+
+#[test]
+fn rejects_entry_over_limit() {
+    let files = vec![ArchiveFile {
+        path: "a".into(),
+        bytes: vec![0u8; 16],
+    }];
+    let raw = container_bytes(&files);
+    let limits = ContainerLimits {
+        total_bytes: 1024,
+        entry_bytes: 8,
+        entries: 10,
+    };
+    assert!(read_container_limited(&raw, limits).is_err());
+}
+
+#[test]
+fn rejects_total_over_limit() {
+    let files = vec![ArchiveFile {
+        path: "a".into(),
+        bytes: vec![0u8; 32],
+    }];
+    let raw = container_bytes(&files);
+    let limits = ContainerLimits {
+        total_bytes: 16,
+        entry_bytes: 64,
+        entries: 10,
+    };
+    assert!(read_container_limited(&raw, limits).is_err());
+}
 #[cfg(test)]
 mod safety_tests {
     use super::*;

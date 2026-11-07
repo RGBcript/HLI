@@ -889,8 +889,13 @@ fn dispatch(
         }
         "module.install" => {
             let path = PathBuf::from(s(args, "path")?);
+            let meta = std::fs::metadata(&path)?;
+            if meta.len() > hli_store::export::HLIMOD_LIMITS.total_bytes {
+                return Err(HliError::invalid("modulo excede el limite de 256 MiB"));
+            }
             let raw = std::fs::read(&path)?;
-            let files = hli_store::export::read_container(&raw)?;
+            let files =
+                hli_store::export::read_container_limited(&raw, hli_store::export::HLIMOD_LIMITS)?;
             let get = |n: &str| files.iter().find(|f| f.path == n).map(|f| f.bytes.clone());
             let manifest_bytes = get("manifest.json")
                 .ok_or_else(|| HliError::invalid("paquete sin manifest.json"))?;

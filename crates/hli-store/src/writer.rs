@@ -1676,9 +1676,13 @@ impl State {
         })
     }
 
-    fn import(&mut self, archive: &PathBuf) -> Result<ImportReport> {
+    fn import(&mut self, archive: &std::path::Path) -> Result<ImportReport> {
+        let meta = std::fs::metadata(archive)?;
+        if meta.len() > export::HLIAR_LIMITS.total_bytes {
+            return Err(HliError::invalid("archivo excede el limite de 2 GiB"));
+        }
         let raw = std::fs::read(archive)?;
-        let files = export::read_container(&raw)?;
+        let files = export::read_container_limited(&raw, export::HLIAR_LIMITS)?;
         let manifest_bytes = files
             .iter()
             .find(|f| f.path == "manifest.json")
