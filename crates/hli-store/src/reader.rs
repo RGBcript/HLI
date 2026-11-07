@@ -446,6 +446,22 @@ impl Reader {
         })
     }
 
+    pub fn last_provider(&self, thread_id: &str) -> Result<Option<String>> {
+        self.with(|c| {
+            let body: Option<String> = c
+                .query_row(
+                    "SELECT receipt_json FROM runs WHERE thread_id = ?1 AND receipt_json IS NOT NULL
+                     ORDER BY started_at DESC LIMIT 1",
+                    [thread_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(body
+                .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+                .and_then(|v| v["provider"].as_str().map(str::to_string)))
+        })
+    }
+
     pub fn run(&self, id: &str) -> Result<Run> {
         self.with(|c| {
             c.query_row(

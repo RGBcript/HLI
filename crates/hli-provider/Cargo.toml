@@ -1,0 +1,11 @@
+[package]
+name = "hli-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hli-core = { path = "../hli-core" }
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }

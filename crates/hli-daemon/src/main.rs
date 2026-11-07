@@ -14,6 +14,7 @@ use hli_core::{time::now_iso, HliError};
 mod supervisor;
 
 use hli_agent::{build_manifest, execute_tool, permission_for, Permission, Provider, SimProvider};
+use hli_provider::ChatProvider;
 use hli_store::{Reader, Store, Writer};
 use serde_json::{json, Value};
 
@@ -116,15 +117,21 @@ fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>, home: PathBuf)
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_receipt(
-    provider: &SimProvider,
+    provider: &str,
+    model: &str,
+    adapter: &str,
     manifest: &hli_core::model::ContextManifest,
     result: &Value,
+    usage: &hli_provider::Usage,
+    cost: &Value,
+    secret_handles: Vec<Value>,
 ) -> hli_core::model::Receipt {
     hli_core::model::Receipt {
-        provider: provider.name().to_string(),
-        model: provider.model().to_string(),
-        adapter_version: "0.2.0".into(),
+        provider: provider.to_string(),
+        model: model.to_string(),
+        adapter_version: adapter.to_string(),
         context_manifest: manifest.manifest_id.clone(),
         tool_schemas: vec!["filesystem.read".into(), "filesystem.write".into()],
         effective_permissions: json!({
@@ -133,15 +140,38 @@ fn make_receipt(
             "shell.execute": "deny"
         }),
         nonsecret_environment: json!({"os": std::env::consts::OS, "arch": std::env::consts::ARCH}),
-        secret_handles: vec![],
+        secret_handles,
         input_artifacts: vec![],
         module_versions: vec![],
         sampling: json!({"temperature": 0.0, "seed": 0}),
         result_artifacts: vec![],
-        sandbox: json!({"mode": "none", "note": "0.2 no implementa sandbox; shell denegado"}),
+        sandbox: json!({"mode": "none", "note": "sin sandbox de SO"}),
+        usage: serde_json::to_value(usage).unwrap_or(json!({})),
+        cost: cost.clone(),
         result_hash: hli_core::canon::hash_canonical(result),
         terminal_event: None,
     }
+}
+
+fn read_secret(home: &std::path::Path, handle: &str) -> Result<(String, String), HliError> {
+    let env_key = format!("HLI_SECRET_{}", handle.to_uppercase().replace('-', "_"));
+    let value = std::env::var(&env_key).ok().or_else(|| {
+        std::fs::read_to_string(home.join("secrets").join(handle)).ok().map(|s| s.trim().to_string())
+    });
+    let value = value.ok_or_else(|| HliError::not_found(&format!("secreto {handle}")))?;
+    let mut h = sha2::Sha256::new();
+    use sha2::Digest;
+    h.update(value.as_bytes());
+    let d = h.finalize();
+    Ok((value, format!("v{}", hex::encode(&d[..4]))))
+}
+
+fn load_price(home: &std::path::Path, provider: &str, model: &str) -> Option<hli_provider::Price> {
+    let text = std::fs::read_to_string(home.join("prices.yaml")).ok()?;
+    let prices = hli_provider::parse_prices_yaml(&text);
+    prices.into_iter().find(|p| {
+        (p.provider == provider || p.provider == "*") && (p.model == model || p.model == "*")
+    })
 }
 
 fn s(args: &Value, key: &str) -> Result<String, HliError> {
@@ -255,55 +285,120 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let br = s(args, "branch_id")?;
             let prompt = s(args, "prompt")?;
             let budget = args.get("budget_tokens").and_then(|v| v.as_i64()).unwrap_or(8_192);
+            let provider_name = args.get("provider").and_then(|v| v.as_str()).unwrap_or("sim").to_string();
+            let default_model = match provider_name.as_str() {
+                "ollama" => "gemma4:31b-cloud",
+                "openai" => "gpt-4o-mini",
+                _ => "sim-1",
+            };
+            let model = args.get("model").and_then(|v| v.as_str()).unwrap_or(default_model).to_string();
+            let base_url = args.get("base_url").and_then(|v| v.as_str()).unwrap_or(
+                if provider_name == "ollama" { "http://127.0.0.1:11434" } else { "https://api.openai.com/v1" }
+            ).to_string();
+            let timeout = args.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(120);
+            let temperature = args.get("temperature").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let max_tokens = args.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(256);
+
+            let mut secret_handles: Vec<Value> = Vec::new();
+            let mut api_key = String::new();
+            if provider_name == "openai" {
+                let handle = args.get("secret").and_then(|v| v.as_str())
+                    .ok_or_else(|| HliError::invalid("openai requiere --secret HANDLE"))?;
+                let (value, version) = read_secret(home, handle)?;
+                api_key = value;
+                secret_handles.push(json!({"id": handle, "version": version}));
+            }
 
             let run = w.create_run(&ws, &th, &br, &prompt)?;
             let ws_obj = r.workspace(&ws)?;
-            let instructions = ws_obj
-                .config
-                .get("instructions")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
+            let instructions = ws_obj.config.get("instructions")
+                .and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let visible = r.visible_events(&br, run.branch_revision)?;
             let memories = r.search_memories(&ws, &prompt, 5)?;
             let manifest = build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
             let manifest = w.save_manifest(manifest)?;
 
-            w.run_event(
-                &run.id,
-                "model.requested",
-                json!({"run_id": run.id, "manifest_id": manifest.manifest_id}),
-            )?;
+            let prev_provider = r.last_provider(&th).ok().flatten();
+            if prev_provider.as_deref() != Some(provider_name.as_str()) {
+                w.run_event(&run.id, "provider.handoff", json!({
+                    "run_id": run.id, "from": prev_provider,
+                    "to": provider_name, "model": model
+                }))?;
+            }
 
-            let provider = SimProvider;
-            let req = hli_agent::ProviderRequest {
-                run_id: run.id.clone(),
-                prompt: prompt.clone(),
-                manifest: manifest.clone(),
+            w.run_event(&run.id, "model.requested", json!({
+                "run_id": run.id, "manifest_id": manifest.manifest_id,
+                "provider": provider_name, "model": model
+            }))?;
+
+            let system = "Eres HLI. Responde en español, breve y factual.";
+            let system_owned = system.to_string();
+            let req = hli_provider::ChatRequest {
+                system: &system_owned,
+                user: &manifest.user_input.content,
+                temperature,
+                max_tokens,
             };
-            let resp = provider.complete(&req)?;
-            w.run_event(
-                &run.id,
-                "model.responded",
-                json!({"run_id": run.id, "text": resp.text}),
-            )?;
 
-            let mut result = json!({"text": resp.text, "manifest_id": manifest.manifest_id});
+            // Garantía: el proveedor recibe exactamente el contenido cubierto por el manifiesto.
+            if hli_core::canon::hash_canonical(&json!(req.user)) != manifest.user_input.content_hash {
+                return Err(HliError::conflict("el payload no coincide con el manifiesto"));
+            }
+
+            let mut tool_call = None;
+            let (text, usage, used_provider, used_model, adapter) = match provider_name.as_str() {
+                "sim" => {
+                    let p = SimProvider;
+                    let pr = hli_agent::ProviderRequest {
+                        run_id: run.id.clone(), prompt: prompt.clone(), manifest: manifest.clone(),
+                    };
+                    let resp = p.complete(&pr)?;
+                    tool_call = resp.tool_call;
+                    let u = hli_provider::Usage {
+                        input_tokens: hli_provider::estimate_tokens(&system_owned) + manifest.estimated_tokens,
+                        output_tokens: hli_provider::estimate_tokens(&resp.text),
+                        cached_tokens: 0,
+                        latency_first_token_ms: 0,
+                        latency_total_ms: 0,
+                        finish_reason: "stop".into(),
+                        raw_usage_available: false,
+                        usage_source: "estimated".into(),
+                    };
+                    (resp.text, u, "sim".to_string(), "sim-1".to_string(), "0.2.0".to_string())
+                }
+                "ollama" => {
+                    let p = hli_provider::OllamaProvider::new(&base_url, &model, timeout);
+                    let resp = p.chat(&req)?;
+                    (resp.text, resp.usage, resp.provider, resp.model, resp.adapter_version)
+                }
+                "openai" => {
+                    let p = hli_provider::OpenAiProvider::new(&base_url, &model, &api_key, timeout);
+                    let resp = p.chat(&req)?;
+                    (resp.text, resp.usage, resp.provider, resp.model, resp.adapter_version)
+                }
+                other => return Err(HliError::invalid(format!("proveedor desconocido: {other}"))),
+            };
+
+            let price = load_price(home, &used_provider, &used_model);
+            let cost = hli_provider::cost_of(price.as_ref(), &usage);
+            w.run_event(&run.id, "model.responded", json!({
+                "run_id": run.id, "provider": used_provider, "model": used_model,
+                "usage": usage, "cost": cost
+            }))?;
+
+            let mut result = json!({
+                "text": text, "manifest_id": manifest.manifest_id,
+                "provider": used_provider, "model": used_model
+            });
             let mut state = "completed";
 
-            if let Some(call) = resp.tool_call {
-                w.run_event(
-                    &run.id,
-                    "tool.requested",
-                    json!({"run_id": run.id, "tool": call.name, "arguments": call.arguments}),
-                )?;
+            if let Some(call) = tool_call {
+                w.run_event(&run.id, "tool.requested", json!({
+                    "run_id": run.id, "tool": call.name, "arguments": call.arguments
+                }))?;
                 match permission_for(&call.name) {
                     Permission::Deny => {
-                        w.run_event(
-                            &run.id,
-                            "tool.denied",
-                            json!({"run_id": run.id, "tool": call.name}),
-                        )?;
+                        w.run_event(&run.id, "tool.denied", json!({"run_id": run.id, "tool": call.name}))?;
                         state = "failed";
                         result["error"] = json!("herramienta denegada por política");
                     }
@@ -313,23 +408,21 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                     }
                     Permission::Allow => {
                         let outcome = execute_tool(std::path::Path::new(&ws_obj.root_path), &call);
-                        w.run_event(
-                            &run.id,
-                            "tool.completed",
-                            json!({"run_id": run.id, "tool": outcome.tool,
-                                   "status": outcome.status, "stdout": outcome.stdout,
-                                   "changed_files": outcome.changed_files,
-                                   "error": outcome.error}),
-                        )?;
+                        w.run_event(&run.id, "tool.completed", json!({
+                            "run_id": run.id, "tool": outcome.tool, "status": outcome.status,
+                            "stdout": outcome.stdout, "changed_files": outcome.changed_files,
+                            "error": outcome.error
+                        }))?;
                         result["observation"] = serde_json::to_value(&outcome)?;
-                        if outcome.status != "success" {
-                            state = "failed";
-                        }
+                        if outcome.status != "success" { state = "failed"; }
                     }
                 }
             }
 
-            let receipt = make_receipt(&provider, &manifest, &result);
+            let receipt = make_receipt(
+                &used_provider, &used_model, &adapter, &manifest, &result,
+                &usage, &cost, secret_handles,
+            );
             let done = w.finish_run(&run.id, state, Some(result), Some(receipt))?;
             Ok(serde_json::to_value(done)?)
         }
@@ -358,7 +451,13 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                 o.remove("pending_tool");
             }
             result["observation"] = serde_json::to_value(&outcome)?;
-            let receipt = make_receipt(&SimProvider, &manifest, &result);
+            let usage = hli_provider::Usage {
+                input_tokens: manifest.estimated_tokens, output_tokens: 0, cached_tokens: 0,
+                latency_first_token_ms: 0, latency_total_ms: 0, finish_reason: "stop".into(),
+                raw_usage_available: false, usage_source: "estimated".into(),
+            };
+            let cost = hli_provider::cost_of(None, &usage);
+            let receipt = make_receipt("sim", "sim-1", "0.2.0", &manifest, &result, &usage, &cost, vec![]);
             let state = if outcome.status == "success" { "completed" } else { "failed" };
             let done = w.finish_run(&run_id, state, Some(result), Some(receipt))?;
             Ok(serde_json::to_value(done)?)
@@ -371,6 +470,10 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
         }
         "run.list" => Ok(serde_json::to_value(r.runs(&s(args, "workspace_id")?)?)?),
         "manifest.get" => Ok(serde_json::to_value(r.manifest(&s(args, "manifest_id")?)?)?),
+        "prices.list" => {
+            let text = std::fs::read_to_string(home.join("prices.yaml")).unwrap_or_default();
+            Ok(serde_json::to_value(hli_provider::parse_prices_yaml(&text))?)
+        }
         "module.install" => {
             let path = PathBuf::from(s(args, "path")?);
             let raw = std::fs::read(&path)?;

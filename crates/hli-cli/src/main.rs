@@ -264,7 +264,15 @@ fn run(args: &[String]) -> Result<(), String> {
             let prompt = need_flag(args, "--prompt")?;
             let v = call(
                 "run.start",
-                json!({"workspace_id": ws, "thread_id": th, "branch_id": br, "prompt": prompt}),
+                json!({
+                    "workspace_id": ws, "thread_id": th, "branch_id": br, "prompt": prompt,
+                    "provider": flag(args, "--provider"),
+                    "model": flag(args, "--model"),
+                    "base_url": flag(args, "--base-url"),
+                    "secret": flag(args, "--secret"),
+                    "temperature": flag(args, "--temperature").and_then(|v| v.parse::<f64>().ok()),
+                    "max_tokens": flag(args, "--max-tokens").and_then(|v| v.parse::<i64>().ok())
+                }),
             )?;
             print_value(&v, output)
         }
@@ -280,6 +288,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let id = args.get(2).ok_or("falta run_id")?;
             print_value(&call("run.approve", json!({"run_id": id}))?, output)
         }
+        ("prices", Some("list")) => print_value(&call("prices.list", json!({}))?, output),
         ("manifest", Some("get")) => {
             let id = args.get(2).ok_or("falta manifest_id")?;
             print_value(&call("manifest.get", json!({"manifest_id": id}))?, output)
@@ -434,9 +443,10 @@ fn usage() -> Result<(), String> {
   hli event append --type T --payload JSON --workspace <id> [--thread ID] [--branch ID] [--idem K]
   hli event list --workspace <id> [--branch ID]
   hli artifact put <file> --workspace <id> | list --workspace <id>
-  hli run start --workspace <id> --thread <id> --branch <id> --prompt PROMPT 
+  hli run start --workspace <id> --thread <id> --branch <id> --prompt PROMPT [--provider sim|ollama|openai] [--model M] [--base-url U] [--secret HANDLE] 
   hli run get <run_id> | list --workspace <id> | approve <run_id>
   hli manifest get <manifest_id>
+  hli prices list
   hli module install <file.hlimod> | list | inspect <name> | test <name> | remove <name>
   hli mch create <name> [--module M] [--domain D] [--workspace W] | list | inspect <name>
   hli mch serve <name> | stop <name> | remove <name>

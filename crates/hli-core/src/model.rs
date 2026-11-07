@@ -182,6 +182,8 @@ pub struct Receipt {
     pub sampling: Value,
     pub result_artifacts: Vec<String>,
     pub sandbox: Value,
+    pub usage: Value,
+    pub cost: Value,
     pub result_hash: String,
     pub terminal_event: Option<String>,
 }
