@@ -83,3 +83,23 @@ Remove-Item Env:NO_COLOR
 - Paso, ancho×alto, texto esperado y texto observado.
 - Si hubo pánico: mensaje completo y si el terminal quedó en raw mode.
 - Si el daemon murió: `daemon status` y `daemon.log` de `$HLI_HOME`.
+
+## 6. Resultado firmable (obligatorio antes del tag)
+
+Rellena y firma esta sección tras ejecutar los 19 pasos:
+
+```text
+Terminal:
+Versión:                hli 0.9.0-beta.1
+Resoluciones probadas:
+Fecha:
+Commit:
+Pasos ejecutados:       19 / 19
+Resultado:              PENDIENTE / PASA / FALLA
+Observaciones:
+Firmado por:
+```
+
+Estado actual: **PENDIENTE**. El paquete Beta está listo y el gate automático
+puede estar verde, pero `beta_gate.ps1` mantiene `ok=false` y `tui_manual=false`
+hasta que esta sección esté firmada. No se crea el tag `v0.9.0-beta.1` sin ella.

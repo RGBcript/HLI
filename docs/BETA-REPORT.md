@@ -112,3 +112,25 @@ No se iniciaron migraciones en el bloque de firma.
 | Formatos | `.hliar` y `.hlimod` con versión explícita; futuras/desconocidas rechazadas |
 | Configuración | `providers.toml`, keys index, trust store y policy con `version`; secretos nunca en backups |
 | Limitaciones | sin downgrade automático; backups locales sin cifrar; migraciones no reescriben datos salvo defaults |
+
+## Distribución Beta 0.9.0-beta.1 (2026-11-07)
+
+| Dato | Valor |
+|---|---|
+| Versión | `0.9.0-beta.1` en workspace, crates, CLI/daemon/MCP y `hli-memory` |
+| Commit inicial del bloque | `cc6cea6` |
+| Commits del bloque | `legal: add Apache-2.0 licensing and notices`; `build: add Windows packaging and installer`; `ci: add Windows and Linux validation`; `docs: prepare HLI 0.9 beta documentation` |
+| Licencia | Apache-2.0 (`LICENSE`, `NOTICE`, inventario de 164 crates en `THIRD-PARTY-NOTICES.md`) |
+| Paquete | `dist/hli-0.9.0-beta.1-windows-x86_64/` con 53 archivos, `.hlimod` firmado (`signed-trusted`), clave pública y `checksums.sha256` verificado |
+| Instalador | por usuario, sin admin, checksums, PATH opcional, rollback y desinstalación que conserva datos |
+| Gate instalación | `ok: true` (checksums, install, versión, daemon, run, MCH Memory, reinicio, export/import, uninstall/reinstall) |
+| Pruebas | 134 debug y 134 release, 0 fallos |
+| Gates externos | 0.3, 0.4, supervisor, firma y migración: `ok: true` |
+| Seguridad | `cargo audit` exit 0 (3 warnings de `lru` justificados); `cargo deny check` OK |
+| CI | Windows completo; Linux experimental (gates MCP/MCH/firma/migración no portados) |
+| Gate Beta | `tests`, `security`, `mcp`, `modules`, `mch_supervisor`, `signing`, `migrations`, `packaging`, `installation`, `quickstart` = true; `tui_manual=false`; `ok=false` |
+| Estado | **HLI 0.9 Beta package ready — tag pending manual TUI gate** |
+
+No se creó el tag `v0.9.0-beta.1`: el gate visual manual de la TUI sigue
+pendiente y `scripts/beta_gate.ps1` lo exige para devolver `ok=true`. Linux no se
+declara soportado: la Beta probada es Windows x86_64.

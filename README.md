@@ -1,95 +1,80 @@
-# HLI
+# HLI — Hierarchical Layered Intelligence
 
-Harness ligero, local, autónomo y multiproveedor.
+HLI es un **runtime agéntico completo**: ejecuta turnos con contexto, memoria,
+eventos verificables, módulos y procesos especializados, todo sobre un almacén
+local.
 
-**Estado: HLI 0.1, 0.2, 0.3 y 0.4 implementados y verificados.** Gates externos en `scripts/mcp_gate.py` (0.3) y `scripts/module_gate.py` (0.4).
+- **MCH**: instancia especializada administrada por HLI (proceso persistente con
+  lifecycle, health y límite de reinicios).
+- **MCP**: protocolo de interoperabilidad para clientes externos.
+- **CLI**: interfaz textual (`hli`), cliente del daemon.
+- **Module**: capacidad instalable (`.hlimod`, firma Ed25519 opcional).
 
-## Qué hay en 0.1
+**Versión:** 0.9.0-beta.1 · **Licencia:** Apache-2.0 · **Plataforma probada:**
+Windows x86_64. Linux es experimental.
 
-- Daemon local como proceso independiente (`hli-daemon`).
-- CLI `hli` que habla con el daemon por TCP + NDJSON; nunca escribe en SQLite.
-- Workspaces, Threads y Branches de un solo padre.
-- Event log append-only con cadena SHA-256 sobre JSON canónico.
-- SQLite en WAL con un único actor de escritura.
-- Artifact Store por hash SHA-256.
-- Snapshots por rama.
-- `verify` de la cadena completa.
-- `export`/`import` en contenedor `hliar` con verificación de hashes y cadena.
+## Instalación rápida
 
-## Qué hay en 0.2
-
-- `Run` fijado a workspace, thread, branch y `branch_revision`.
-- `ContextManifest` inmutable, persistido antes de `model.requested`.
-- Proveedor simulado determinista, sin red ni coste.
-- Agent loop básico: contexto → model.requested → model.responded → tool opcional → fin.
-- `Reproducibility Receipt` por run.
-- Permisos `allow`, `ask`, `deny`; Tool Runtime con `filesystem.read` y `filesystem.write` confinadas al root del workspace.
-- Recuperación de runs y manifiestos tras reiniciar el daemon.
-
-Fuera de 0.2, por diseño: MCP, ACP, memoria, compactación, módulos, MCH y sandbox de sistema operativo (`shell` denegado por política). Se implementan en 0.3–0.4.
-
-## Compilar y probar
-
-```bash
-cargo build --workspace
-cargo test
+```powershell
+.\install.ps1
+$env:HLI_HOME = "$env:LOCALAPPDATA\HLI\data"
+hli daemon start
+hli --version
 ```
 
-`cargo test` ejecuta 27 pruebas: 10 unitarias del núcleo, 2 del contenedor de export, 7 del agent runtime y 8 de extremo a extremo (0.1: reinicio, export/import, idempotencia, manifiesto manipulado; 0.2: run+manifiesto+receipt, permisos read/write/shell).
+Guía completa de 15 minutos: [QUICKSTART.md](QUICKSTART.md).
 
-## Uso
+## Estado honesto
 
-```bash
-export HLI_HOME=/tmp/hli            # o %USERPROFILE%\.hli por defecto
-target/debug/hli daemon start
-target/debug/hli workspace create demo
-target/debug/hli thread create research --workspace <ws>
-target/debug/hli event append --type test.recorded --payload '{"n":1}' --workspace <ws> --thread <thr>
-target/debug/hli branch create alternative --thread <thr> --from <evt>
-target/debug/hli verify --workspace <ws>
-target/debug/hli export <ws> --out demo.hliar
-target/debug/hli import demo.hliar
-target/debug/hli run start --workspace <ws> --thread <thr> --branch <br> --prompt "hola"
-target/debug/hli run get <run>
-target/debug/hli daemon stop
+| Área | Estado |
+|---|---|
+| Runtime, eventos, snapshots, export/import | Implementado |
+| Runs síncronos y asíncronos con cancelación/timeout | Implementado |
+| Proveedores `sim`, Ollama y OpenAI-compatible | Implementado; requieren entorno |
+| MCH persistente, health, autostart, límite de reinicios | Implementado |
+| Firma Ed25519 de módulos y trust store | Implementado |
+| Migraciones versionadas y backup | Implementado |
+| MCP stdio con tools básicas | Implementado; no universal |
+| TUI | Implementado; gate visual manual pendiente |
+| Paquete Windows e instalador | Implementado y probado |
+| Linux | Experimental, sin gates de integración portados |
+| Sandbox / shell seguro | **No soportado** |
+| Routing económico general | **No soportado** |
+| Compatibilidad MCP universal | **No soportado** |
+
+`shell.execute` está denegado por diseño. No se anuncia aislamiento completo del
+sistema operativo.
+
+## Documentación
+
+- [QUICKSTART.md](QUICKSTART.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md)
+- [docs/MCP-GUIDE.md](docs/MCP-GUIDE.md)
+- [docs/MODULE-DEVELOPMENT.md](docs/MODULE-DEVELOPMENT.md)
+- [docs/MCH-GUIDE.md](docs/MCH-GUIDE.md)
+- [docs/PROVIDER-GUIDE.md](docs/PROVIDER-GUIDE.md)
+- [docs/MIGRATION-GUIDE.md](docs/MIGRATION-GUIDE.md)
+- [docs/MODULE-SIGNING.md](docs/MODULE-SIGNING.md)
+- [docs/PACKAGING.md](docs/PACKAGING.md)
+- [SECURITY.md](SECURITY.md) · [THREAT-MODEL.md](THREAT-MODEL.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md) · [SUPPORT.md](SUPPORT.md)
+- [CHANGELOG.md](CHANGELOG.md)
+
+## Desarrollo
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo build --release --workspace
 ```
 
-Todas las salidas aceptan `--output json|human`.
+Gates externos: `scripts/mcp_gate.py`, `module_gate.py`,
+`mch_supervisor_gate.py`, `module_signing_gate.py`, `migration_gate.py`,
+`package_windows.ps1`, `install_gate.ps1`, `beta_gate.ps1`.
 
-## Criterio de salida de 0.1
+## Licencia
 
-Se cumple cuando un segundo proceso CLI recupera exactamente el workspace, rama, secuencia de eventos, snapshot y artefactos después de reiniciar el daemon. Las pruebas `lifecycle_survives_daemon_restart` y `export_import_roundtrip_is_verifiable` lo verifican matando el proceso y volviendo a arrancarlo.
-
-## Qué hay en 0.4
-
-- Module Protocol JSON-RPC sobre stdio, separado de MCP.
-- Paquete `.hlimod` con manifiesto, esquemas, binario y checksums.
-- `hli module install|list|inspect|test|remove` y `hli.lock`.
-- Supervisor de subproceso con timeout y límite de salida.
-- Proyección única: operación interna, CLI y tool MCP.
-- MCH Profile/Instance/Process/Endpoint; `hli mch create|list|inspect|serve|stop|remove`.
-- MCH Memory (`hli-memory`) sobre la tabla y FTS existentes.
-- `artifact.read` con texto, hex y límite de 1 MiB.
-
-## Estructura
-
-```
-crates/hli-core     modelo, JSON canónico, hash, ids, tiempo
-crates/hli-store    SQLite, writer actor, artifact store, snapshots, export/import
-crates/hli-daemon   API local TCP+NDJSON
-crates/hli-cli      CLI
-docs/adr            decisiones de arquitectura
-```
-
-## Decisiones
-
-Ver `docs/adr/`. Las relevantes para 0.1:
-
-- ADR-0001: transporte TCP+NDJSON en 0.1 (HTTP/WebSocket en 0.2).
-- ADR-0002: el sobre canónico incluye `previous_hash` (corrige §15.8 de la spec).
-- ADR-0003: JCS implementado como subconjunto documentado.
-- ADR-0004: contenedor `hliar` provisional.
-- ADR-0005: alcance estricto de 0.1.
-- ADR-0006: run, ContextManifest y agent loop de 0.2.
-- ADR-0007: memoria, MCP y trayectoria de rama.
-- ADR-0008: Module Protocol, .hlimod y MCH.
+Apache License 2.0. Ver [LICENSE](LICENSE), [NOTICE](NOTICE) y
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
