@@ -13,6 +13,7 @@ hli-core = { path = "../hli-core" }
 hli-store = { path = "../hli-store" }
 hli-agent = { path = "../hli-agent" }
 hli-provider = { path = "../hli-provider" }
+hli-signing = { path = "../hli-signing" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

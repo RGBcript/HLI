@@ -10,6 +10,7 @@ members = [
     "crates/hli-module-fixture",
     "crates/hli-provider",
     "crates/hli-tui",
+    "crates/hli-signing",
 ]
 resolver = "2"
 

@@ -228,6 +228,104 @@ fn run(args: &[String]) -> Result<(), String> {
             let name = args.get(2).ok_or("falta el nombre")?;
             print_value(&call("module.remove", json!({"name": name}))?, output)
         }
+        ("module", Some("sign")) => {
+            let pkg = args.get(2).ok_or("falta la ruta del .hlimod")?;
+            let key = need_flag(args, "--key")?;
+            let sig = hli_signing::package::sign_package(std::path::Path::new(pkg), &home(), &key)
+                .map_err(signing_err)?;
+            print_value(
+                &serde_json::to_value(&sig).map_err(|e| e.to_string())?,
+                output,
+            )
+        }
+        ("module", Some("verify")) => {
+            let pkg = args.get(2).ok_or("falta la ruta del .hlimod")?;
+            let verification = hli_signing::verify_package(std::path::Path::new(pkg), &home())
+                .map_err(signing_err)?;
+            let policy = hli_signing::Policy::load(&home());
+            let outcome = hli_signing::policy::apply(policy, verification.state);
+            let mut v = verification.to_json();
+            v["policy"] = json!(policy.as_str());
+            v["accepted"] = json!(outcome.accepted);
+            v["warning"] = json!(outcome.warning);
+            print_value(&v, output)
+        }
+        ("key", Some("generate")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            let record = hli_signing::keys::generate(&home(), name).map_err(signing_err)?;
+            print_value(
+                &serde_json::to_value(&record).map_err(|e| e.to_string())?,
+                output,
+            )
+        }
+        ("key", Some("list")) => {
+            let keys = hli_signing::keys::list(&home()).map_err(signing_err)?;
+            let list: Vec<Value> = keys
+                .iter()
+                .map(|k| serde_json::to_value(k).unwrap_or(Value::Null))
+                .collect();
+            print_value(&Value::Array(list), output)
+        }
+        ("key", Some("inspect")) => {
+            let id = args.get(2).ok_or("falta key_id")?;
+            let record = hli_signing::keys::find(&home(), id).map_err(signing_err)?;
+            print_value(
+                &serde_json::to_value(&record).map_err(|e| e.to_string())?,
+                output,
+            )
+        }
+        ("key", Some("export-public")) => {
+            let id = args.get(2).ok_or("falta key_id")?;
+            let record = hli_signing::keys::find(&home(), id).map_err(signing_err)?;
+            print_value(
+                &json!({
+                    "key_id": record.key_id,
+                    "name": record.name,
+                    "public_key": record.public_key,
+                    "fingerprint": record.fingerprint,
+                    "label": record.name
+                }),
+                output,
+            )
+        }
+        ("key", Some("revoke")) => {
+            let id = args.get(2).ok_or("falta key_id")?;
+            let record = hli_signing::keys::revoke(&home(), id).map_err(signing_err)?;
+            print_value(
+                &serde_json::to_value(&record).map_err(|e| e.to_string())?,
+                output,
+            )
+        }
+        ("trust", Some("add")) => {
+            let file = args.get(2).ok_or("falta el archivo de clave pública")?;
+            let record = hli_signing::trust::add_file(&home(), std::path::Path::new(file))
+                .map_err(signing_err)?;
+            print_value(
+                &serde_json::to_value(&record).map_err(|e| e.to_string())?,
+                output,
+            )
+        }
+        ("trust", Some("list")) => {
+            let trust = hli_signing::trust::list(&home()).map_err(signing_err)?;
+            let list: Vec<Value> = trust
+                .iter()
+                .map(|k| serde_json::to_value(k).unwrap_or(Value::Null))
+                .collect();
+            print_value(&Value::Array(list), output)
+        }
+        ("trust", Some("remove")) => {
+            let id = args.get(2).ok_or("falta key_id")?;
+            hli_signing::trust::remove(&home(), id).map_err(signing_err)?;
+            print_value(&json!({"removed": id}), output)
+        }
+        ("trust", Some("revoke")) => {
+            let id = args.get(2).ok_or("falta key_id")?;
+            let record = hli_signing::trust::revoke(&home(), id).map_err(signing_err)?;
+            print_value(
+                &serde_json::to_value(&record).map_err(|e| e.to_string())?,
+                output,
+            )
+        }
         ("mch", Some("create")) => {
             let name = args.get(2).ok_or("falta el nombre")?;
             let v = call(
@@ -485,6 +583,10 @@ fn need_flag(args: &[String], name: &str) -> Result<String, String> {
     flag(args, name).ok_or_else(|| format!("falta {name}"))
 }
 
+fn signing_err<E: std::fmt::Display>(e: E) -> String {
+    e.to_string()
+}
+
 fn print_value(v: &Value, mode: &str) -> Result<(), String> {
     if mode == "human" {
         if let Some(arr) = v.as_array() {
@@ -657,6 +759,9 @@ fn usage() -> Result<(), String> {
   hli manifest get <manifest_id>
   hli prices list
   hli module install <file.hlimod> | list | inspect <name> | test <name> | remove <name>
+  hli module sign <file.hlimod> --key <key_id> | verify <file.hlimod>
+  hli key generate <name> | list | inspect <key_id> | export-public <key_id> | revoke <key_id>
+  hli trust add <public-key-file> | list | remove <key_id> | revoke <key_id>
   hli mch create <name> [--module M] [--domain D] [--workspace W] [--autostart] | list | inspect <name>
   hli mch set-autostart <name> true|false
   hli mch serve <name> | stop <name> | remove <name>

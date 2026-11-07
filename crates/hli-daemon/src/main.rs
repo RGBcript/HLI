@@ -250,6 +250,12 @@ fn o(args: &Value, key: &str) -> Option<String> {
         .map(|v| v.to_string())
 }
 
+fn module_signature_state(home: &std::path::Path, module: &Value) -> String {
+    let dir = PathBuf::from(module["path"].as_str().unwrap_or(""));
+    hli_signing::package::installed_state(&dir, home)
+        .unwrap_or_else(|_| "invalid-signature".to_string())
+}
+
 fn mch_bin(r: &Reader, name: &str) -> Result<(PathBuf, String), HliError> {
     let m = r.mch(name)?;
     let module = m["module"].as_str().unwrap_or("");
@@ -1402,6 +1408,22 @@ fn dispatch(
                     return Err(HliError::conflict(format!("checksum no coincide: {p}")));
                 }
             }
+            // Política de firma: se aplica antes de copiar o ejecutar nada.
+            let verification = hli_signing::verify_files(&files, home)?;
+            let policy = hli_signing::Policy::load(home);
+            let outcome = hli_signing::policy::apply(policy, verification.state);
+            if !outcome.accepted {
+                return Err(HliError::new(
+                    "signature_rejected",
+                    format!(
+                        "paquete rechazado por política {}: {}",
+                        policy.as_str(),
+                        verification.message
+                    ),
+                ));
+            }
+            let signature_state = verification.state.as_str().to_string();
+            let signature_warning = outcome.warning.clone();
             let dir = home.join("modules").join(&name).join(&version);
             std::fs::create_dir_all(&dir)?;
             for f in &files {
@@ -1427,9 +1449,21 @@ fn dispatch(
                 lock.push('\n');
             }
             std::fs::write(home.join("hli.lock"), lock)?;
-            Ok(json!({"installed": name, "version": version, "path": dir.to_string_lossy()}))
+            Ok(json!({
+                "installed": name,
+                "version": version,
+                "path": dir.to_string_lossy(),
+                "signature_state": signature_state,
+                "signature_warning": signature_warning
+            }))
         }
-        "module.list" => Ok(Value::Array(r.modules()?)),
+        "module.list" => {
+            let mut modules = r.modules()?;
+            for module in &mut modules {
+                module["signature_state"] = json!(module_signature_state(home, module));
+            }
+            Ok(Value::Array(modules))
+        }
         "module.verify" => {
             let lock = std::fs::read_to_string(home.join("hli.lock")).unwrap_or_default();
             let mods = r.modules()?;
@@ -1445,7 +1479,11 @@ fn dispatch(
             }
             Ok(json!({"ok": true, "modules": mods.len()}))
         }
-        "module.inspect" => Ok(r.module(&s(args, "name")?)?),
+        "module.inspect" => {
+            let mut module = r.module(&s(args, "name")?)?;
+            module["signature_state"] = json!(module_signature_state(home, &module));
+            Ok(module)
+        }
         "module.test" => {
             let m = r.module(&s(args, "name")?)?;
             let entry = m["manifest"]["spec"]["runtime"]["entry"]

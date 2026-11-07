@@ -11,7 +11,7 @@
 | Formato y clippy | verde | `cargo fmt --check`, `cargo clippy -D warnings` |
 | Runs asíncronos y cancelación | hecho | `--async`, `status`, `wait`, `cancel`, `list --state`; tabla de transiciones; timeout; recuperación a `interrupted`; 4 pruebas e2e |
 | MCH persistente (nucleo) | hecho | proceso reutilizado, lifecycle completo, health periódico, degraded/recovery, restart acotado, autostart y límite de 3 reinicios por ventana; 20 pruebas | 
-| Tests | verde | 105 pruebas en debug y 105 en release; e2e aislados por `HLI_HOME` |
+| Tests | verde | 119 pruebas en debug y 119 en release; e2e aislados por `HLI_HOME` |
 
 ## Pendiente para cerrar 0.9
 
@@ -19,7 +19,7 @@
 |---|---|---|
 | Gate visual manual | **no ejecutado** | Guía y entorno listos en `docs/TUI-MANUAL-GATE.md`; requiere Windows Terminal |
 | Supervisor MCH persistente | **cerrado** | Lifecycle, persistencia, degraded/recovery, autostart, límite de reinicios y recuperación manual demostrados por gate y 20 pruebas Rust |
-| Firma de módulos Ed25519 | pendiente | Sin `signature.json`, trust store ni políticas `allow/warn/require` |
+| Firma de módulos Ed25519 | **hecho** | `signature.json`, payload canónico, claves locales, trust store, políticas y gate `module_signing_gate.py` |
 | Migraciones | pendiente | Sin `migrate status/apply/backup/verify` ni fixture de versión anterior |
 | Empaquetado Windows | pendiente | Sin `install.ps1`, `uninstall.ps1`, `dist` completo ni checksums |
 | Documentación pública | parcial | `PROVIDER-GUIDE.md` y `TUI-MANUAL-GATE.md`; faltan el resto |
@@ -37,7 +37,7 @@
 | Run asíncrono | sí |
 | Cancelación | sí |
 | Run completo | sí (síncrono) |
-| Módulo firmado o permitido | no |
+| Módulo firmado o permitido | sí: firma Ed25519 opcional, trust store local y políticas allow/warn/require |
 | MCH persistente | sí: proceso reutilizado, autostart y límite de reinicios |
 | Reinicio y recuperación | parcial: `running` → `interrupted`; `queued` no se reencola |
 | Export/import | sí (existente) |
@@ -73,3 +73,24 @@
 | Autostart preservado | tras reiniciar el daemon la instancia vuelve a `ready` y la memoria previa se recupera |
 | Procesos huérfanos | ninguno (`hli-daemon`/`hli-module-fixture` cerrados) |
 | Limitación restante | los timers del limitador no se persisten entre reinicios del daemon; la protección aplica dentro de la vida del daemon |
+
+## Cierre de firma de módulos (2026-11-07)
+
+| Dato | Valor |
+|---|---|
+| Commit inicial | `43eef97` |
+| Commit final | `feat(module): add optional Ed25519 signing` |
+| Pruebas debug | 119 passed, 0 failed |
+| Pruebas release | 119 passed, 0 failed |
+| Pruebas de firma | 12 en `hli-signing` + 2 en `hli-cli` (14 obligatorias) |
+| Gate 0.3 (`mcp_gate.py`) | `ok: true` |
+| Gate 0.4 (`module_gate.py`) | `ok: true` |
+| Gate supervisor (`mch_supervisor_gate.py`) | `ok: true` |
+| Gate firma (`module_signing_gate.py`) | `ok: true`: signed, trusted, tamper_rejected, revocation_enforced, private_key_leak=false |
+| `cargo audit` | exit 0; 3 warnings permitidos de `lru 0.12.5` ya justificados en `deny.toml` |
+| `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| Clave privada | fuera de SQLite, eventos, manifests y logs; archivo restringido en `HLI_HOME/keys` |
+| Módulo revocado | el ya instalado conserva estado y proceso, marcado `signed-revoked`; nuevas instalaciones rechazadas |
+| Limitaciones | sin PKI/X.509, trust store local, revocación local, ACL best-effort |
+
+No se iniciaron migraciones en esta sesión.
