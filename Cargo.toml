@@ -8,6 +8,7 @@ members = [
     "crates/hli-mcp",
     "crates/hli-module-memory",
     "crates/hli-provider",
+    "crates/hli-tui",
 ]
 resolver = "2"
 

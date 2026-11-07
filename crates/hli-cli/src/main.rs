@@ -1,6 +1,6 @@
 //! CLI de HLI 0.1. Cliente del daemon; nunca escribe en SQLite directamente.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -66,6 +66,16 @@ fn call(cmd: &str, args: Value) -> Result<Value, String> {
 
 fn run(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
+        if std::io::stdout().is_terminal() {
+            let tui = std::env::current_exe()
+                .map_err(|e| e.to_string())?
+                .with_file_name(if cfg!(windows) { "hli-tui.exe" } else { "hli-tui" });
+            std::process::Command::new(tui)
+                .env("HLI_HOME", home())
+                .status()
+                .map_err(|e| format!("no se pudo abrir la TUI: {e}"))?;
+            return Ok(());
+        }
         return usage();
     }
     let output = output_mode(args);
@@ -332,6 +342,7 @@ fn run(args: &[String]) -> Result<(), String> {
 fn output_mode(args: &[String]) -> &'static str {
     match flag(args, "--output").as_deref() {
         Some("human") => "human",
+        Some("jsonl") => "jsonl",
         _ => "json",
     }
 }
@@ -353,6 +364,10 @@ fn print_value(v: &Value, mode: &str) -> Result<(), String> {
             return Ok(());
         }
         println!("{}", human_line(v));
+        return Ok(());
+    }
+    if mode == "jsonl" {
+        println!("{}", serde_json::to_string(v).map_err(|e| e.to_string())?);
         return Ok(());
     }
     println!(

@@ -1,0 +1,18 @@
+[package]
+name = "hli-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "hli_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hli-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde_json.workspace = true
