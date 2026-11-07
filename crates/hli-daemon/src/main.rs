@@ -351,7 +351,8 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let instructions = ws_obj.config.get("instructions")
                 .and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let visible = r.visible_events(&br, run.branch_revision)?;
-            let memories = r.search_memories(&ws, &prompt, 5)?;
+            let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5).max(1) as usize;
+            let memories = r.search_memories(&ws, &prompt, top_k)?;
             let mut manifest = build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
 
             // La trayectoria visible completa queda como evidencia; el contexto se presupuesta.

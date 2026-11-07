@@ -1,0 +1,28 @@
+{
+  "dataset_hash": "sha256:912fdc3b8370932dd64681f55b2c39119fd8a71e7b7c9c31b377cec014f09ab3",
+  "calibration": {
+    "threshold": 0.05,
+    "mean_k": 3.5,
+    "recall": 1.0
+  },
+  "A": {
+    "n": 24,
+    "k_mean": 5,
+    "recall": 1,
+    "precision": 0.2,
+    "tokens_in": 133.125,
+    "cost": 0.0011750500000000002,
+    "latency": 706.25,
+    "quality": 24
+  },
+  "B": {
+    "n": 24,
+    "k_mean": 2.7916666666666665,
+    "recall": 1,
+    "precision": 0.5486111111111112,
+    "tokens_in": 119.91666666666667,
+    "cost": 0.0010575600000000001,
+    "latency": 522.5833333333334,
+    "quality": 24
+  }
+}

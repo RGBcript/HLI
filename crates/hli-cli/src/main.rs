@@ -246,7 +246,8 @@ fn run(args: &[String]) -> Result<(), String> {
         ("memory", Some("search")) => {
             let ws = need_flag(args, "--workspace")?;
             let query = need_flag(args, "--query")?;
-            print_value(&call("memory.search", json!({"workspace_id": ws, "query": query}))?, output)
+            let limit = flag(args, "--limit").and_then(|v| v.parse::<u64>().ok());
+            print_value(&call("memory.search", json!({"workspace_id": ws, "query": query, "limit": limit}))?, output)
         }
         ("memory", Some("get")) => {
             let id = args.get(2).ok_or("falta memory_id")?;
@@ -287,6 +288,7 @@ fn run(args: &[String]) -> Result<(), String> {
                     "no_events": args.contains(&"--no-events".to_string()),
                     "no_slices": args.contains(&"--no-slices".to_string()),
                     "no_policy": args.contains(&"--no-policy".to_string()),
+                    "top_k": flag(args, "--top-k").and_then(|v| v.parse::<u64>().ok()),
                     "temperature": flag(args, "--temperature").and_then(|v| v.parse::<f64>().ok()),
                     "max_tokens": flag(args, "--max-tokens").and_then(|v| v.parse::<i64>().ok())
                 }),
