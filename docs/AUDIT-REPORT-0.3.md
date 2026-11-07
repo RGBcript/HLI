@@ -175,7 +175,7 @@ abre `hli-mcp`, ejecuta el ciclo MCP, cierra, exporta, importa en otro home y ve
 
 ## 9. Estado y siguiente fase
 
-- `cargo test`: 25 pruebas en verde.
+- `cargo test`: 27 pruebas en verde (el gate externo de 0.3, `scripts/mcp_gate.py`, se ejecuta aparte y no lo cuenta cargo).
 - Gate 0.3: `scripts/mcp_gate.py` en verde.
 - Matriz viva: `docs/CONFORMANCE.md`.
 - Siguiente: 0.4 (Module Protocol, `.hlimod`, MCH), no iniciada.

@@ -2,7 +2,7 @@
 
 Harness ligero, local, autónomo y multiproveedor.
 
-**Estado: HLI 0.1 (durabilidad) y 0.2 (contexto y ejecución) implementados y verificados.** Las fases 0.3 y 0.4 no están implementadas todavía; este repositorio no las simula.
+**Estado: HLI 0.1, 0.2, 0.3 y 0.4 implementados y verificados.** Gates externos en `scripts/mcp_gate.py` (0.3) y `scripts/module_gate.py` (0.4).
 
 ## Qué hay en 0.1
 
@@ -35,7 +35,7 @@ cargo build --workspace
 cargo test
 ```
 
-`cargo test` ejecuta 25 pruebas: 10 unitarias del núcleo, 2 del contenedor de export, 5 del agent runtime y 8 de extremo a extremo (0.1: reinicio, export/import, idempotencia, manifiesto manipulado; 0.2: run+manifiesto+receipt, permisos read/write/shell).
+`cargo test` ejecuta 27 pruebas: 10 unitarias del núcleo, 2 del contenedor de export, 7 del agent runtime y 8 de extremo a extremo (0.1: reinicio, export/import, idempotencia, manifiesto manipulado; 0.2: run+manifiesto+receipt, permisos read/write/shell).
 
 ## Uso
 
@@ -60,6 +60,17 @@ Todas las salidas aceptan `--output json|human`.
 
 Se cumple cuando un segundo proceso CLI recupera exactamente el workspace, rama, secuencia de eventos, snapshot y artefactos después de reiniciar el daemon. Las pruebas `lifecycle_survives_daemon_restart` y `export_import_roundtrip_is_verifiable` lo verifican matando el proceso y volviendo a arrancarlo.
 
+## Qué hay en 0.4
+
+- Module Protocol JSON-RPC sobre stdio, separado de MCP.
+- Paquete `.hlimod` con manifiesto, esquemas, binario y checksums.
+- `hli module install|list|inspect|test|remove` y `hli.lock`.
+- Supervisor de subproceso con timeout y límite de salida.
+- Proyección única: operación interna, CLI y tool MCP.
+- MCH Profile/Instance/Process/Endpoint; `hli mch create|list|inspect|serve|stop|remove`.
+- MCH Memory (`hli-memory`) sobre la tabla y FTS existentes.
+- `artifact.read` con texto, hex y límite de 1 MiB.
+
 ## Estructura
 
 ```
@@ -80,3 +91,5 @@ Ver `docs/adr/`. Las relevantes para 0.1:
 - ADR-0004: contenedor `hliar` provisional.
 - ADR-0005: alcance estricto de 0.1.
 - ADR-0006: run, ContextManifest y agent loop de 0.2.
+- ADR-0007: memoria, MCP y trayectoria de rama.
+- ADR-0008: Module Protocol, .hlimod y MCH.

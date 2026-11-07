@@ -165,6 +165,61 @@ fn run(args: &[String]) -> Result<(), String> {
             let archive = args.get(1).ok_or("falta el archivo")?;
             print_value(&call("import", json!({"archive": archive}))?, output)
         }
+        ("module", Some("install")) => {
+            let path = args.get(2).ok_or("falta la ruta del .hlimod")?;
+            print_value(&call("module.install", json!({"path": path}))?, output)
+        }
+        ("module", Some("list")) => print_value(&call("module.list", json!({}))?, output),
+        ("module", Some("inspect")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("module.inspect", json!({"name": name}))?, output)
+        }
+        ("module", Some("test")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("module.test", json!({"name": name}))?, output)
+        }
+        ("module", Some("remove")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("module.remove", json!({"name": name}))?, output)
+        }
+        ("mch", Some("create")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            let v = call("mch.create", json!({
+                "name": name,
+                "module": flag(args, "--module").unwrap_or_else(|| "hli-memory".into()),
+                "domain": flag(args, "--domain").unwrap_or_else(|| "memory".into()),
+                "workspace_id": flag(args, "--workspace")
+            }))?;
+            print_value(&v, output)
+        }
+        ("mch", Some("list")) => print_value(&call("mch.list", json!({}))?, output),
+        ("mch", Some("inspect")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("mch.inspect", json!({"name": name}))?, output)
+        }
+        ("mch", Some("serve")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("mch.serve", json!({"name": name}))?, output)
+        }
+        ("mch", Some("stop")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("mch.stop", json!({"name": name}))?, output)
+        }
+        ("mch", Some("remove")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("mch.remove", json!({"name": name}))?, output)
+        }
+        ("mch", Some("invoke")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            let op = args.get(3).ok_or("falta la operación")?;
+            let arguments: Value = serde_json::from_str(&flag(args, "--args").unwrap_or_else(|| "{}".into()))
+                .map_err(|e| format!("args inválidos: {e}"))?;
+            let v = call("mch.invoke", json!({
+                "name": name, "operation": op, "arguments": arguments,
+                "workspace_id": flag(args, "--workspace")
+            }))?;
+            print_value(&v, output)
+        }
         ("memory", Some("commit")) => {
             let ws = need_flag(args, "--workspace")?;
             let kind = need_flag(args, "--type")?;
@@ -197,7 +252,8 @@ fn run(args: &[String]) -> Result<(), String> {
             let id = args.get(2).ok_or("falta memory_id")?;
             let v = call(
                 "memory.update",
-                json!({"memory_id": id, "content": flag(args, "--content"), "status": flag(args, "--status")}),
+                json!({"memory_id": id, "content": flag(args, "--content"),
+                     "status": flag(args, "--status"), "valid_until": flag(args, "--valid-until")}),
             )?;
             print_value(&v, output)
         }
@@ -381,6 +437,10 @@ fn usage() -> Result<(), String> {
   hli run start --workspace <id> --thread <id> --branch <id> --prompt PROMPT 
   hli run get <run_id> | list --workspace <id> | approve <run_id>
   hli manifest get <manifest_id>
+  hli module install <file.hlimod> | list | inspect <name> | test <name> | remove <name>
+  hli mch create <name> [--module M] [--domain D] [--workspace W] | list | inspect <name>
+  hli mch serve <name> | stop <name> | remove <name>
+  hli mch invoke <name> <operation> --args JSON [--workspace W]
   hli memory commit --workspace <id> --type TYPE --content TEXT [--scope S]
   hli memory search --workspace <id> --query TEXT | get <id> | list --workspace <id> | forget <id>
   hli verify --workspace <id>

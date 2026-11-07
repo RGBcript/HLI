@@ -140,6 +140,33 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   tokenize = 'unicode61 remove_diacritics 2'
 );
 
+CREATE TABLE IF NOT EXISTS modules (
+  name         TEXT NOT NULL,
+  version      TEXT NOT NULL,
+  path         TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  checksum     TEXT NOT NULL,
+  installed_at TEXT NOT NULL,
+  PRIMARY KEY (name, version)
+);
+
+CREATE TABLE IF NOT EXISTS mch_profiles (
+  name          TEXT PRIMARY KEY,
+  module_name   TEXT NOT NULL,
+  domain        TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mch_instances (
+  name         TEXT PRIMARY KEY,
+  profile      TEXT NOT NULL,
+  workspace_id TEXT,
+  state        TEXT NOT NULL,
+  pid          INTEGER,
+  created_at   TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_ws ON memories(workspace_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_runs_ws      ON runs(workspace_id, started_at);

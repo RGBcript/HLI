@@ -1,0 +1,12 @@
+[package]
+name = "hli-module-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hli-memory"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true

@@ -113,7 +113,8 @@ fn handle(method: &str, params: &Value, home: &PathBuf) -> Result<Value, (i64, S
             {"uri": "hli://thread/{id}", "name": "thread", "mimeType": "application/json"},
             {"uri": "hli://memory/{id}", "name": "memory", "mimeType": "application/json"},
             {"uri": "hli://artifact/{id}", "name": "artifact", "mimeType": "application/json"},
-            {"uri": "hli://run/{id}", "name": "run", "mimeType": "application/json"}
+            {"uri": "hli://run/{id}", "name": "run", "mimeType": "application/json"},
+            {"uri": "hli://mch/{id}", "name": "mch", "mimeType": "application/json"}
         ]})),
         "resources/read" => {
             let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
@@ -153,8 +154,15 @@ fn tools() -> Value {
           json!(["workspace_id", "thread_id", "branch_id", "prompt"])),
         t("run_get", "Obtiene un run y su manifiesto",
           json!({"run_id": {"type": "string"}}), json!(["run_id"])),
-        t("artifact_read", "Lee un artefacto de texto",
-          json!({"artifact_id": {"type": "string"}}), json!(["artifact_id"]))
+        t("artifact_read", "Lee un artefacto (texto o hex)",
+          json!({"artifact_id": {"type": "string"}}), json!(["artifact_id"])),
+        t("module_list", "Lista módulos instalados", json!({}), json!([])),
+        t("mch_list", "Lista instancias MCH", json!({}), json!([])),
+        t("mch_inspect", "Inspecciona una instancia MCH",
+          json!({"name": {"type": "string"}}), json!(["name"])),
+        t("mch_invoke", "Invoca una operación de una instancia MCH",
+          json!({"name": {"type": "string"}, "operation": {"type": "string"},
+                 "arguments": {"type": "object"}}), json!(["name", "operation"]))
     ])
 }
 
@@ -189,6 +197,13 @@ fn call_tool(name: &str, args: &Value, home: &PathBuf) -> Result<Value, (i64, St
         ),
         "run_get" => daemon(home, "run.get", json!({"run_id": args["run_id"]})),
         "artifact_read" => daemon(home, "artifact.read", json!({"artifact_id": args["artifact_id"]})),
+        "module_list" => daemon(home, "module.list", json!({})),
+        "mch_list" => daemon(home, "mch.list", json!({})),
+        "mch_inspect" => daemon(home, "mch.inspect", json!({"name": args["name"]})),
+        "mch_invoke" => daemon(home, "mch.invoke", json!({
+            "name": args["name"], "operation": args["operation"],
+            "arguments": args.get("arguments").cloned().unwrap_or(json!({}))
+        })),
         other => Err((-32602, format!("tool desconocida: {other}"))),
     }
 }
@@ -202,6 +217,7 @@ fn read_resource(uri: &str, home: &PathBuf) -> Result<Value, (i64, String)> {
         "memory" => daemon(home, "memory.get", json!({"memory_id": id})),
         "artifact" => daemon(home, "artifact.read", json!({"artifact_id": id})),
         "run" => daemon(home, "run.get", json!({"run_id": id})),
+        "mch" => daemon(home, "mch.inspect", json!({"name": id})),
         _ => Err((-32602, format!("recurso desconocido: {kind}"))),
     }
 }

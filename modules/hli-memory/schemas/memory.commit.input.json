@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "memory.commit",
+  "type": "object",
+  "required": ["type", "content"],
+  "properties": {
+    "type": { "enum": ["fact", "decision", "constraint", "summary", "reference", "procedure"] },
+    "content": { "type": "string", "minLength": 1 },
+    "scope": { "enum": ["global", "workspace", "thread", "branch"] }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,34 @@
+{
+  "apiVersion": "hli.dev/v1",
+  "kind": "Module",
+  "metadata": {
+    "name": "hli-memory",
+    "version": "0.4.0"
+  },
+  "spec": {
+    "sdk": ">=0.4 <0.5",
+    "protocol": "hli-module/1",
+    "transport": "stdio-ndjson",
+    "runtime": {
+      "kind": "subprocess",
+      "entry": "bin/hli-memory.exe"
+    },
+    "operations": [
+      { "name": "memory.commit", "input": "schemas/memory.commit.input.json", "output": "schemas/memory.commit.output.json", "effects": "write" },
+      { "name": "memory.get", "input": "schemas/memory.get.input.json", "output": "schemas/memory.output.json", "effects": "read" },
+      { "name": "memory.search", "input": "schemas/memory.search.input.json", "output": "schemas/memory.search.output.json", "effects": "read" },
+      { "name": "memory.update", "input": "schemas/memory.update.input.json", "output": "schemas/memory.output.json", "effects": "write" },
+      { "name": "memory.forget", "input": "schemas/memory.get.input.json", "output": "schemas/memory.output.json", "effects": "write" },
+      { "name": "context.build", "input": "schemas/memory.search.input.json", "output": "schemas/context.output.json", "effects": "read" }
+    ],
+    "permissions": {
+      "filesystem": "none",
+      "network": "daemon-only",
+      "secrets": "none"
+    },
+    "lifecycle": {
+      "health": "health",
+      "shutdown": "shutdown"
+    }
+  }
+}

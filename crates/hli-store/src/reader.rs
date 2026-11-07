@@ -307,9 +307,11 @@ impl Reader {
                 "SELECT m.id, m.type, m.status, m.scope, m.content, bm25(memories_fts) AS score
                  FROM memories_fts f JOIN memories m ON m.id = f.mem_id
                  WHERE memories_fts MATCH ?1 AND f.workspace_id = ?2 AND m.status = 'active'
-                 ORDER BY score LIMIT ?3",
+                   AND m.valid_from <= ?3 AND (m.valid_until IS NULL OR m.valid_until > ?3)
+                 ORDER BY score LIMIT ?4",
             )?;
-            let rows = stmt.query_map(rusqlite::params![match_expr, workspace_id, limit as i64], |r| {
+            let now = hli_core::time::now_iso();
+            let rows = stmt.query_map(rusqlite::params![match_expr, workspace_id, now, limit as i64], |r| {
                 Ok(serde_json::json!({
                     "id": r.get::<_, String>(0)?,
                     "type": r.get::<_, String>(1)?,
@@ -349,6 +351,98 @@ impl Reader {
             c.query_row("SELECT workspace_id FROM threads WHERE id = ?1", [thread_id], |r| r.get(0))
                 .optional()?
                 .ok_or_else(|| HliError::not_found(&format!("thread {thread_id}")))
+        })
+    }
+
+    pub fn modules(&self) -> Result<Vec<serde_json::Value>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT name, version, path, manifest_json, checksum, installed_at FROM modules ORDER BY name",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(serde_json::json!({
+                    "name": r.get::<_, String>(0)?,
+                    "version": r.get::<_, String>(1)?,
+                    "path": r.get::<_, String>(2)?,
+                    "manifest": serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(3)?).unwrap_or(serde_json::json!({})),
+                    "checksum": r.get::<_, String>(4)?,
+                    "installed_at": r.get::<_, String>(5)?,
+                }))
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn module(&self, name: &str) -> Result<serde_json::Value> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT name, version, path, manifest_json, checksum, installed_at FROM modules
+                 WHERE name = ?1 ORDER BY installed_at DESC LIMIT 1",
+                [name],
+                |r| {
+                    Ok(serde_json::json!({
+                        "name": r.get::<_, String>(0)?,
+                        "version": r.get::<_, String>(1)?,
+                        "path": r.get::<_, String>(2)?,
+                        "manifest": serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(3)?).unwrap_or(serde_json::json!({})),
+                        "checksum": r.get::<_, String>(4)?,
+                        "installed_at": r.get::<_, String>(5)?,
+                    }))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("módulo {name}")))
+        })
+    }
+
+    pub fn mchs(&self) -> Result<Vec<serde_json::Value>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT i.name, i.profile, i.workspace_id, i.state, i.pid, i.created_at,
+                        p.module_name, p.domain
+                 FROM mch_instances i JOIN mch_profiles p ON p.name = i.profile
+                 ORDER BY i.name",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(serde_json::json!({
+                    "name": r.get::<_, String>(0)?,
+                    "profile": r.get::<_, String>(1)?,
+                    "workspace_id": r.get::<_, Option<String>>(2)?,
+                    "state": r.get::<_, String>(3)?,
+                    "pid": r.get::<_, Option<i64>>(4)?,
+                    "created_at": r.get::<_, String>(5)?,
+                    "module": r.get::<_, String>(6)?,
+                    "domain": r.get::<_, String>(7)?,
+                }))
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn mch(&self, name: &str) -> Result<serde_json::Value> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT i.name, i.profile, i.workspace_id, i.state, i.pid, i.created_at,
+                        p.module_name, p.domain, p.manifest_json
+                 FROM mch_instances i JOIN mch_profiles p ON p.name = i.profile
+                 WHERE i.name = ?1",
+                [name],
+                |r| {
+                    Ok(serde_json::json!({
+                        "name": r.get::<_, String>(0)?,
+                        "profile": r.get::<_, String>(1)?,
+                        "workspace_id": r.get::<_, Option<String>>(2)?,
+                        "state": r.get::<_, String>(3)?,
+                        "pid": r.get::<_, Option<i64>>(4)?,
+                        "created_at": r.get::<_, String>(5)?,
+                        "module": r.get::<_, String>(6)?,
+                        "domain": r.get::<_, String>(7)?,
+                        "manifest": serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(8)?).unwrap_or(serde_json::json!({})),
+                    }))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("MCH {name}")))
         })
     }
 

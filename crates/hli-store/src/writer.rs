@@ -138,11 +138,42 @@ pub enum WriteCmd {
         id: String,
         content: Option<String>,
         status: Option<String>,
+        valid_until: Option<String>,
         reply: Reply<Memory>,
     },
     ForgetMemory {
         id: String,
         reply: Reply<Memory>,
+    },
+    InstallModule {
+        name: String,
+        version: String,
+        path: String,
+        manifest: Value,
+        checksum: String,
+        reply: Reply<Value>,
+    },
+    RemoveModule {
+        name: String,
+        reply: Reply<()>,
+    },
+    MchCreate {
+        name: String,
+        module_name: String,
+        domain: String,
+        workspace_id: Option<String>,
+        manifest: Value,
+        reply: Reply<Value>,
+    },
+    MchSetState {
+        name: String,
+        state: String,
+        pid: Option<i64>,
+        reply: Reply<Value>,
+    },
+    MchRemove {
+        name: String,
+        reply: Reply<()>,
     },
     Stop {
         reply: Reply<()>,
@@ -308,12 +339,78 @@ impl Writer {
         })
     }
 
-    pub fn update_memory(&self, id: &str, content: Option<String>, status: Option<String>) -> Result<Memory> {
-        self.call(|reply| WriteCmd::UpdateMemory { id: id.to_string(), content, status, reply })
+    pub fn update_memory(
+        &self,
+        id: &str,
+        content: Option<String>,
+        status: Option<String>,
+        valid_until: Option<String>,
+    ) -> Result<Memory> {
+        self.call(|reply| WriteCmd::UpdateMemory {
+            id: id.to_string(),
+            content,
+            status,
+            valid_until,
+            reply,
+        })
     }
 
     pub fn forget_memory(&self, id: &str) -> Result<Memory> {
         self.call(|reply| WriteCmd::ForgetMemory { id: id.to_string(), reply })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn install_module(
+        &self,
+        name: &str,
+        version: &str,
+        path: &str,
+        manifest: Value,
+        checksum: &str,
+    ) -> Result<Value> {
+        self.call(|reply| WriteCmd::InstallModule {
+            name: name.to_string(),
+            version: version.to_string(),
+            path: path.to_string(),
+            manifest,
+            checksum: checksum.to_string(),
+            reply,
+        })
+    }
+
+    pub fn remove_module(&self, name: &str) -> Result<()> {
+        self.call(|reply| WriteCmd::RemoveModule { name: name.to_string(), reply })
+    }
+
+    pub fn mch_create(
+        &self,
+        name: &str,
+        module_name: &str,
+        domain: &str,
+        workspace_id: Option<String>,
+        manifest: Value,
+    ) -> Result<Value> {
+        self.call(|reply| WriteCmd::MchCreate {
+            name: name.to_string(),
+            module_name: module_name.to_string(),
+            domain: domain.to_string(),
+            workspace_id,
+            manifest,
+            reply,
+        })
+    }
+
+    pub fn mch_set_state(&self, name: &str, state: &str, pid: Option<i64>) -> Result<Value> {
+        self.call(|reply| WriteCmd::MchSetState {
+            name: name.to_string(),
+            state: state.to_string(),
+            pid,
+            reply,
+        })
+    }
+
+    pub fn mch_remove(&self, name: &str) -> Result<()> {
+        self.call(|reply| WriteCmd::MchRemove { name: name.to_string(), reply })
     }
 
     pub fn stop(&self) -> Result<()> {
@@ -415,11 +512,26 @@ impl State {
                     &workspace_id, &scope, scope_id, &kind, &content, supersedes, contradicts,
                 ));
             }
-            WriteCmd::UpdateMemory { id, content, status, reply } => {
-                let _ = reply.send(self.update_memory(&id, content, status));
+            WriteCmd::UpdateMemory { id, content, status, valid_until, reply } => {
+                let _ = reply.send(self.update_memory(&id, content, status, valid_until));
             }
             WriteCmd::ForgetMemory { id, reply } => {
                 let _ = reply.send(self.forget_memory(&id));
+            }
+            WriteCmd::InstallModule { name, version, path, manifest, checksum, reply } => {
+                let _ = reply.send(self.install_module(&name, &version, &path, manifest, &checksum));
+            }
+            WriteCmd::RemoveModule { name, reply } => {
+                let _ = reply.send(self.remove_module(&name));
+            }
+            WriteCmd::MchCreate { name, module_name, domain, workspace_id, manifest, reply } => {
+                let _ = reply.send(self.mch_create(&name, &module_name, &domain, workspace_id, manifest));
+            }
+            WriteCmd::MchSetState { name, state, pid, reply } => {
+                let _ = reply.send(self.mch_set_state(&name, &state, pid));
+            }
+            WriteCmd::MchRemove { name, reply } => {
+                let _ = reply.send(self.mch_remove(&name));
             }
             WriteCmd::Stop { reply } => {
                 let _ = reply.send(Ok(()));
@@ -795,7 +907,13 @@ impl State {
         Ok(m)
     }
 
-    fn update_memory(&mut self, id: &str, content: Option<String>, status: Option<String>) -> Result<Memory> {
+    fn update_memory(
+        &mut self,
+        id: &str,
+        content: Option<String>,
+        status: Option<String>,
+        valid_until: Option<String>,
+    ) -> Result<Memory> {
         let mut m = load_memory(&self.conn, id)?
             .ok_or_else(|| HliError::not_found(&format!("memoria {id}")))?;
         if let Some(c) = content {
@@ -811,10 +929,13 @@ impl State {
             }
             m.status = s;
         }
+        if let Some(v) = valid_until {
+            m.valid_until = if v.is_empty() { None } else { Some(v) };
+        }
         let tx = self.conn.transaction()?;
         tx.execute(
-            "UPDATE memories SET content = ?1, status = ?2 WHERE id = ?3",
-            params![m.content, m.status, m.id],
+            "UPDATE memories SET content = ?1, status = ?2, valid_until = ?3 WHERE id = ?4",
+            params![m.content, m.status, m.valid_until, m.id],
         )?;
         tx.execute("DELETE FROM memories_fts WHERE mem_id = ?1", [&m.id])?;
         if m.status == "active" || m.status == "proposed" {
@@ -846,6 +967,75 @@ impl State {
         )?;
         tx.commit()?;
         Ok(m)
+    }
+
+    fn install_module(
+        &mut self,
+        name: &str,
+        version: &str,
+        path: &str,
+        manifest: Value,
+        checksum: &str,
+    ) -> Result<Value> {
+        self.conn.execute(
+            "INSERT INTO modules(name, version, path, manifest_json, checksum, installed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(name, version) DO UPDATE SET path=excluded.path,
+                manifest_json=excluded.manifest_json, checksum=excluded.checksum",
+            params![name, version, path, canonical_json(&manifest), checksum, now_iso()],
+        )?;
+        let lock = self.conn.query_row(
+            "SELECT name, version, checksum FROM modules ORDER BY name, version",
+            [],
+            |_| Ok(()),
+        );
+        let _ = lock;
+        Ok(json!({"name": name, "version": version, "path": path, "checksum": checksum}))
+    }
+
+    fn remove_module(&mut self, name: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM modules WHERE name = ?1", [name])?;
+        Ok(())
+    }
+
+    fn mch_create(
+        &mut self,
+        name: &str,
+        module_name: &str,
+        domain: &str,
+        workspace_id: Option<String>,
+        manifest: Value,
+    ) -> Result<Value> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO mch_profiles(name, module_name, domain, manifest_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(name) DO UPDATE SET module_name=excluded.module_name,
+                domain=excluded.domain, manifest_json=excluded.manifest_json",
+            params![name, module_name, domain, canonical_json(&manifest), now_iso()],
+        )?;
+        tx.execute(
+            "INSERT INTO mch_instances(name, profile, workspace_id, state, pid, created_at)
+             VALUES (?1, ?1, ?2, 'configured', NULL, ?3)
+             ON CONFLICT(name) DO UPDATE SET workspace_id=excluded.workspace_id, state='configured'",
+            params![name, workspace_id, now_iso()],
+        )?;
+        tx.commit()?;
+        Ok(json!({"profile": name, "instance": name, "module": module_name, "domain": domain}))
+    }
+
+    fn mch_set_state(&mut self, name: &str, state: &str, pid: Option<i64>) -> Result<Value> {
+        self.conn.execute(
+            "UPDATE mch_instances SET state = ?1, pid = ?2 WHERE name = ?3",
+            params![state, pid, name],
+        )?;
+        Ok(json!({"instance": name, "state": state, "pid": pid}))
+    }
+
+    fn mch_remove(&mut self, name: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM mch_instances WHERE name = ?1", [name])?;
+        self.conn.execute("DELETE FROM mch_profiles WHERE name = ?1", [name])?;
+        Ok(())
     }
 
     fn put_artifact(&mut self, workspace_id: &str, source: &PathBuf) -> Result<ArtifactInfo> {

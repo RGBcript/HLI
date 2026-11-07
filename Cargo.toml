@@ -6,6 +6,7 @@ members = [
     "crates/hli-daemon",
     "crates/hli-cli",
     "crates/hli-mcp",
+    "crates/hli-module-memory",
 ]
 resolver = "2"
 

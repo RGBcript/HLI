@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hli_core::{time::now_iso, HliError};
+mod supervisor;
+
 use hli_agent::{build_manifest, execute_tool, permission_for, Permission, Provider, SimProvider};
 use hli_store::{Reader, Store, Writer};
 use serde_json::{json, Value};
@@ -58,8 +60,9 @@ fn run(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             Ok(s) => {
                 let w = writer.clone();
                 let r = reader.clone();
+                let h = home.clone();
                 std::thread::spawn(move || {
-                    let _ = handle(s, w, r);
+                    let _ = handle(s, w, r, h);
                 });
             }
             Err(e) => eprintln!("accept: {e}"),
@@ -68,7 +71,7 @@ fn run(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>) -> std::io::Result<()> {
+fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>, home: PathBuf) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut out = stream.try_clone()?;
     let mut lines = BufReader::new(stream).lines();
@@ -90,7 +93,7 @@ fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>) -> std::io::Re
         let cmd = req.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
         let args = req.get("args").cloned().unwrap_or(json!({}));
 
-        match dispatch(cmd, &args, &writer, &reader) {
+        match dispatch(cmd, &args, &writer, &reader, &home) {
             Ok(data) => {
                 let resp = json!({"id": id, "ok": true, "data": data});
                 writeln!(out, "{}", serde_json::to_string(&resp)?)?;
@@ -152,7 +155,7 @@ fn o(args: &Value, key: &str) -> Option<String> {
     args.get(key).and_then(|v| v.as_str()).map(|v| v.to_string())
 }
 
-fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, HliError> {
+fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> Result<Value, HliError> {
     match cmd {
         "daemon.ping" => Ok(json!({"pong": true, "version": "0.1.0", "pid": std::process::id()})),
         "daemon.stop" => Ok(json!({"stopping": true})),
@@ -241,6 +244,7 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
                 &s(args, "memory_id")?,
                 o(args, "content"),
                 o(args, "status"),
+                o(args, "valid_until"),
             )?;
             Ok(serde_json::to_value(m)?)
         }
@@ -367,6 +371,123 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
         }
         "run.list" => Ok(serde_json::to_value(r.runs(&s(args, "workspace_id")?)?)?),
         "manifest.get" => Ok(serde_json::to_value(r.manifest(&s(args, "manifest_id")?)?)?),
+        "module.install" => {
+            let path = PathBuf::from(s(args, "path")?);
+            let raw = std::fs::read(&path)?;
+            let files = hli_store::export::read_container(&raw)?;
+            let get = |n: &str| files.iter().find(|f| f.path == n).map(|f| f.bytes.clone());
+            let manifest_bytes = get("manifest.json")
+                .ok_or_else(|| HliError::invalid("paquete sin manifest.json"))?;
+            let manifest: Value = serde_json::from_slice(&manifest_bytes)?;
+            let name = manifest["metadata"]["name"].as_str()
+                .ok_or_else(|| HliError::invalid("manifiesto sin nombre"))?.to_string();
+            let version = manifest["metadata"]["version"].as_str()
+                .ok_or_else(|| HliError::invalid("manifiesto sin versión"))?.to_string();
+            let sdk = manifest["spec"]["sdk"].as_str().unwrap_or("");
+            if !sdk.contains("0.4") {
+                return Err(HliError::conflict(format!("SDK incompatible: {sdk}")));
+            }
+            let checks: Value = serde_json::from_slice(
+                &get("checksums.json").ok_or_else(|| HliError::invalid("paquete sin checksums.json"))?,
+            )?;
+            for (p, h) in checks.as_object().ok_or_else(|| HliError::invalid("checksums inválido"))? {
+                let f = files.iter().find(|f| &f.path == p)
+                    .ok_or_else(|| HliError::invalid(format!("falta {p} en el paquete")))?;
+                let got = format!("sha256:{}", hli_store::export::sha256_hex(&f.bytes));
+                if got != h.as_str().unwrap_or("") {
+                    return Err(HliError::conflict(format!("checksum no coincide: {p}")));
+                }
+            }
+            let dir = home.join("modules").join(&name).join(&version);
+            std::fs::create_dir_all(&dir)?;
+            for f in &files {
+                let target = dir.join(&f.path);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(target, &f.bytes)?;
+            }
+            let checksum = format!("sha256:{}", hli_store::export::sha256_hex(&manifest_bytes));
+            w.install_module(&name, &version, &dir.to_string_lossy(), manifest, &checksum)?;
+            let lock_line = json!({"name": name, "version": version, "checksum": checksum});
+            let mut lock = String::new();
+            for m in r.modules()? {
+                lock.push_str(&json!({"name": m["name"], "version": m["version"], "checksum": m["checksum"]}).to_string());
+                lock.push('\n');
+            }
+            if !lock.contains(&lock_line["name"].to_string()) {
+                lock.push_str(&lock_line.to_string());
+                lock.push('\n');
+            }
+            std::fs::write(home.join("hli.lock"), lock)?;
+            Ok(json!({"installed": name, "version": version, "path": dir.to_string_lossy()}))
+        }
+        "module.list" => Ok(Value::Array(r.modules()?)),
+        "module.inspect" => Ok(r.module(&s(args, "name")?)?),
+        "module.test" => {
+            let m = r.module(&s(args, "name")?)?;
+            let entry = m["manifest"]["spec"]["runtime"]["entry"].as_str().unwrap_or("bin/hli-memory.exe");
+            let bin = PathBuf::from(m["path"].as_str().unwrap_or("")).join(entry);
+            let out = supervisor::health(&bin, home, "")?;
+            Ok(json!({"module": m["name"], "ok": true, "probe": out}))
+        }
+        "module.remove" => {
+            let name = s(args, "name")?;
+            let m = r.module(&name)?;
+            let dir = PathBuf::from(m["path"].as_str().unwrap_or(""));
+            let _ = std::fs::remove_dir_all(dir.parent().unwrap_or(&dir));
+            w.remove_module(&name)?;
+            Ok(json!({"removed": name}))
+        }
+        "mch.create" => {
+            let name = s(args, "name")?;
+            let module_name = args.get("module").and_then(|v| v.as_str()).unwrap_or("hli-memory").to_string();
+            let m = r.module(&module_name)?;
+            let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("memory").to_string();
+            let ws = o(args, "workspace_id");
+            let out = w.mch_create(&name, &module_name, &domain, ws, m["manifest"].clone())?;
+            Ok(out)
+        }
+        "mch.list" => Ok(Value::Array(r.mchs()?)),
+        "mch.inspect" => Ok(r.mch(&s(args, "name")?)?),
+        "mch.serve" => {
+            let name = s(args, "name")?;
+            let m = r.mch(&name)?;
+            let module = m["module"].as_str().unwrap_or("");
+            let mm = r.module(module)?;
+            let entry = mm["manifest"]["spec"]["runtime"]["entry"].as_str().unwrap_or("bin/hli-memory.exe");
+            let bin = PathBuf::from(mm["path"].as_str().unwrap_or("")).join(entry);
+            let ws = m["workspace_id"].as_str().unwrap_or("");
+            let probe = supervisor::health(&bin, home, ws)?;
+            let out = w.mch_set_state(&name, "ready", None)?;
+            Ok(json!({"instance": out, "probe": probe}))
+        }
+        "mch.stop" => Ok(w.mch_set_state(&s(args, "name")?, "stopped", None)?),
+        "mch.remove" => {
+            let name = s(args, "name")?;
+            w.mch_remove(&name)?;
+            Ok(json!({"removed": name}))
+        }
+        "mch.invoke" => {
+            let name = s(args, "name")?;
+            let op = s(args, "operation")?;
+            let m = r.mch(&name)?;
+            let allowed = m["manifest"]["spec"]["operations"].as_array().cloned().unwrap_or_default();
+            if !allowed.iter().any(|o| o["name"].as_str() == Some(op.as_str())) {
+                return Err(HliError::new("undeclared_operation",
+                    format!("operación no declarada por el módulo: {op}")));
+            }
+            let module = m["module"].as_str().unwrap_or("");
+            let mm = r.module(module)?;
+            let entry = mm["manifest"]["spec"]["runtime"]["entry"].as_str().unwrap_or("bin/hli-memory.exe");
+            let bin = PathBuf::from(mm["path"].as_str().unwrap_or("")).join(entry);
+            let ws = args.get("workspace_id").and_then(|v| v.as_str()).unwrap_or(
+                m["workspace_id"].as_str().unwrap_or(""));
+            let arguments = args.get("arguments").cloned().unwrap_or(json!({}));
+            let out = supervisor::invoke(&bin, home, ws, &op, &arguments, std::time::Duration::from_secs(30))?;
+            Ok(json!({"instance": name, "operation": op, "result": out.result,
+                       "duration_ms": out.duration_ms}))
+        }
         "status" => {
             let ws = r.workspaces()?;
             Ok(json!({"workspaces": ws.len(), "version": "0.1.0"}))
