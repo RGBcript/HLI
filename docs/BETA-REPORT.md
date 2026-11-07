@@ -18,7 +18,7 @@
 | Bloque | Estado | Nota |
 |---|---|---|
 | Gate visual manual | **no ejecutado** | Guía y entorno listos en `docs/TUI-MANUAL-GATE.md`; requiere Windows Terminal |
-| Supervisor MCH persistente | parcial | Lifecycle y health periódico hechos; fixture de fallos creado; faltan pruebas de degraded/restart, autostart y gate externo |
+| Supervisor MCH persistente | parcial | Gate externo demuestra lifecycle, persistencia, degraded, recovery, restart (generation 2) y cierre; faltan autostart y límite de reinicios |
 | Firma de módulos Ed25519 | pendiente | Sin `signature.json`, trust store ni políticas `allow/warn/require` |
 | Migraciones | pendiente | Sin `migrate status/apply/backup/verify` ni fixture de versión anterior |
 | Empaquetado Windows | pendiente | Sin `install.ps1`, `uninstall.ps1`, `dist` completo ni checksums |

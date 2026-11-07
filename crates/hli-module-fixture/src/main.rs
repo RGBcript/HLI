@@ -92,8 +92,14 @@ fn main() {
                     .get("recover_after_n")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(u64::MAX);
-                let fail = (mode == "health_fail_n" && health_count <= fail_n)
-                    || (mode == "recover_after_n" && health_count <= recover);
+                let skip_first = cfg
+                    .get("skip_first_health")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    && health_count == 1;
+                let fail = !skip_first
+                    && ((mode == "health_fail_n" && health_count <= fail_n)
+                        || (mode == "recover_after_n" && health_count <= recover));
                 if fail {
                     send_err(&id, -32000, "health failure");
                 } else {

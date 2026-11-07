@@ -113,3 +113,10 @@ Cada proceso tiene `process_generation`; cada reinicio la incrementa. `mch statu
 ## Fixture de fallos
 
 `crates/hli-module-fixture` implementa el protocolo y modos de fallo configurables por `HLI_HOME/fixture.json`. Informa pid, health_count e invoke_count. No esta integrado aun en pruebas e2e ni en el gate externo.
+
+
+## Gate externo (parcial)
+
+`scripts/mch_supervisor_gate.py` empaqueta el fixture, lo instala y usa el daemon real. Demostrado: lifecycle, proceso persistente (mismo PID en dos invokes), `degraded`, recovery a `ready`, restart con PID y `generation=2`, y cierre limpio a `stopped`.
+
+No demostrado: autostart y límite de reinicios. El gate devuelve `ok: false` hasta que ambas fases existan.
