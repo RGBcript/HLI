@@ -25,9 +25,15 @@ impl Theme {
     pub fn for_app(app: &App) -> Self {
         if app.no_color || std::env::var("NO_COLOR").is_ok() {
             return Self {
-                text: Color::Reset, primary: Color::Reset, success: Color::Reset,
-                warning: Color::Reset, error: Color::Reset, mch: Color::Reset,
-                memory: Color::Reset, artifact: Color::Reset, mono: true,
+                text: Color::Reset,
+                primary: Color::Reset,
+                success: Color::Reset,
+                warning: Color::Reset,
+                error: Color::Reset,
+                mch: Color::Reset,
+                memory: Color::Reset,
+                artifact: Color::Reset,
+                mono: true,
             };
         }
         Self {
@@ -43,11 +49,18 @@ impl Theme {
         }
     }
     fn s(&self, c: Color) -> Style {
-        if self.mono { Style::default() } else { Style::default().fg(c) }
+        if self.mono {
+            Style::default()
+        } else {
+            Style::default().fg(c)
+        }
     }
     fn b(&self, c: Color) -> Style {
-        if self.mono { Style::default().add_modifier(Modifier::BOLD) }
-        else { Style::default().fg(c).add_modifier(Modifier::BOLD) }
+        if self.mono {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(c).add_modifier(Modifier::BOLD)
+        }
     }
 }
 
@@ -80,18 +93,30 @@ pub fn draw(f: &mut Frame, app: &App) {
 fn draw_too_small(f: &mut Frame, area: Rect) {
     let text = vec![
         Line::from("Terminal too small"),
-        Line::from(format!("Required: 40x10")),
+        Line::from("Required: 40x10"),
         Line::from(format!("Current: {}x{}", area.width, area.height)),
         Line::from("q quit"),
     ];
-    f.render_widget(Paragraph::new(text).block(Block::default().borders(Borders::ALL)), area);
+    f.render_widget(
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL)),
+        area,
+    );
 }
 
 fn chrome(f: &mut Frame, area: Rect, app: &App, hint: bool) -> Rect {
-    let mut c = vec![Constraint::Length(3), Constraint::Min(3), Constraint::Length(1)];
-    if hint { c.push(Constraint::Length(1)); }
-    c.push(Constraint::Length(3));
-    let ch = Layout::default().direction(Direction::Vertical).constraints(c).split(area);
+    let mut c = vec![
+        Constraint::Length(3),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ];
+    if hint {
+        c.push(Constraint::Length(1));
+    }
+    c.push(Constraint::Length(4));
+    let ch = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(c)
+        .split(area);
     header(f, ch[0], app);
     let body = ch[1];
     tabs(f, ch[2], app, false);
@@ -112,7 +137,11 @@ fn draw_full(f: &mut Frame, area: Rect, app: &App) {
         .split(body);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(24), Constraint::Percentage(30), Constraint::Percentage(46)])
+        .constraints([
+            Constraint::Percentage(24),
+            Constraint::Percentage(30),
+            Constraint::Percentage(46),
+        ])
         .split(rows[0]);
     navigation(f, cols[0], app);
     collection(f, cols[1], app);
@@ -167,26 +196,44 @@ fn focus_index(f: FocusArea) -> usize {
 }
 
 fn header(f: &mut Frame, area: Rect, app: &App) {
-    let ws = app.workspaces.first().and_then(|w| w["name"].as_str()).unwrap_or("none");
-    let th = app.threads.first().and_then(|w| w["title"].as_str());
-    let br = app.branches.first().and_then(|b| b["name"].as_str()).unwrap_or("none");
-    let provider = app.selected_run.as_ref()
-        .and_then(|r| r["receipt"]["provider"].as_str()).unwrap_or("none");
-    let model = app.selected_run.as_ref()
-        .and_then(|r| r["receipt"]["model"].as_str()).unwrap_or("");
-    let sel = match th {
-        Some(t) => format!("{ws} / {t} / {br}"),
-        None => format!("workspace: {ws}"),
-    };
+    let ws = app
+        .workspaces
+        .first()
+        .and_then(|w| w["name"].as_str())
+        .unwrap_or("none");
+    let th = app
+        .threads
+        .first()
+        .and_then(|w| w["title"].as_str())
+        .unwrap_or("none");
+    let br = app
+        .branches
+        .first()
+        .and_then(|b| b["name"].as_str())
+        .unwrap_or("none");
+    let provider = app
+        .selected_run
+        .as_ref()
+        .and_then(|r| r["receipt"]["provider"].as_str())
+        .unwrap_or("none");
+    let model = app
+        .selected_run
+        .as_ref()
+        .and_then(|r| r["receipt"]["model"].as_str())
+        .unwrap_or("none");
     let line = format!(
-        "HLI │ {sel} │ {}/{} │ daemon: {}",
-        provider, if model.is_empty() { "none" } else { model },
+        "HLI │ workspace: {ws} │ thread: {th} │ branch: {br} │ provider: {provider}/{model} │ daemon: {}",
         if app.daemon { "up" } else { "down" }
     );
     let max = area.width.saturating_sub(2) as usize;
     let shown = if line.chars().count() > max {
-        format!("{}…", line.chars().take(max.saturating_sub(1)).collect::<String>())
-    } else { line };
+        format!(
+            "{}…",
+            line.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
+    } else {
+        line
+    };
     f.render_widget(
         Paragraph::new(shown).block(Block::default().borders(Borders::ALL)),
         area,
@@ -197,9 +244,17 @@ fn tabs(f: &mut Frame, area: Rect, app: &App, compact: bool) {
     let text = if compact {
         format!(" {}/6 {} ", app.tab + 1, TABS[app.tab])
     } else {
-        TABS.iter().enumerate()
-            .map(|(i, t)| if i == app.tab { format!("[{t}]") } else { t.to_string() })
-            .collect::<Vec<_>>().join(" ")
+        TABS.iter()
+            .enumerate()
+            .map(|(i, t)| {
+                if i == app.tab {
+                    format!("[{t}]")
+                } else {
+                    t.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     f.render_widget(Paragraph::new(format!(" {text}")), area);
 }
@@ -220,72 +275,172 @@ fn command(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("> ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(app.input.clone()),
     ])];
-    if app.input.is_empty() {
-        lines.push(Line::from(" sugerencia: :workspace create demo"));
-    }
-    let color = if app.status_ok { Color::Reset } else { Color::Red };
-    lines.push(Line::from(Span::styled(format!(" {}", app.status), Style::default().fg(color))));
-    f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL)), area);
+    let text = if app.input.is_empty() {
+        "suggestion: :workspace create demo".to_string()
+    } else {
+        app.status.clone()
+    };
+    let color = if app.status_ok {
+        Color::Reset
+    } else {
+        Color::Red
+    };
+    lines.push(Line::from(Span::styled(
+        format!(" {text}"),
+        Style::default().fg(color),
+    )));
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
+        area,
+    );
 }
 
 fn navigation(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
     if app.workspaces.is_empty() {
-        lines.push(Line::from(Span::styled("No workspaces", Style::default().add_modifier(Modifier::BOLD))));
-        lines.push(Line::from("Crea uno para empezar"));
+        lines.push(Line::from(Span::styled(
+            "No workspaces",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from("Create one to start"));
         lines.push(Line::from(":workspace create <name>"));
     } else {
         for (i, w) in app.workspaces.iter().enumerate() {
             let mark = if i == app.nav_index { "▸" } else { " " };
-            lines.push(Line::from(format!("{mark} {}  {}", w["id"].as_str().unwrap_or("-"), w["name"].as_str().unwrap_or(""))));
+            lines.push(Line::from(format!(
+                "{mark} {}  {}",
+                w["id"].as_str().unwrap_or("-"),
+                w["name"].as_str().unwrap_or("")
+            )));
         }
         lines.push(Line::from(""));
         for th in &app.threads {
-            lines.push(Line::from(format!("  thread {}", th["title"].as_str().unwrap_or("-"))));
+            lines.push(Line::from(format!(
+                "  thread {}",
+                th["title"].as_str().unwrap_or("-")
+            )));
         }
         for (i, b) in app.branches.iter().enumerate() {
-            let prefix = if i == 0 { app.symbol("●", "*") } else if i + 1 == app.branches.len() { app.symbol("└─●", "`-*") } else { app.symbol("├─●", "|-*") };
-            lines.push(Line::from(format!("  {prefix} {}  seq {}", b["name"].as_str().unwrap_or("-"), b["head_sequence"].as_i64().unwrap_or(0))));
+            let prefix = if i == 0 {
+                app.symbol("●", "*")
+            } else if i + 1 == app.branches.len() {
+                app.symbol("└─●", "`-*")
+            } else {
+                app.symbol("├─●", "|-*")
+            };
+            lines.push(Line::from(format!(
+                "  {prefix} {}  seq {}",
+                b["name"].as_str().unwrap_or("-"),
+                b["head_sequence"].as_i64().unwrap_or(0)
+            )));
         }
     }
-    f.render_widget(Paragraph::new(lines).block(block("Navigation", app.focus == FocusArea::Navigation, &Theme::for_app(app))).wrap(Wrap { trim: true }), area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block(
+                "Navigation",
+                app.focus == FocusArea::Navigation,
+                &Theme::for_app(app),
+            ))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn collection(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
-    if app.runs.is_empty() {
-        lines.push(Line::from(Span::styled("No runs on this branch", Style::default().add_modifier(Modifier::BOLD))));
-        lines.push(Line::from("Inicia uno para empezar"));
+    if app.workspaces.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Select or create a workspace first",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(":workspace create <name>"));
+    } else if app.threads.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No threads in this workspace",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(":thread create <title>"));
+    } else if app.branches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No branches in this thread",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(":branch create <name>"));
+    } else if app.runs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No runs on this branch",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
         lines.push(Line::from(":run start \"<task>\""));
     } else {
         for (i, r) in app.runs.iter().enumerate() {
-            let mark = if i == app.collection_index { "▸" } else { " " };
-            lines.push(Line::from(format!("{mark} {}  {}", r["id"].as_str().unwrap_or("-"), r["state"].as_str().unwrap_or("-"))));
+            let mark = if i == app.collection_index {
+                "▸"
+            } else {
+                " "
+            };
+            lines.push(Line::from(format!(
+                "{mark} {}  {}",
+                r["id"].as_str().unwrap_or("-"),
+                r["state"].as_str().unwrap_or("-")
+            )));
         }
-        lines.push(Line::from(format!(" {}/{}", app.collection_index + 1, app.runs.len())));
+        lines.push(Line::from(format!(
+            " {}/{}",
+            app.collection_index + 1,
+            app.runs.len()
+        )));
     }
-    f.render_widget(Paragraph::new(lines).block(block("Runs", app.focus == FocusArea::Collection, &Theme::for_app(app))), area);
+    f.render_widget(
+        Paragraph::new(lines).block(block(
+            "Runs",
+            app.focus == FocusArea::Collection,
+            &Theme::for_app(app),
+        )),
+        area,
+    );
 }
 
 fn inspector(f: &mut Frame, area: Rect, app: &App) {
     let t = Theme::for_app(app);
-    let title = match app.tab {
-        3 => format!("Memory {}", app.memories.first().and_then(|m| m["id"].as_str()).unwrap_or("-")),
-        4 => format!("Artifact {}", app.artifacts.first().and_then(|a| a["id"].as_str()).unwrap_or("-")),
-        5 => format!("MCH {}", app.mchs.first().and_then(|m| m["name"].as_str()).unwrap_or("-")),
-        _ => format!("Run {}", app.selected_run.as_ref().and_then(|r| r["id"].as_str()).unwrap_or("-")),
+    let title = match &app.selected_run {
+        Some(r) => format!("Run {}", r["id"].as_str().unwrap_or("-")),
+        None => "No selection".to_string(),
     };
     let mut lines = Vec::new();
     if let Some(r) = &app.selected_run {
-        lines.push(Line::from(format!("estado   {}", r["state"].as_str().unwrap_or("-"))));
-        lines.push(Line::from(format!("provider {}/{}", r["receipt"]["provider"].as_str().unwrap_or("-"), r["receipt"]["model"].as_str().unwrap_or("-"))));
-        lines.push(Line::from(format!("tokens   {} in / {} out", r["receipt"]["usage"]["input_tokens"].as_i64().unwrap_or(0), r["receipt"]["usage"]["output_tokens"].as_i64().unwrap_or(0))));
-        lines.push(Line::from(format!("coste    ${:.6}", r["receipt"]["cost"]["total"].as_f64().unwrap_or(0.0))));
-        lines.push(Line::from(format!("latencia {} ms", r["receipt"]["usage"]["latency_total_ms"].as_i64().unwrap_or(0))));
+        lines.push(Line::from(format!(
+            "estado   {}",
+            r["state"].as_str().unwrap_or("-")
+        )));
+        lines.push(Line::from(format!(
+            "provider {}/{}",
+            r["receipt"]["provider"].as_str().unwrap_or("-"),
+            r["receipt"]["model"].as_str().unwrap_or("-")
+        )));
+        lines.push(Line::from(format!(
+            "tokens   {} in / {} out",
+            r["receipt"]["usage"]["input_tokens"].as_i64().unwrap_or(0),
+            r["receipt"]["usage"]["output_tokens"].as_i64().unwrap_or(0)
+        )));
+        lines.push(Line::from(format!(
+            "coste    ${:.6}",
+            r["receipt"]["cost"]["total"].as_f64().unwrap_or(0.0)
+        )));
+        lines.push(Line::from(format!(
+            "latencia {} ms",
+            r["receipt"]["usage"]["latency_total_ms"]
+                .as_i64()
+                .unwrap_or(0)
+        )));
     } else {
-        lines.push(Line::from("Sin selección"));
+        lines.push(Line::from("No selection"));
     }
-    f.render_widget(Paragraph::new(lines).block(block(&title, app.focus == FocusArea::Inspector, &t)), area);
+    f.render_widget(
+        Paragraph::new(lines).block(block(&title, app.focus == FocusArea::Inspector, &t)),
+        area,
+    );
 }
 
 fn detail(f: &mut Frame, area: Rect, app: &App) {
@@ -298,13 +453,27 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
         5 => mch_lines(app),
         _ => run_lines(app),
     };
-    f.render_widget(Paragraph::new(lines).block(block(TABS[app.tab], app.focus == FocusArea::DetailTabs, &t)).wrap(Wrap { trim: true }), area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block(TABS[app.tab], app.focus == FocusArea::DetailTabs, &t))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn run_lines(app: &App) -> Vec<Line<'static>> {
-    let mut v = vec![Line::from(format!("payload_hash {}", app.manifest.as_ref().and_then(|m| m["payload_hash"].as_str()).unwrap_or("-")))];
+    let mut v = vec![Line::from(format!(
+        "payload_hash {}",
+        app.manifest
+            .as_ref()
+            .and_then(|m| m["payload_hash"].as_str())
+            .unwrap_or("-")
+    ))];
     if let Some(m) = &app.manifest {
-        v.push(Line::from(format!("presupuesto {} · estimado {}", m["budget_tokens"], m["estimated_tokens"])));
+        v.push(Line::from(format!(
+            "presupuesto {} · estimado {}",
+            m["budget_tokens"], m["estimated_tokens"]
+        )));
     }
     v
 }
@@ -312,26 +481,62 @@ fn run_lines(app: &App) -> Vec<Line<'static>> {
 fn event_lines(app: &App) -> Vec<Line<'static>> {
     let mut v = Vec::new();
     let needle = app.filter.as_deref().unwrap_or("").to_lowercase();
-    for e in app.events.iter().rev()
-        .filter(|e| needle.is_empty() || e["type"].as_str().unwrap_or("").to_lowercase().contains(&needle))
-        .skip(app.scroll).take(20) {
-        v.push(Line::from(format!("{:>4}  {:<30} {}", e["sequence"].as_i64().unwrap_or(0), e["type"].as_str().unwrap_or("-"), e["created_at"].as_str().unwrap_or("-"))));
+    for e in app
+        .events
+        .iter()
+        .rev()
+        .filter(|e| {
+            needle.is_empty()
+                || e["type"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&needle)
+        })
+        .skip(app.scroll)
+        .take(20)
+    {
+        v.push(Line::from(format!(
+            "{:>4}  {:<30} {}",
+            e["sequence"].as_i64().unwrap_or(0),
+            e["type"].as_str().unwrap_or("-"),
+            e["created_at"].as_str().unwrap_or("-")
+        )));
     }
-    v.push(Line::from(format!(" {}/{}", app.scroll + 1, app.events.len().max(1))));
+    v.push(Line::from(format!(
+        " {}/{}",
+        app.scroll + 1,
+        app.events.len().max(1)
+    )));
     v
 }
 
 fn context_lines(app: &App) -> Vec<Line<'static>> {
     let mut v = Vec::new();
     if let Some(m) = &app.manifest {
-        v.push(Line::from(format!("user_input {}", m["user_input"]["content"].as_str().unwrap_or("-"))));
-        v.push(Line::from(format!("payload_hash {}", m["payload_hash"].as_str().unwrap_or("-"))));
+        v.push(Line::from(format!(
+            "user_input {}",
+            m["user_input"]["content"].as_str().unwrap_or("-")
+        )));
+        v.push(Line::from(format!(
+            "payload_hash {}",
+            m["payload_hash"].as_str().unwrap_or("-")
+        )));
         let mems = m["memories"].as_array().map(|a| a.len()).unwrap_or(0);
-        let slices = m["artifact_slices"].as_array().map(|a| a.len()).unwrap_or(0);
+        let slices = m["artifact_slices"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
         let excl = m["excluded"].as_array().map(|a| a.len()).unwrap_or(0);
-        v.push(Line::from(format!("memorias {mems} · slices {slices} · excluidos {excl}")));
+        v.push(Line::from(format!(
+            "memorias {mems} · slices {slices} · excluidos {excl}"
+        )));
         for s in m["artifact_slices"].as_array().cloned().unwrap_or_default() {
-            v.push(Line::from(format!("slice {} · {}", s["slice_id"].as_str().unwrap_or("-"), s["reason"].as_str().unwrap_or(""))));
+            v.push(Line::from(format!(
+                "slice {} · {}",
+                s["slice_id"].as_str().unwrap_or("-"),
+                s["reason"].as_str().unwrap_or("")
+            )));
         }
     }
     v
@@ -340,14 +545,31 @@ fn context_lines(app: &App) -> Vec<Line<'static>> {
 fn memory_lines(app: &App) -> Vec<Line<'static>> {
     let mut v = Vec::new();
     for status in ["active", "superseded", "revoked", "proposed"] {
-        let sel: Vec<&Value> = app.memories.iter().filter(|m| m["status"].as_str() == Some(status)).collect();
-        if sel.is_empty() { continue; }
+        let sel: Vec<&Value> = app
+            .memories
+            .iter()
+            .filter(|m| m["status"].as_str() == Some(status))
+            .collect();
+        if sel.is_empty() {
+            continue;
+        }
         v.push(Line::from(format!("{status} ({})", sel.len())));
         for m in sel {
             let extra = if status == "superseded" {
-                format!(" · superseded_at {}", m["superseded_at"].as_str().unwrap_or("-"))
-            } else { String::new() };
-            v.push(Line::from(format!("  {}  {}{}  [{}]", m["id"].as_str().unwrap_or("-"), m["content"].as_str().unwrap_or(""), extra, m["source_authority"].as_str().unwrap_or("user"))));
+                format!(
+                    " · superseded_at {}",
+                    m["superseded_at"].as_str().unwrap_or("-")
+                )
+            } else {
+                String::new()
+            };
+            v.push(Line::from(format!(
+                "  {}  {}{}  [{}]",
+                m["id"].as_str().unwrap_or("-"),
+                m["content"].as_str().unwrap_or(""),
+                extra,
+                m["source_authority"].as_str().unwrap_or("user")
+            )));
         }
     }
     v
@@ -356,7 +578,13 @@ fn memory_lines(app: &App) -> Vec<Line<'static>> {
 fn artifact_lines(app: &App) -> Vec<Line<'static>> {
     let mut v = Vec::new();
     for a in &app.artifacts {
-        v.push(Line::from(format!("{}  {}  {} bytes  {}", a["id"].as_str().unwrap_or("-"), a["mime"].as_str().unwrap_or("-"), a["bytes"].as_i64().unwrap_or(0), a["sha256"].as_str().unwrap_or("-"))));
+        v.push(Line::from(format!(
+            "{}  {}  {} bytes  {}",
+            a["id"].as_str().unwrap_or("-"),
+            a["mime"].as_str().unwrap_or("-"),
+            a["bytes"].as_i64().unwrap_or(0),
+            a["sha256"].as_str().unwrap_or("-")
+        )));
     }
     v
 }
@@ -364,12 +592,28 @@ fn artifact_lines(app: &App) -> Vec<Line<'static>> {
 fn mch_lines(app: &App) -> Vec<Line<'static>> {
     let mut v = Vec::new();
     for m in &app.mchs {
-        v.push(Line::from(format!("Profile: {}", m["profile"].as_str().unwrap_or("-"))));
-        v.push(Line::from(format!("  módulo {}", m["module"].as_str().unwrap_or("-"))));
-        v.push(Line::from(format!("Instance: {} [{}]", m["name"].as_str().unwrap_or("-"), m["state"].as_str().unwrap_or("-"))));
-        v.push(Line::from(format!("  workspace {}", m["workspace_id"].as_str().unwrap_or("-"))));
+        v.push(Line::from(format!(
+            "Profile: {}",
+            m["profile"].as_str().unwrap_or("-")
+        )));
+        v.push(Line::from(format!(
+            "  módulo {}",
+            m["module"].as_str().unwrap_or("-")
+        )));
+        v.push(Line::from(format!(
+            "Instance: {} [{}]",
+            m["name"].as_str().unwrap_or("-"),
+            m["state"].as_str().unwrap_or("-")
+        )));
+        v.push(Line::from(format!(
+            "  workspace {}",
+            m["workspace_id"].as_str().unwrap_or("-")
+        )));
         v.push(Line::from("Process: supervisado por HLI"));
-        v.push(Line::from(format!("Endpoint: CLI hli mch invoke {} · MCP mch_invoke", m["name"].as_str().unwrap_or("-"))));
+        v.push(Line::from(format!(
+            "Endpoint: CLI hli mch invoke {} · MCP mch_invoke",
+            m["name"].as_str().unwrap_or("-")
+        )));
     }
     v
 }
@@ -379,18 +623,30 @@ fn draw_help(f: &mut Frame, area: Rect, _app: &App) {
     let h = area.height.min(18);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let rect = Rect { x, y, width: w, height: h };
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
     f.render_widget(Clear, rect);
     let text = vec![
-        Line::from("Ayuda de HLI"),
+        Line::from("HLI help"),
         Line::from(""),
-        Line::from("Navegación  Tab / Shift+Tab panel · ↑↓ mover · Enter abrir"),
+        Line::from("Navigation  Tab / Shift+Tab panel · arrows move · Enter open"),
         Line::from("Tabs        ←→ o 1..6 · [activa]"),
-        Line::from("Command     : abre · Enter ejecuta · Esc cancela · ↑↓ historial"),
-        Line::from("Estados     ● activo · ✓ completado · ◌ pausado · ! aprobación · × fallido · ↻ ejecutando"),
-        Line::from("Símbolos    * OK RUN X en modo ASCII"),
+        Line::from("Command     : opens · Enter runs · Esc cancels · arrows history"),
+        Line::from(
+            "States      ● active · ✓ completed · ◌ paused · ! approval · × failed · ↻ running",
+        ),
+        Line::from("Symbols     * OK RUN X in ASCII mode"),
         Line::from(""),
-        Line::from("Esc, ? o q cierran esta ayuda"),
+        Line::from("Esc, ? or q closes this help"),
     ];
-    f.render_widget(Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" ? ")).wrap(Wrap { trim: true }), rect);
+    f.render_widget(
+        Paragraph::new(text)
+            .block(Block::default().borders(Borders::ALL).title(" ? "))
+            .wrap(Wrap { trim: true }),
+        rect,
+    );
 }

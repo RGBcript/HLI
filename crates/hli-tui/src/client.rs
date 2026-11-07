@@ -26,18 +26,23 @@ pub fn call(cmd: &str, args: Value) -> Result<Value, String> {
     writeln!(s, "{}", req).map_err(|e| e.to_string())?;
     s.flush().map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(s).read_line(&mut line).map_err(|e| e.to_string())?;
+    BufReader::new(s)
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     let resp: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     if resp["ok"].as_bool() == Some(true) {
         Ok(resp["data"].clone())
     } else {
-        Err(resp["error"]["message"].as_str().unwrap_or("error").to_string())
+        Err(resp["error"]["message"]
+            .as_str()
+            .unwrap_or("error")
+            .to_string())
     }
 }
 
 pub fn program() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|p| Some(p.with_file_name(if cfg!(windows) { "hli.exe" } else { "hli" })))
+        .map(|p| p.with_file_name(if cfg!(windows) { "hli.exe" } else { "hli" }))
         .unwrap_or_else(|| PathBuf::from("hli"))
 }

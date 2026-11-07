@@ -8,7 +8,13 @@ fn render(app: &App, w: u16, h: u16) -> String {
     let backend = TestBackend::new(w, h);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::draw(f, app)).unwrap();
-    terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect()
 }
 
 #[test]
@@ -16,7 +22,9 @@ fn exactly_one_focus() {
     let app = App::demo();
     assert_eq!(app.focus, FocusArea::Navigation);
     let mut app = app;
-    for _ in 0..5 { app.cycle_focus(); }
+    for _ in 0..5 {
+        app.cycle_focus();
+    }
     assert_eq!(app.focus, FocusArea::Navigation);
 }
 
@@ -24,7 +32,9 @@ fn exactly_one_focus() {
 fn tab_cycles_focus() {
     let mut app = App::demo();
     let start = app.focus;
-    for _ in 0..5 { app.cycle_focus(); }
+    for _ in 0..5 {
+        app.cycle_focus();
+    }
     assert_eq!(app.focus, start);
 }
 
@@ -117,10 +127,10 @@ fn help_overlay_opens_and_closes() {
     let mut app = App::demo();
     app.open_help();
     let text = render(&app, 120, 40);
-    assert!(text.contains("Ayuda de HLI"));
+    assert!(text.contains("HLI help"));
     app.close_help();
     let text = render(&app, 120, 40);
-    assert!(!text.contains("Ayuda de HLI"));
+    assert!(!text.contains("HLI help"));
 }
 
 #[test]
@@ -208,7 +218,10 @@ fn tui_uses_daemon_api_only() {
 #[test]
 fn command_bar_reuses_cli_parser() {
     let args = split_command("run start --prompt \"hola mundo\" --top-k 5");
-    assert_eq!(args, vec!["run", "start", "--prompt", "hola mundo", "--top-k", "5"]);
+    assert_eq!(
+        args,
+        vec!["run", "start", "--prompt", "hola mundo", "--top-k", "5"]
+    );
     let p = hli_tui::client::program();
     assert!(p.file_name().unwrap().to_string_lossy().starts_with("hli"));
 }
@@ -223,4 +236,46 @@ fn json_output_remains_unchanged() {
     let text = String::from_utf8_lossy(&out.stdout);
     let v: serde_json::Value = serde_json::from_str(&text).expect("JSON del CLI");
     assert!(v.get("running").is_some());
+}
+
+#[test]
+fn empty_state_respects_dependency_order() {
+    let app = App::empty();
+    let text = render(&app, 120, 40);
+    assert!(text.contains("Select or create a workspace first"));
+    assert!(!text.contains(":run start"));
+}
+
+#[test]
+fn header_labels_all_none_values() {
+    let app = App::empty();
+    let text = render(&app, 120, 40);
+    assert!(text.contains("workspace: none"));
+    assert!(text.contains("thread: none"));
+    assert!(text.contains("branch: none"));
+}
+
+#[test]
+fn language_is_consistent() {
+    let app = App::demo();
+    let text = render(&app, 120, 40);
+    for es in ["Sin selección", "Crea uno", "sugerencia", "Ayuda de HLI"] {
+        assert!(!text.contains(es), "texto en español: {es}");
+    }
+    assert!(text.contains("suggestion"));
+}
+
+#[test]
+fn inspector_title_matches_selection() {
+    let app = App::demo();
+    assert!(render(&app, 120, 40).contains("Run run_demo"));
+    let empty = App::empty();
+    assert!(render(&empty, 120, 40).contains("No selection"));
+}
+
+#[test]
+fn terminal_is_restored_after_panic() {
+    hli_tui::install_panic_hook();
+    let _ = std::panic::catch_unwind(|| panic!("test de restauracion"));
+    assert!(hli_tui::panic_restored());
 }

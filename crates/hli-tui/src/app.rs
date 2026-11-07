@@ -101,6 +101,12 @@ pub struct App {
     last_lists: Instant,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         let mut app = Self {
@@ -121,7 +127,7 @@ impl App {
             selected_run: None,
             manifest: None,
             input: String::new(),
-            status: "listo · ? ayuda · : comando · q salir".into(),
+            status: "ready · ? help · : command · q quit".into(),
             status_ok: true,
             help: false,
             filter: None,
@@ -172,8 +178,12 @@ impl App {
                 json!({"id": "mem_1", "status": "active", "content": "SQLite es la fuente de verdad.", "source_authority": "user", "superseded_at": null}),
                 json!({"id": "mem_0", "status": "superseded", "content": "PostgreSQL era la fuente.", "source_authority": "legacy", "superseded_at": "2026-11-07T09:00:00Z"}),
             ],
-            artifacts: vec![json!({"id": "art_1", "mime": "text/plain", "bytes": 42, "sha256": "sha256:abc"})],
-            mchs: vec![json!({"name": "memory-main", "profile": "memory", "state": "ready", "module": "hli-memory", "domain": "memory", "workspace_id": "ws_demo"})],
+            artifacts: vec![
+                json!({"id": "art_1", "mime": "text/plain", "bytes": 42, "sha256": "sha256:abc"}),
+            ],
+            mchs: vec![
+                json!({"name": "memory-main", "profile": "memory", "state": "ready", "module": "hli-memory", "domain": "memory", "workspace_id": "ws_demo"}),
+            ],
             selected_run: Some(run),
             manifest: Some(json!({
                 "budget_tokens": 2048, "estimated_tokens": 120, "payload_hash": "sha256:deadbeef",
@@ -238,7 +248,17 @@ impl App {
             let id = ws["id"].as_str().unwrap_or("");
             self.runs = arr(client::call("run.list", json!({"workspace_id": id})));
         }
-        let idx = self.selected_run_id.as_ref()
+        if self.runs.is_empty() {
+            self.selected_run = None;
+            self.manifest = None;
+            self.selected_run_id = None;
+            self.collection_index = 0;
+            self.last_runs = Instant::now();
+            return;
+        }
+        let idx = self
+            .selected_run_id
+            .as_ref()
             .and_then(|id| self.runs.iter().position(|r| r["id"].as_str() == Some(id)))
             .unwrap_or(0);
         self.collection_index = idx;
@@ -263,20 +283,48 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        if self.last_runs.elapsed() >= Duration::from_millis(500) { self.refresh_runs(); }
-        if self.last_events.elapsed() >= Duration::from_secs(1) { self.refresh_events(); }
-        if self.last_lists.elapsed() >= Duration::from_secs(4) { self.refresh_lists(); }
+        if self.last_runs.elapsed() >= Duration::from_millis(500) {
+            self.refresh_runs();
+        }
+        if self.last_events.elapsed() >= Duration::from_secs(1) {
+            self.refresh_events();
+        }
+        if self.last_lists.elapsed() >= Duration::from_secs(4) {
+            self.refresh_lists();
+        }
     }
 
-    pub fn cycle_focus(&mut self) { self.focus = self.focus.next(); }
-    pub fn cycle_focus_back(&mut self) { self.focus = self.focus.prev(); }
-    pub fn next_tab(&mut self) { self.tab = (self.tab + 1) % 6; self.scroll = 0; }
-    pub fn prev_tab(&mut self) { self.tab = (self.tab + 5) % 6; self.scroll = 0; }
-    pub fn scroll_down(&mut self, max: usize) { if self.scroll + 1 < max { self.scroll += 1; } }
-    pub fn scroll_up(&mut self) { self.scroll = self.scroll.saturating_sub(1); }
-    pub fn open_help(&mut self) { self.help = true; }
-    pub fn close_help(&mut self) { self.help = false; }
-    pub fn start_command(&mut self) { self.focus = FocusArea::CommandBar; }
+    pub fn cycle_focus(&mut self) {
+        self.focus = self.focus.next();
+    }
+    pub fn cycle_focus_back(&mut self) {
+        self.focus = self.focus.prev();
+    }
+    pub fn next_tab(&mut self) {
+        self.tab = (self.tab + 1) % 6;
+        self.scroll = 0;
+    }
+    pub fn prev_tab(&mut self) {
+        self.tab = (self.tab + 5) % 6;
+        self.scroll = 0;
+    }
+    pub fn scroll_down(&mut self, max: usize) {
+        if self.scroll + 1 < max {
+            self.scroll += 1;
+        }
+    }
+    pub fn scroll_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(1);
+    }
+    pub fn open_help(&mut self) {
+        self.help = true;
+    }
+    pub fn close_help(&mut self) {
+        self.help = false;
+    }
+    pub fn start_command(&mut self) {
+        self.focus = FocusArea::CommandBar;
+    }
     pub fn cancel_command(&mut self) {
         self.input.clear();
         self.history_index = None;
@@ -284,7 +332,9 @@ impl App {
     }
 
     pub fn history_up(&mut self) {
-        if self.history.is_empty() { return; }
+        if self.history.is_empty() {
+            return;
+        }
         let i = match self.history_index {
             None => self.history.len() - 1,
             Some(0) => 0,
@@ -310,10 +360,19 @@ impl App {
 
     pub fn run_command(&mut self) {
         let line = self.input.trim().to_string();
-        if line.is_empty() { return; }
+        if line.is_empty() {
+            return;
+        }
         if let Some(f) = line.strip_prefix('/') {
             self.filter = Some(f.trim().to_string());
-            self.status = format!("filtro: {}", if f.trim().is_empty() { "(ninguno)" } else { f.trim() });
+            self.status = format!(
+                "filter: {}",
+                if f.trim().is_empty() {
+                    "(none)"
+                } else {
+                    f.trim()
+                }
+            );
             self.status_ok = true;
             self.input.clear();
             self.focus = FocusArea::Navigation;
@@ -322,7 +381,9 @@ impl App {
         self.history.push(line.clone());
         self.history_index = None;
         let mut args = split_command(&line);
-        if args.is_empty() { return; }
+        if args.is_empty() {
+            return;
+        }
         if args[0] == "workspace" && args.get(1).map(String::as_str) == Some("open") {
             args[1] = "get".into();
         }
@@ -352,18 +413,25 @@ impl App {
     }
 
     pub fn selected_index(&self) -> usize {
-        self.selected_run_id.as_ref()
+        self.selected_run_id
+            .as_ref()
             .and_then(|id| self.runs.iter().position(|r| r["id"].as_str() == Some(id)))
             .unwrap_or(0)
     }
 
     pub fn symbol(&self, unicode: &str, ascii: &str) -> String {
-        if self.ascii { ascii.to_string() } else { unicode.to_string() }
+        if self.ascii {
+            ascii.to_string()
+        } else {
+            unicode.to_string()
+        }
     }
 }
 
 fn arr(v: Result<Value, String>) -> Vec<Value> {
-    v.ok().and_then(|x| x.as_array().cloned()).unwrap_or_default()
+    v.ok()
+        .and_then(|x| x.as_array().cloned())
+        .unwrap_or_default()
 }
 
 /// Divide respetando comillas; el parser real sigue siendo el de hli-cli.
@@ -377,11 +445,15 @@ pub fn split_command(line: &str) -> Vec<String> {
             (Some(_), c) => cur.push(c),
             (None, '"') | (None, '\'') => quote = Some(c),
             (None, ' ') => {
-                if !cur.is_empty() { out.push(std::mem::take(&mut cur)); }
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
             }
             (None, c) => cur.push(c),
         }
     }
-    if !cur.is_empty() { out.push(cur); }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
     out
 }
