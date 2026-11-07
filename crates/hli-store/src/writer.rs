@@ -100,6 +100,30 @@ pub enum WriteCmd {
         archive: PathBuf,
         reply: Reply<ImportReport>,
     },
+    CreateRun {
+        workspace_id: String,
+        thread_id: String,
+        branch_id: String,
+        prompt: String,
+        reply: Reply<Run>,
+    },
+    SaveManifest {
+        manifest: ContextManifest,
+        reply: Reply<ContextManifest>,
+    },
+    RunEvent {
+        run_id: String,
+        kind: String,
+        payload: Value,
+        reply: Reply<Event>,
+    },
+    FinishRun {
+        run_id: String,
+        state: String,
+        result: Option<Value>,
+        receipt: Option<Receipt>,
+        reply: Reply<Run>,
+    },
     Stop {
         reply: Reply<()>,
     },
@@ -197,6 +221,51 @@ impl Writer {
         self.call(|reply| WriteCmd::Import { archive, reply })
     }
 
+    pub fn create_run(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+        branch_id: &str,
+        prompt: &str,
+    ) -> Result<Run> {
+        self.call(|reply| WriteCmd::CreateRun {
+            workspace_id: workspace_id.to_string(),
+            thread_id: thread_id.to_string(),
+            branch_id: branch_id.to_string(),
+            prompt: prompt.to_string(),
+            reply,
+        })
+    }
+
+    pub fn save_manifest(&self, manifest: ContextManifest) -> Result<ContextManifest> {
+        self.call(|reply| WriteCmd::SaveManifest { manifest, reply })
+    }
+
+    pub fn run_event(&self, run_id: &str, kind: &str, payload: Value) -> Result<Event> {
+        self.call(|reply| WriteCmd::RunEvent {
+            run_id: run_id.to_string(),
+            kind: kind.to_string(),
+            payload,
+            reply,
+        })
+    }
+
+    pub fn finish_run(
+        &self,
+        run_id: &str,
+        state: &str,
+        result: Option<Value>,
+        receipt: Option<Receipt>,
+    ) -> Result<Run> {
+        self.call(|reply| WriteCmd::FinishRun {
+            run_id: run_id.to_string(),
+            state: state.to_string(),
+            result,
+            receipt,
+            reply,
+        })
+    }
+
     pub fn stop(&self) -> Result<()> {
         self.call(|reply| WriteCmd::Stop { reply })
     }
@@ -276,6 +345,18 @@ impl State {
             }
             WriteCmd::Import { archive, reply } => {
                 let _ = reply.send(self.import(&archive));
+            }
+            WriteCmd::CreateRun { workspace_id, thread_id, branch_id, prompt, reply } => {
+                let _ = reply.send(self.create_run(&workspace_id, &thread_id, &branch_id, &prompt));
+            }
+            WriteCmd::SaveManifest { manifest, reply } => {
+                let _ = reply.send(self.save_manifest(manifest));
+            }
+            WriteCmd::RunEvent { run_id, kind, payload, reply } => {
+                let _ = reply.send(self.run_event(&run_id, &kind, payload));
+            }
+            WriteCmd::FinishRun { run_id, state, result, receipt, reply } => {
+                let _ = reply.send(self.finish_run(&run_id, &state, result, receipt));
             }
             WriteCmd::Stop { reply } => {
                 let _ = reply.send(Ok(()));
@@ -424,6 +505,151 @@ impl State {
         let mut br = br;
         br.snapshot_id = Some(snap.id);
         Ok(br)
+    }
+
+    fn create_run(
+        &mut self,
+        workspace_id: &str,
+        thread_id: &str,
+        branch_id: &str,
+        prompt: &str,
+    ) -> Result<Run> {
+        schema::require_workspace(&self.conn, workspace_id)?;
+        let (th_ws, br_thread): (String, String) = self
+            .conn
+            .query_row(
+                "SELECT workspace_id, id FROM threads WHERE id = ?1",
+                [thread_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("thread {thread_id}")))?;
+        if th_ws != workspace_id {
+            return Err(HliError::conflict("el thread pertenece a otro workspace"));
+        }
+        if br_thread != thread_id {
+            return Err(HliError::conflict("la branch pertenece a otro thread"));
+        }
+        let revision: i64 = self
+            .conn
+            .query_row(
+                "SELECT head_sequence FROM branches WHERE id = ?1 AND thread_id = ?2",
+                params![branch_id, thread_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("branch {branch_id}")))?;
+
+        let tx = self.conn.transaction()?;
+        let run = Run {
+            id: new_id("run"),
+            workspace_id: workspace_id.to_string(),
+            thread_id: thread_id.to_string(),
+            branch_id: branch_id.to_string(),
+            branch_revision: revision,
+            state: "queued".into(),
+            prompt: prompt.to_string(),
+            started_at: now_iso(),
+            ended_at: None,
+            result: None,
+            receipt: None,
+        };
+        tx.execute(
+            "INSERT INTO runs(id, workspace_id, thread_id, branch_id, branch_revision, state,
+                              prompt, started_at, ended_at, result_json, receipt_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL)",
+            params![run.id, run.workspace_id, run.thread_id, run.branch_id, run.branch_revision,
+                    run.state, run.prompt, run.started_at],
+        )?;
+        append_event(
+            &tx, workspace_id, Some(thread_id), Some(branch_id),
+            "run.queued",
+            json!({"kind": "agent", "id": "hli"}),
+            json!({"run_id": run.id, "branch_revision": run.branch_revision}),
+            vec![], None,
+        )?;
+        tx.commit()?;
+        Ok(run)
+    }
+
+    fn save_manifest(&mut self, manifest: ContextManifest) -> Result<ContextManifest> {
+        let mut m = manifest;
+        m.seal();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO context_manifests(id, workspace_id, run_id, branch_revision, budget_tokens,
+                                           estimated_tokens, content_hash, body_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![m.manifest_id, m.workspace_id, m.run_id, m.branch_revision, m.budget_tokens,
+                    m.estimated_tokens, m.content_hash, canonical_json(&serde_json::to_value(&m).unwrap_or(json!({}))), m.created_at],
+        )?;
+        append_event(
+            &tx, &m.workspace_id, None, None,
+            "context.manifest.created",
+            json!({"kind": "agent", "id": "hli"}),
+            json!({"run_id": m.run_id, "manifest_id": m.manifest_id,
+                   "content_hash": m.content_hash, "estimated_tokens": m.estimated_tokens}),
+            vec![], None,
+        )?;
+        tx.commit()?;
+        Ok(m)
+    }
+
+    fn run_event(&mut self, run_id: &str, kind: &str, payload: Value) -> Result<Event> {
+        let (ws, th, br): (String, String, String) = self
+            .conn
+            .query_row(
+                "SELECT workspace_id, thread_id, branch_id FROM runs WHERE id = ?1",
+                [run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("run {run_id}")))?;
+        let tx = self.conn.transaction()?;
+        let ev = append_event(
+            &tx, &ws, Some(&th), Some(&br), kind,
+            json!({"kind": "agent", "id": "hli"}),
+            payload, vec![], None,
+        )?;
+        tx.commit()?;
+        Ok(ev)
+    }
+
+    fn finish_run(
+        &mut self,
+        run_id: &str,
+        state: &str,
+        result: Option<Value>,
+        receipt: Option<Receipt>,
+    ) -> Result<Run> {
+        let run = load_run(&self.conn, run_id)?
+            .ok_or_else(|| HliError::not_found(&format!("run {run_id}")))?;
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE runs SET state = ?1, ended_at = ?2, result_json = ?3, receipt_json = ?4 WHERE id = ?5",
+            params![
+                state,
+                now_iso(),
+                result.as_ref().map(canonical_json),
+                receipt.as_ref().map(|r| canonical_json(&serde_json::to_value(r).unwrap_or(json!({})))),
+                run_id
+            ],
+        )?;
+        append_event(
+            &tx, &run.workspace_id, Some(&run.thread_id), Some(&run.branch_id),
+            &format!("run.{state}"),
+            json!({"kind": "agent", "id": "hli"}),
+            json!({"run_id": run.id, "state": state,
+                   "receipt": receipt.is_some(), "result": result.is_some()}),
+            vec![], None,
+        )?;
+        tx.commit()?;
+        let mut out = load_run(&self.conn, run_id)?
+            .ok_or_else(|| HliError::internal("run desaparecido"))?;
+        if let Some(r) = receipt {
+            out.receipt = Some(r);
+        }
+        Ok(out)
     }
 
     fn put_artifact(&mut self, workspace_id: &str, source: &PathBuf) -> Result<ArtifactInfo> {
@@ -1030,4 +1256,37 @@ pub(crate) fn load_events(conn: &Connection, workspace_id: &str) -> Result<Vec<E
     ))?;
     let rows = stmt.query_map([workspace_id], row_to_event)?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+
+pub(crate) const RUN_COLS: &str = "id, workspace_id, thread_id, branch_id, branch_revision, state,
+    prompt, started_at, ended_at, result_json, receipt_json";
+
+pub(crate) fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
+    Ok(Run {
+        id: r.get(0)?,
+        workspace_id: r.get(1)?,
+        thread_id: r.get(2)?,
+        branch_id: r.get(3)?,
+        branch_revision: r.get(4)?,
+        state: r.get(5)?,
+        prompt: r.get(6)?,
+        started_at: r.get(7)?,
+        ended_at: r.get(8)?,
+        result: r.get::<_, Option<String>>(9)?.and_then(|s| serde_json::from_str(&s).ok()),
+        receipt: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()),
+    })
+}
+
+pub(crate) fn load_run(conn: &Connection, id: &str) -> Result<Option<Run>> {
+    Ok(conn
+        .query_row(&format!("SELECT {RUN_COLS} FROM runs WHERE id = ?1"), [id], row_to_run)
+        .optional()?)
+}
+
+pub(crate) fn load_manifest(conn: &Connection, id: &str) -> Result<Option<ContextManifest>> {
+    let body: Option<String> = conn
+        .query_row("SELECT body_json FROM context_manifests WHERE id = ?1", [id], |r| r.get(0))
+        .optional()?;
+    Ok(body.and_then(|b| serde_json::from_str(&b).ok()))
 }

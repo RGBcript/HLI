@@ -2,7 +2,7 @@
 
 Harness ligero, local, autónomo y multiproveedor.
 
-**Estado: HLI 0.1 (durabilidad) implementado y verificado.** Las fases 0.2–0.4 no están implementadas todavía; este repositorio no las simula.
+**Estado: HLI 0.1 (durabilidad) y 0.2 (contexto y ejecución) implementados y verificados.** Las fases 0.3 y 0.4 no están implementadas todavía; este repositorio no las simula.
 
 ## Qué hay en 0.1
 
@@ -16,7 +16,17 @@ Harness ligero, local, autónomo y multiproveedor.
 - `verify` de la cadena completa.
 - `export`/`import` en contenedor `hliar` con verificación de hashes y cadena.
 
-Fuera de 0.1, por diseño: agent loop, ContextManifest, MCP, ACP, memoria, compactación, módulos, MCH. Se implementan en 0.2–0.4.
+## Qué hay en 0.2
+
+- `Run` fijado a workspace, thread, branch y `branch_revision`.
+- `ContextManifest` inmutable, persistido antes de `model.requested`.
+- Proveedor simulado determinista, sin red ni coste.
+- Agent loop básico: contexto → model.requested → model.responded → tool opcional → fin.
+- `Reproducibility Receipt` por run.
+- Permisos `allow`, `ask`, `deny`; Tool Runtime con `filesystem.read` y `filesystem.write` confinadas al root del workspace.
+- Recuperación de runs y manifiestos tras reiniciar el daemon.
+
+Fuera de 0.2, por diseño: MCP, ACP, memoria, compactación, módulos, MCH y sandbox de sistema operativo (`shell` denegado por política). Se implementan en 0.3–0.4.
 
 ## Compilar y probar
 
@@ -25,7 +35,7 @@ cargo build --workspace
 cargo test
 ```
 
-`cargo test` ejecuta 16 pruebas: 10 unitarias del núcleo, 2 del contenedor de export y 4 de extremo a extremo (reinicio real del daemon, export/import, idempotencia, manifiesto manipulado).
+`cargo test` ejecuta 25 pruebas: 10 unitarias del núcleo, 2 del contenedor de export, 5 del agent runtime y 8 de extremo a extremo (0.1: reinicio, export/import, idempotencia, manifiesto manipulado; 0.2: run+manifiesto+receipt, permisos read/write/shell).
 
 ## Uso
 
@@ -39,6 +49,8 @@ target/debug/hli branch create alternative --thread <thr> --from <evt>
 target/debug/hli verify --workspace <ws>
 target/debug/hli export <ws> --out demo.hliar
 target/debug/hli import demo.hliar
+target/debug/hli run start --workspace <ws> --thread <thr> --branch <br> --prompt "hola"
+target/debug/hli run get <run>
 target/debug/hli daemon stop
 ```
 
@@ -67,3 +79,4 @@ Ver `docs/adr/`. Las relevantes para 0.1:
 - ADR-0003: JCS implementado como subconjunto documentado.
 - ADR-0004: contenedor `hliar` provisional.
 - ADR-0005: alcance estricto de 0.1.
+- ADR-0006: run, ContextManifest y agent loop de 0.2.

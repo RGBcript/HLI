@@ -147,6 +147,106 @@ pub struct BadEvent {
     pub reason: String,
 }
 
+
+// ---------------------------------------------------------------------------
+// 0.2 — Runs, manifiestos y receipts
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Run {
+    pub id: String,
+    pub workspace_id: String,
+    pub thread_id: String,
+    pub branch_id: String,
+    pub branch_revision: i64,
+    pub state: String,
+    pub prompt: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub result: Option<Value>,
+    pub receipt: Option<Receipt>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Receipt {
+    pub provider: String,
+    pub model: String,
+    pub adapter_version: String,
+    pub context_manifest: String,
+    pub tool_schemas: Vec<String>,
+    pub effective_permissions: Value,
+    pub nonsecret_environment: Value,
+    pub secret_handles: Vec<Value>,
+    pub input_artifacts: Vec<String>,
+    pub module_versions: Vec<String>,
+    pub sampling: Value,
+    pub result_artifacts: Vec<String>,
+    pub sandbox: Value,
+    pub terminal_event: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ContextManifest {
+    pub manifest_id: String,
+    pub policy_version: String,
+    pub workspace_id: String,
+    pub run_id: String,
+    pub branch_revision: i64,
+    pub budget_tokens: i64,
+    pub instructions: Vec<Value>,
+    pub memories: Vec<Value>,
+    pub recent_events: Vec<Value>,
+    pub summaries: Vec<Value>,
+    pub artifact_slices: Vec<Value>,
+    pub excluded: Vec<Value>,
+    pub estimated_tokens: i64,
+    pub content_hash: String,
+    pub created_at: String,
+}
+
+impl ContextManifest {
+    /// Sobre canónico: todos los campos menos `content_hash`.
+    pub fn envelope(&self) -> Value {
+        json!({
+            "manifest_id": self.manifest_id,
+            "policy_version": self.policy_version,
+            "workspace_id": self.workspace_id,
+            "run_id": self.run_id,
+            "branch_revision": self.branch_revision,
+            "budget_tokens": self.budget_tokens,
+            "instructions": self.instructions,
+            "memories": self.memories,
+            "recent_events": self.recent_events,
+            "summaries": self.summaries,
+            "artifact_slices": self.artifact_slices,
+            "excluded": self.excluded,
+            "estimated_tokens": self.estimated_tokens,
+            "created_at": self.created_at
+        })
+    }
+
+    pub fn seal(&mut self) {
+        self.content_hash = hash_canonical(&self.envelope());
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ToolOutcome {
+    pub tool: String,
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub stdout: String,
+    pub changed_files: Vec<String>,
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

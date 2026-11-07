@@ -2,6 +2,7 @@
 members = [
     "crates/hli-core",
     "crates/hli-store",
+    "crates/hli-agent",
     "crates/hli-daemon",
     "crates/hli-cli",
 ]

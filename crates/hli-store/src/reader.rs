@@ -201,6 +201,55 @@ impl Reader {
         })
     }
 
+    pub fn run(&self, id: &str) -> Result<Run> {
+        self.with(|c| {
+            c.query_row(
+                &format!("SELECT {} FROM runs WHERE id = ?1", crate::writer::RUN_COLS),
+                [id],
+                crate::writer::row_to_run,
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("run {id}")))
+        })
+    }
+
+    pub fn runs(&self, workspace_id: &str) -> Result<Vec<Run>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {} FROM runs WHERE workspace_id = ?1 ORDER BY started_at",
+                crate::writer::RUN_COLS
+            ))?;
+            let rows = stmt.query_map([workspace_id], crate::writer::row_to_run)?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn manifest_for_run(&self, run_id: &str) -> Result<ContextManifest> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT body_json FROM context_manifests WHERE run_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                [run_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|b| serde_json::from_str::<ContextManifest>(&b).ok())
+            .ok_or_else(|| HliError::not_found(&format!("manifest del run {run_id}")))
+        })
+    }
+
+    pub fn manifest(&self, id: &str) -> Result<ContextManifest> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT body_json FROM context_manifests WHERE id = ?1",
+                [id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|b| serde_json::from_str::<ContextManifest>(&b).ok())
+            .ok_or_else(|| HliError::not_found(&format!("manifest {id}")))
+        })
+    }
+
     pub fn verify(&self, workspace_id: &str) -> Result<VerifyReport> {
         let events = self.events(workspace_id, None)?;
         let mut prev = zero_hash();

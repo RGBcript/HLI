@@ -89,6 +89,35 @@ CREATE TABLE IF NOT EXISTS snapshots (
   UNIQUE (branch_id, at_sequence)
 );
 
+CREATE TABLE IF NOT EXISTS runs (
+  id              TEXT PRIMARY KEY,
+  workspace_id    TEXT NOT NULL REFERENCES workspaces(id),
+  thread_id       TEXT NOT NULL REFERENCES threads(id),
+  branch_id       TEXT NOT NULL REFERENCES branches(id),
+  branch_revision INTEGER NOT NULL,
+  state           TEXT NOT NULL,
+  prompt          TEXT NOT NULL,
+  started_at      TEXT NOT NULL,
+  ended_at        TEXT,
+  result_json     TEXT,
+  receipt_json    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS context_manifests (
+  id               TEXT PRIMARY KEY,
+  workspace_id     TEXT NOT NULL REFERENCES workspaces(id),
+  run_id           TEXT NOT NULL REFERENCES runs(id),
+  branch_revision  INTEGER NOT NULL,
+  budget_tokens    INTEGER NOT NULL,
+  estimated_tokens INTEGER NOT NULL,
+  content_hash     TEXT NOT NULL,
+  body_json        TEXT NOT NULL,
+  created_at       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_ws      ON runs(workspace_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_manifests_run ON context_manifests(run_id);
+
 CREATE INDEX IF NOT EXISTS idx_threads_ws      ON threads(workspace_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_branches_thread ON branches(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_branch   ON events(branch_id, sequence);

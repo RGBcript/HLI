@@ -165,6 +165,33 @@ fn run(args: &[String]) -> Result<(), String> {
             let archive = args.get(1).ok_or("falta el archivo")?;
             print_value(&call("import", json!({"archive": archive}))?, output)
         }
+        ("run", Some("start")) => {
+            let ws = need_flag(args, "--workspace")?;
+            let th = need_flag(args, "--thread")?;
+            let br = need_flag(args, "--branch")?;
+            let prompt = need_flag(args, "--prompt")?;
+            let v = call(
+                "run.start",
+                json!({"workspace_id": ws, "thread_id": th, "branch_id": br, "prompt": prompt}),
+            )?;
+            print_value(&v, output)
+        }
+        ("run", Some("get")) => {
+            let id = args.get(2).ok_or("falta run_id")?;
+            print_value(&call("run.get", json!({"run_id": id}))?, output)
+        }
+        ("run", Some("list")) => {
+            let ws = need_flag(args, "--workspace")?;
+            print_value(&call("run.list", json!({"workspace_id": ws}))?, output)
+        }
+        ("run", Some("approve")) => {
+            let id = args.get(2).ok_or("falta run_id")?;
+            print_value(&call("run.approve", json!({"run_id": id}))?, output)
+        }
+        ("manifest", Some("get")) => {
+            let id = args.get(2).ok_or("falta manifest_id")?;
+            print_value(&call("manifest.get", json!({"manifest_id": id}))?, output)
+        }
         ("status", _) => {
             let v = call("status", json!({}))?;
             print_value(&v, output)
@@ -315,6 +342,9 @@ fn usage() -> Result<(), String> {
   hli event append --type T --payload JSON --workspace <id> [--thread ID] [--branch ID] [--idem K]
   hli event list --workspace <id> [--branch ID]
   hli artifact put <file> --workspace <id> | list --workspace <id>
+  hli run start --workspace <id> --thread <id> --branch <id> --prompt PROMPT 
+  hli run get <run_id> | list --workspace <id> | approve <run_id>
+  hli manifest get <manifest_id>
   hli verify --workspace <id>
   hli export <workspace_id> --out <file>
   hli import <file>

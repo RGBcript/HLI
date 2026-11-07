@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hli_core::{time::now_iso, HliError};
+use hli_agent::{build_manifest, execute_tool, permission_for, Permission, Provider, SimProvider};
 use hli_store::{Reader, Store, Writer};
 use serde_json::{json, Value};
 
@@ -112,6 +113,32 @@ fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>) -> std::io::Re
     Ok(())
 }
 
+fn make_receipt(
+    provider: &SimProvider,
+    manifest: &hli_core::model::ContextManifest,
+) -> hli_core::model::Receipt {
+    hli_core::model::Receipt {
+        provider: provider.name().to_string(),
+        model: provider.model().to_string(),
+        adapter_version: "0.2.0".into(),
+        context_manifest: manifest.manifest_id.clone(),
+        tool_schemas: vec!["filesystem.read".into(), "filesystem.write".into()],
+        effective_permissions: json!({
+            "filesystem.read": "allow",
+            "filesystem.write": "ask",
+            "shell.execute": "deny"
+        }),
+        nonsecret_environment: json!({"os": std::env::consts::OS, "arch": std::env::consts::ARCH}),
+        secret_handles: vec![],
+        input_artifacts: vec![],
+        module_versions: vec![],
+        sampling: json!({"temperature": 0.0, "seed": 0}),
+        result_artifacts: vec![],
+        sandbox: json!({"mode": "none", "note": "0.2 no implementa sandbox; shell denegado"}),
+        terminal_event: None,
+    }
+}
+
 fn s(args: &Value, key: &str) -> Result<String, HliError> {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -183,6 +210,127 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
             let rep = w.import(PathBuf::from(s(args, "archive")?))?;
             Ok(serde_json::to_value(rep)?)
         }
+        "run.start" => {
+            let ws = s(args, "workspace_id")?;
+            let th = s(args, "thread_id")?;
+            let br = s(args, "branch_id")?;
+            let prompt = s(args, "prompt")?;
+            let budget = args.get("budget_tokens").and_then(|v| v.as_i64()).unwrap_or(8_192);
+
+            let run = w.create_run(&ws, &th, &br, &prompt)?;
+            let events = r.events(&ws, None)?;
+            let ws_obj = r.workspace(&ws)?;
+            let instructions = ws_obj
+                .config
+                .get("instructions")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let manifest = build_manifest(&run, &events, instructions, budget);
+            let manifest = w.save_manifest(manifest)?;
+
+            w.run_event(
+                &run.id,
+                "model.requested",
+                json!({"run_id": run.id, "manifest_id": manifest.manifest_id}),
+            )?;
+
+            let provider = SimProvider;
+            let req = hli_agent::ProviderRequest {
+                run_id: run.id.clone(),
+                prompt: prompt.clone(),
+                manifest: manifest.clone(),
+            };
+            let resp = provider.complete(&req)?;
+            w.run_event(
+                &run.id,
+                "model.responded",
+                json!({"run_id": run.id, "text": resp.text}),
+            )?;
+
+            let mut result = json!({"text": resp.text, "manifest_id": manifest.manifest_id});
+            let mut state = "completed";
+
+            if let Some(call) = resp.tool_call {
+                w.run_event(
+                    &run.id,
+                    "tool.requested",
+                    json!({"run_id": run.id, "tool": call.name, "arguments": call.arguments}),
+                )?;
+                match permission_for(&call.name) {
+                    Permission::Deny => {
+                        w.run_event(
+                            &run.id,
+                            "tool.denied",
+                            json!({"run_id": run.id, "tool": call.name}),
+                        )?;
+                        state = "failed";
+                        result["error"] = json!("herramienta denegada por política");
+                    }
+                    Permission::Ask => {
+                        state = "waiting_approval";
+                        result["pending_tool"] = serde_json::to_value(&call)?;
+                    }
+                    Permission::Allow => {
+                        let outcome = execute_tool(std::path::Path::new(&ws_obj.root_path), &call);
+                        w.run_event(
+                            &run.id,
+                            "tool.completed",
+                            json!({"run_id": run.id, "tool": outcome.tool,
+                                   "status": outcome.status, "stdout": outcome.stdout,
+                                   "changed_files": outcome.changed_files,
+                                   "error": outcome.error}),
+                        )?;
+                        result["observation"] = serde_json::to_value(&outcome)?;
+                        if outcome.status != "success" {
+                            state = "failed";
+                        }
+                    }
+                }
+            }
+
+            let receipt = make_receipt(&provider, &manifest);
+            let done = w.finish_run(&run.id, state, Some(result), Some(receipt))?;
+            Ok(serde_json::to_value(done)?)
+        }
+        "run.approve" => {
+            let run_id = s(args, "run_id")?;
+            let run = r.run(&run_id)?;
+            let pending = run
+                .result
+                .as_ref()
+                .and_then(|v| v.get("pending_tool"))
+                .cloned()
+                .ok_or_else(|| HliError::invalid("el run no tiene herramienta pendiente"))?;
+            let call: hli_core::model::ToolCall = serde_json::from_value(pending)?;
+            let ws_obj = r.workspace(&run.workspace_id)?;
+            let outcome = execute_tool(std::path::Path::new(&ws_obj.root_path), &call);
+            w.run_event(
+                &run_id,
+                "tool.completed",
+                json!({"run_id": run_id, "tool": outcome.tool, "status": outcome.status,
+                       "stdout": outcome.stdout, "changed_files": outcome.changed_files,
+                       "error": outcome.error}),
+            )?;
+            let manifest = r.manifest_for_run(&run_id)?;
+            let mut result = run.result.clone().unwrap_or_else(|| json!({}));
+            if let Some(o) = result.as_object_mut() {
+                o.remove("pending_tool");
+            }
+            result["observation"] = serde_json::to_value(&outcome)?;
+            let receipt = make_receipt(&SimProvider, &manifest);
+            let state = if outcome.status == "success" { "completed" } else { "failed" };
+            let done = w.finish_run(&run_id, state, Some(result), Some(receipt))?;
+            Ok(serde_json::to_value(done)?)
+        }
+        "run.get" => {
+            let run_id = s(args, "run_id")?;
+            let run = r.run(&run_id)?;
+            let manifest = r.manifest_for_run(&run_id).ok();
+            Ok(json!({"run": run, "manifest": manifest}))
+        }
+        "run.list" => Ok(serde_json::to_value(r.runs(&s(args, "workspace_id")?)?)?),
+        "manifest.get" => Ok(serde_json::to_value(r.manifest(&s(args, "manifest_id")?)?)?),
         "status" => {
             let ws = r.workspaces()?;
             Ok(json!({"workspaces": ws.len(), "version": "0.1.0"}))
