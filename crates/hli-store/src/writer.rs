@@ -118,6 +118,11 @@ pub enum WriteCmd {
         payload: Value,
         reply: Reply<Event>,
     },
+    SetRunState {
+        run_id: String,
+        state: String,
+        reply: Reply<Run>,
+    },
     FinishRun {
         run_id: String,
         state: String,
@@ -312,6 +317,14 @@ impl Writer {
             run_id: run_id.to_string(),
             kind: kind.to_string(),
             payload,
+            reply,
+        })
+    }
+
+    pub fn set_run_state(&self, run_id: &str, state: &str) -> Result<Run> {
+        self.call(|reply| WriteCmd::SetRunState {
+            run_id: run_id.to_string(),
+            state: state.to_string(),
             reply,
         })
     }
@@ -589,6 +602,14 @@ impl State {
                 reply,
             } => {
                 let _ = reply.send(self.run_event(&run_id, &kind, payload));
+            }
+            WriteCmd::SetRunState {
+                run_id,
+                state,
+                reply,
+            } => {
+                let out = self.set_run_state(&run_id, &state);
+                let _ = reply.send(out);
             }
             WriteCmd::FinishRun {
                 run_id,
@@ -994,6 +1015,23 @@ impl State {
         Ok(ev)
     }
 
+    fn set_run_state(&mut self, run_id: &str, state: &str) -> Result<Run> {
+        let run = load_run(&self.conn, run_id)?
+            .ok_or_else(|| HliError::not_found(&format!("run {run_id}")))?;
+        if !hli_core::model::run_transition_allowed(&run.state, state) {
+            return Err(HliError::conflict(format!(
+                "transicion de run invalida: {} -> {state}",
+                run.state
+            )));
+        }
+        self.conn.execute(
+            "UPDATE runs SET state = ?1 WHERE id = ?2",
+            params![state, run_id],
+        )?;
+        self.run_event(run_id, &format!("run.{state}"), json!({"state": state}))?;
+        load_run(&self.conn, run_id)?.ok_or_else(|| HliError::internal("run desaparecido"))
+    }
+
     fn finish_run(
         &mut self,
         run_id: &str,
@@ -1003,6 +1041,12 @@ impl State {
     ) -> Result<Run> {
         let run = load_run(&self.conn, run_id)?
             .ok_or_else(|| HliError::not_found(&format!("run {run_id}")))?;
+        if !hli_core::model::run_transition_allowed(&run.state, state) {
+            return Err(HliError::conflict(format!(
+                "transicion de run invalida: {} -> {state}",
+                run.state
+            )));
+        }
         let tx = self.conn.transaction()?;
         tx.execute(
             "UPDATE runs SET state = ?1, ended_at = ?2, result_json = ?3, receipt_json = ?4 WHERE id = ?5",

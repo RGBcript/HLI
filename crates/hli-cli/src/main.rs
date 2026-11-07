@@ -385,18 +385,41 @@ fn run(args: &[String]) -> Result<(), String> {
                     "no_policy": args.contains(&"--no-policy".to_string()),
                     "top_k": flag(args, "--top-k").and_then(|v| v.parse::<u64>().ok()),
                     "temperature": flag(args, "--temperature").and_then(|v| v.parse::<f64>().ok()),
-                    "max_tokens": flag(args, "--max-tokens").and_then(|v| v.parse::<i64>().ok())
+                    "max_tokens": flag(args, "--max-tokens").and_then(|v| v.parse::<i64>().ok()),
+                    "async": args.contains(&"--async".to_string()),
+                    "sim_delay_ms": flag(args, "--sim-delay-ms").and_then(|v| v.parse::<u64>().ok()),
+                    "timeout_secs": flag(args, "--timeout-secs").and_then(|v| v.parse::<u64>().ok())
                 }),
             )?;
             print_value(&v, output)
+        }
+        ("run", Some("status")) => {
+            let id = args.get(2).ok_or("falta el run_id")?;
+            print_value(&call("run.status", json!({"run_id": id}))?, output)
+        }
+        ("run", Some("wait")) => {
+            let id = args.get(2).ok_or("falta el run_id")?;
+            let t = flag(args, "--timeout-secs").and_then(|v| v.parse::<u64>().ok());
+            print_value(
+                &call("run.wait", json!({"run_id": id, "timeout_secs": t}))?,
+                output,
+            )
+        }
+        ("run", Some("cancel")) => {
+            let id = args.get(2).ok_or("falta el run_id")?;
+            print_value(&call("run.cancel", json!({"run_id": id}))?, output)
         }
         ("run", Some("get")) => {
             let id = args.get(2).ok_or("falta run_id")?;
             print_value(&call("run.get", json!({"run_id": id}))?, output)
         }
         ("run", Some("list")) => {
+            let state = flag(args, "--state");
             let ws = need_flag(args, "--workspace")?;
-            print_value(&call("run.list", json!({"workspace_id": ws}))?, output)
+            print_value(
+                &call("run.list", json!({"workspace_id": ws, "state": state}))?,
+                output,
+            )
         }
         ("run", Some("approve")) => {
             let id = args.get(2).ok_or("falta run_id")?;

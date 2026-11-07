@@ -33,6 +33,10 @@ impl Store {
 
         let conn = Connection::open(&db_path)?;
         schema::apply(&conn)?;
+        let _ = conn.execute(
+            "UPDATE runs SET state = 'interrupted', ended_at = ?1              WHERE state IN ('queued','running','cancelling','waiting_approval')",
+            rusqlite::params![hli_core::time::now_iso()],
+        );
         drop(conn);
 
         Ok(Self {

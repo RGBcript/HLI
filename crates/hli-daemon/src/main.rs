@@ -4,10 +4,12 @@
 //! mensajes JSON delimitados por línea. HTTP/WebSocket llega en 0.2 sin cambiar
 //! el contrato de comandos.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use hli_core::{time::now_iso, HliError};
@@ -125,6 +127,11 @@ fn handle(
         }
     }
     Ok(())
+}
+
+fn cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static C: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -765,6 +772,180 @@ fn dispatch(
                 }),
             )?;
 
+            let is_async = args.get("async").and_then(|v| v.as_bool()).unwrap_or(false);
+            if is_async {
+                let cancel = Arc::new(AtomicBool::new(false));
+                cancels()
+                    .lock()
+                    .unwrap()
+                    .insert(run.id.clone(), cancel.clone());
+                let w2 = w.clone();
+                let run2 = run.clone();
+                let manifest2 = manifest.clone();
+                let prompt2 = prompt.clone();
+                let rendered2 = rendered.clone();
+                let provider2 = provider_name.clone();
+                let model2 = model.clone();
+                let base2 = base_url.clone();
+                let api2 = api_key.clone();
+                let secret2 = secret_handles.clone();
+                let cand2 = candidate_memory_ids.clone();
+                let system2 = "Eres HLI. Responde en español, breve y factual.".to_string();
+                let sim_delay_ms = args.get("sim_delay_ms").and_then(|v| v.as_u64());
+                std::thread::spawn(move || {
+                    let _ = w2.set_run_state(&run2.id, "running");
+                    let started = std::time::Instant::now();
+                    if provider2 == "sim" {
+                        if let Some(ms) = sim_delay_ms {
+                            std::thread::sleep(Duration::from_millis(ms));
+                        }
+                    }
+                    let call: Result<
+                        (String, hli_provider::Usage, String, String, String),
+                        HliError,
+                    > = match provider2.as_str() {
+                        "sim" => {
+                            let p = SimProvider;
+                            let pr = hli_agent::ProviderRequest {
+                                run_id: run2.id.clone(),
+                                prompt: prompt2,
+                                manifest: manifest2.clone(),
+                            };
+                            match p.complete(&pr) {
+                                Ok(resp) if resp.tool_call.is_none() => {
+                                    let u = hli_provider::Usage {
+                                        input_tokens: hli_provider::estimate_tokens(&system2)
+                                            + manifest2.estimated_tokens,
+                                        output_tokens: hli_provider::estimate_tokens(&resp.text),
+                                        cached_tokens: 0,
+                                        latency_first_token_ms: 0,
+                                        latency_total_ms: 0,
+                                        finish_reason: "stop".into(),
+                                        raw_usage_available: false,
+                                        usage_source: "estimated".into(),
+                                    };
+                                    Ok((resp.text, u, "sim".into(), "sim-1".into(), "0.2.0".into()))
+                                }
+                                Ok(_) => Err(HliError::internal(
+                                    "tool loop no soportado en runs asincronos",
+                                )),
+                                Err(e) => Err(e),
+                            }
+                        }
+                        "ollama" => {
+                            let p = hli_provider::OllamaProvider::new(&base2, &model2, timeout);
+                            let req = ChatRequest {
+                                system: &system2,
+                                user: &rendered2,
+                                temperature,
+                                max_tokens,
+                            };
+                            p.chat(&req)
+                                .map(|r| (r.text, r.usage, r.provider, r.model, r.adapter_version))
+                        }
+                        "openai" => {
+                            let p =
+                                hli_provider::OpenAiProvider::new(&base2, &model2, &api2, timeout);
+                            let req = ChatRequest {
+                                system: &system2,
+                                user: &rendered2,
+                                temperature,
+                                max_tokens,
+                            };
+                            p.chat(&req)
+                                .map(|r| (r.text, r.usage, r.provider, r.model, r.adapter_version))
+                        }
+                        other => Err(HliError::invalid(format!("proveedor desconocido: {other}"))),
+                    };
+                    let cancelled = cancel.load(Ordering::SeqCst);
+                    let usage_default = hli_provider::Usage::default();
+                    let (text, usage, up, um, adapter) = match call {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let state = if e.message.contains("timeout")
+                                || e.message.contains("timed out")
+                            {
+                                "timed_out"
+                            } else {
+                                "failed"
+                            };
+                            let cost = hli_provider::cost_of(None, &usage_default);
+                            let receipt = make_receipt(
+                                &provider2,
+                                &model2,
+                                "error",
+                                &manifest2,
+                                &json!({"error": e.message}),
+                                &usage_default,
+                                &cost,
+                                secret2,
+                                vec![],
+                                vec![],
+                                vec![],
+                                cand2,
+                                vec![],
+                            );
+                            let _ = w2.finish_run(
+                                &run2.id,
+                                state,
+                                Some(json!({"error": e.message})),
+                                Some(receipt),
+                            );
+                            cancels().lock().unwrap().remove(&run2.id);
+                            return;
+                        }
+                    };
+                    let used_memory_ids: Vec<String> = manifest2
+                        .memories
+                        .iter()
+                        .filter_map(|m| m["id"].as_str().map(str::to_string))
+                        .collect();
+                    let used_slice_ids: Vec<String> = manifest2
+                        .artifact_slices
+                        .iter()
+                        .filter_map(|sl| sl["slice_id"].as_str().map(str::to_string))
+                        .collect();
+                    let used_event_ids: Vec<String> = manifest2
+                        .recent_events
+                        .iter()
+                        .filter_map(|ev| ev["event_id"].as_str().map(str::to_string))
+                        .collect();
+                    let rejected: Vec<String> = cand2
+                        .iter()
+                        .filter(|id| !used_memory_ids.contains(id))
+                        .cloned()
+                        .collect();
+                    let cost = hli_provider::cost_of(None, &usage);
+                    let receipt = make_receipt(
+                        &up,
+                        &um,
+                        &adapter,
+                        &manifest2,
+                        &json!({"text": text}),
+                        &usage,
+                        &cost,
+                        secret2,
+                        used_memory_ids,
+                        used_slice_ids,
+                        used_event_ids,
+                        cand2,
+                        rejected,
+                    );
+                    let timed_out = started.elapsed() > Duration::from_secs(timeout);
+                    let state = if cancelled {
+                        "cancelled"
+                    } else if timed_out {
+                        "timed_out"
+                    } else {
+                        "completed"
+                    };
+                    let _ =
+                        w2.finish_run(&run2.id, state, Some(json!({"text": text})), Some(receipt));
+                    cancels().lock().unwrap().remove(&run2.id);
+                });
+                return Ok(serde_json::to_value(run)?);
+            }
+
             let system = "Eres HLI. Responde en español, breve y factual.";
             let system_owned = system.to_string();
             let req = hli_provider::ChatRequest {
@@ -1029,7 +1210,53 @@ fn dispatch(
             let manifest = r.manifest_for_run(&run_id).ok();
             Ok(json!({"run": run, "manifest": manifest}))
         }
-        "run.list" => Ok(serde_json::to_value(r.runs(&s(args, "workspace_id")?)?)?),
+        "run.status" => {
+            let run_id = s(args, "run_id")?;
+            let run = r.run(&run_id)?;
+            Ok(json!({"run": run}))
+        }
+        "run.wait" => {
+            let run_id = s(args, "run_id")?;
+            let timeout = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(60);
+            let started = std::time::Instant::now();
+            loop {
+                let run = r.run(&run_id)?;
+                if hli_core::model::run_is_terminal(&run.state) {
+                    return Ok(json!({"run": run}));
+                }
+                if started.elapsed() >= Duration::from_secs(timeout) {
+                    return Ok(json!({"run": run, "timed_out": true}));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        "run.cancel" => {
+            let run_id = s(args, "run_id")?;
+            let run = r.run(&run_id)?;
+            if hli_core::model::run_is_terminal(&run.state) {
+                return Ok(json!({"run": run, "idempotent": true}));
+            }
+            if run.state == "queued" {
+                let done =
+                    w.finish_run(&run_id, "cancelled", Some(json!({"cancelled": true})), None)?;
+                return Ok(json!({"run": done}));
+            }
+            if let Some(flag) = cancels().lock().unwrap().get(&run_id).cloned() {
+                flag.store(true, Ordering::SeqCst);
+            }
+            let run = w.set_run_state(&run_id, "cancelling")?;
+            Ok(json!({"run": run, "cancelling": true}))
+        }
+        "run.list" => {
+            let mut runs = r.runs(&s(args, "workspace_id")?)?;
+            if let Some(state) = args.get("state").and_then(|v| v.as_str()) {
+                runs.retain(|run| run.state == state);
+            }
+            Ok(serde_json::to_value(runs)?)
+        }
         "manifest.get" => Ok(serde_json::to_value(r.manifest(&s(args, "manifest_id")?)?)?),
         "prices.list" => {
             let text = std::fs::read_to_string(home.join("prices.yaml")).unwrap_or_default();

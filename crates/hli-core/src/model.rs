@@ -304,6 +304,50 @@ pub struct ToolOutcome {
     pub error: Option<String>,
 }
 
+/// Tabla explícita de transiciones de estado de un run.
+pub fn run_transition_allowed(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("queued", "running")
+            | ("queued", "completed")
+            | ("queued", "cancelled")
+            | ("queued", "failed")
+            | ("queued", "timed_out")
+            | ("queued", "interrupted")
+            | ("queued", "waiting_approval")
+            | ("queued", "paused")
+            | ("running", "waiting_approval")
+            | ("running", "paused")
+            | ("running", "cancelling")
+            | ("running", "completed")
+            | ("running", "failed")
+            | ("running", "timed_out")
+            | ("running", "interrupted")
+            | ("cancelling", "cancelled")
+            | ("cancelling", "failed")
+            | ("waiting_approval", "running")
+            | ("waiting_approval", "paused")
+            | ("waiting_approval", "cancelled")
+            | ("waiting_approval", "interrupted")
+            | ("waiting_approval", "completed")
+            | ("waiting_approval", "failed")
+            | ("waiting_approval", "timed_out")
+            | ("paused", "running")
+            | ("paused", "cancelled")
+            | ("paused", "interrupted")
+            | ("paused", "completed")
+            | ("paused", "failed")
+            | ("paused", "timed_out")
+    )
+}
+
+pub fn run_is_terminal(state: &str) -> bool {
+    matches!(
+        state,
+        "completed" | "failed" | "cancelled" | "timed_out" | "interrupted"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
