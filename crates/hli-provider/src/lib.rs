@@ -89,7 +89,9 @@ impl ChatProvider for OllamaProvider {
             .timeout(self.timeout)
             .send_json(body)
             .map_err(|e| HliError::internal(format!("ollama: {e}")))?;
-        let v: Value = resp.into_json().map_err(|e| HliError::internal(format!("ollama json: {e}")))?;
+        let v: Value = resp
+            .into_json()
+            .map_err(|e| HliError::internal(format!("ollama json: {e}")))?;
         if let Some(err) = v.get("error") {
             return Err(HliError::internal(format!("ollama: {err}")));
         }
@@ -184,7 +186,9 @@ impl ChatProvider for OpenAiProvider {
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .send_json(body)
             .map_err(|e| HliError::internal(format!("openai-compatible: {e}")))?;
-        let v: Value = resp.into_json().map_err(|e| HliError::internal(format!("openai json: {e}")))?;
+        let v: Value = resp
+            .into_json()
+            .map_err(|e| HliError::internal(format!("openai json: {e}")))?;
         let text = v["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or("")
@@ -202,7 +206,10 @@ impl ChatProvider for OpenAiProvider {
                 cached_tokens: cached,
                 latency_first_token_ms: total_ms,
                 latency_total_ms: total_ms,
-                finish_reason: v["choices"][0]["finish_reason"].as_str().unwrap_or("stop").to_string(),
+                finish_reason: v["choices"][0]["finish_reason"]
+                    .as_str()
+                    .unwrap_or("stop")
+                    .to_string(),
                 raw_usage_available: true,
                 usage_source: "reported".into(),
             },
@@ -253,7 +260,9 @@ pub fn parse_prices_yaml(text: &str) -> Vec<Price> {
             continue;
         }
         let t = t.strip_prefix("- ").unwrap_or(t);
-        let Some((k, v)) = t.split_once(':') else { continue };
+        let Some((k, v)) = t.split_once(':') else {
+            continue;
+        };
         let k = k.trim();
         let v = v.trim().trim_matches('"');
         if k == "provider" {
@@ -323,7 +332,11 @@ mod tests {
 
     #[test]
     fn cost_is_zero_without_price() {
-        let u = Usage { input_tokens: 1000, output_tokens: 100, ..Default::default() };
+        let u = Usage {
+            input_tokens: 1000,
+            output_tokens: 100,
+            ..Default::default()
+        };
         let c = cost_of(None, &u);
         assert_eq!(c["priced"], false);
     }
@@ -331,12 +344,21 @@ mod tests {
     #[test]
     fn cost_computes_per_million() {
         let p = Price {
-            provider: "x".into(), model: "m".into(), currency: "USD".into(),
-            input_per_million: 1.0, output_per_million: 2.0,
-            cached_input_per_million: 0.5, effective_from: "2026-01-01".into(),
+            provider: "x".into(),
+            model: "m".into(),
+            currency: "USD".into(),
+            input_per_million: 1.0,
+            output_per_million: 2.0,
+            cached_input_per_million: 0.5,
+            effective_from: "2026-01-01".into(),
             source: "user-configured".into(),
         };
-        let u = Usage { input_tokens: 1_000_000, output_tokens: 1_000_000, cached_tokens: 0, ..Default::default() };
+        let u = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cached_tokens: 0,
+            ..Default::default()
+        };
         let c = cost_of(Some(&p), &u);
         assert!((c["total"].as_f64().unwrap() - 3.0).abs() < 1e-9);
     }

@@ -3,13 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use hli_core::{
-    canon::hash_canonical,
-    ids::new_id,
-    model::*,
-    time::now_iso,
-    HliError, Result,
-};
+use hli_core::{canon::hash_canonical, ids::new_id, model::*, time::now_iso, HliError, Result};
 use serde_json::{json, Value};
 
 pub const POLICY_VERSION: &str = "context/v1";
@@ -25,7 +19,11 @@ pub enum Permission {
 
 pub fn classify_task(prompt: &str) -> &'static str {
     let p = prompt.to_lowercase();
-    if p.contains("resume") || p.contains("resumen") || p.contains("log") || p.contains("error grave") {
+    if p.contains("resume")
+        || p.contains("resumen")
+        || p.contains("log")
+        || p.contains("error grave")
+    {
         "summarization"
     } else if p.contains("corrige") || p.contains("bug") {
         "code_fix"
@@ -79,7 +77,10 @@ pub fn render_payload(manifest: &ContextManifest, slices: &[(ArtifactSlice, Vec<
         }
     }
     for (s, content) in slices {
-        out.push_str(&format!("\n[artefacto {} · {} · {}]\n", s.artifact_id, s.media_type, s.reason));
+        out.push_str(&format!(
+            "\n[artefacto {} · {} · {}]\n",
+            s.artifact_id, s.media_type, s.reason
+        ));
         out.push_str(&String::from_utf8_lossy(content));
         out.push('\n');
     }
@@ -298,7 +299,10 @@ pub fn execute_tool(root: &Path, call: &ToolCall) -> ToolOutcome {
                 Err(e) => failed(&call.name, e.message),
             }
         }
-        other => failed(other, "herramienta denegada o no implementada en 0.2".into()),
+        other => failed(
+            other,
+            "herramienta denegada o no implementada en 0.2".into(),
+        ),
     }
 }
 
@@ -310,7 +314,9 @@ fn resolve(root: &Path, rel: &str) -> Result<PathBuf> {
     // Canonicalizar el padre (existe) y añadir el nombre: evita el prefijo
     // verbatim de Windows en rutas que aún no existen.
     let parent = candidate.parent().unwrap_or(root);
-    let canon_parent = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+    let canon_parent = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
     let full = match candidate.file_name() {
         Some(name) => canon_parent.join(name),
         None => canon_parent.clone(),
@@ -392,7 +398,10 @@ mod tests {
 
     #[test]
     fn manifest_is_deterministic_and_sealed() {
-        let events = vec![ev(1, "workspace.created", json!({"name": "d"})), ev(2, "thread.created", json!({"title": "t"}))];
+        let events = vec![
+            ev(1, "workspace.created", json!({"name": "d"})),
+            ev(2, "thread.created", json!({"title": "t"})),
+        ];
         let a = build_manifest(&run(2), &events, vec![], "hola", &[], 1024);
         let b = build_manifest(&run(2), &events, vec![], "hola", &[], 1024);
         assert_eq!(a.recent_events.len(), 2);
@@ -423,7 +432,11 @@ mod tests {
         let p = SimProvider;
         let events = vec![ev(1, "a", json!({}))];
         let m = build_manifest(&run(1), &events, vec![], "hola", &[], 1024);
-        let req = ProviderRequest { run_id: "run_1".into(), prompt: "hola".into(), manifest: m.clone() };
+        let req = ProviderRequest {
+            run_id: "run_1".into(),
+            prompt: "hola".into(),
+            manifest: m.clone(),
+        };
         let a = p.complete(&req).unwrap();
         let b = p.complete(&req).unwrap();
         assert_eq!(a.text, b.text);

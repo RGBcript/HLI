@@ -24,7 +24,11 @@ fn main() {
         let req: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                let _ = writeln!(out, "{}", json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":e.to_string()}}));
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":e.to_string()}})
+                );
                 let _ = out.flush();
                 continue;
             }
@@ -34,7 +38,11 @@ fn main() {
         let params = req.get("params").cloned().unwrap_or(json!({}));
 
         if method == "shutdown" {
-            let _ = writeln!(out, "{}", json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}}));
+            let _ = writeln!(
+                out,
+                "{}",
+                json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}})
+            );
             let _ = out.flush();
             break;
         }
@@ -42,7 +50,9 @@ fn main() {
         let result = handle(method, &params);
         let resp = match result {
             Ok(v) => json!({"jsonrpc":"2.0","id":id,"result":v}),
-            Err((code, message)) => json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}),
+            Err((code, message)) => {
+                json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
+            }
         };
         if writeln!(out, "{}", resp).is_err() {
             break;
@@ -140,18 +150,28 @@ fn daemon(cmd: &str, args: Value) -> Result<Value, (i64, String)> {
     let info = std::fs::read_to_string(home.join("daemon.json"))
         .map_err(|_| (-32000, "daemon no está en marcha".to_string()))?;
     let v: Value = serde_json::from_str(&info).map_err(|e| (-32000, e.to_string()))?;
-    let port = v["port"].as_u64().ok_or((-32000, "sin puerto".to_string()))? as u16;
+    let port = v["port"]
+        .as_u64()
+        .ok_or((-32000, "sin puerto".to_string()))? as u16;
     let mut s = TcpStream::connect(("127.0.0.1", port)).map_err(|e| (-32000, e.to_string()))?;
     let req = json!({"id": "module", "cmd": cmd, "args": args});
     writeln!(s, "{}", req).map_err(|e| (-32000, e.to_string()))?;
     s.flush().map_err(|e| (-32000, e.to_string()))?;
     let mut line = String::new();
-    BufReader::new(s).read_line(&mut line).map_err(|e| (-32000, e.to_string()))?;
+    BufReader::new(s)
+        .read_line(&mut line)
+        .map_err(|e| (-32000, e.to_string()))?;
     let resp: Value = serde_json::from_str(&line).map_err(|e| (-32000, e.to_string()))?;
     if resp["ok"].as_bool() == Some(true) {
         Ok(resp["data"].clone())
     } else {
-        Err((-32000, resp["error"]["message"].as_str().unwrap_or("error").to_string()))
+        Err((
+            -32000,
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or("error")
+                .to_string(),
+        ))
     }
 }
 
