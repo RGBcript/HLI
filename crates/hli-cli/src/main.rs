@@ -328,6 +328,43 @@ fn run(args: &[String]) -> Result<(), String> {
             )?;
             print_value(&v, output)
         }
+        ("provider", Some("add")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(
+                &call(
+                    "provider.add",
+                    json!({
+                        "name": name,
+                        "kind": flag(args, "--kind").ok_or("falta --kind")?,
+                        "base_url": flag(args, "--base-url").ok_or("falta --base-url")?,
+                        "model": flag(args, "--model").ok_or("falta --model")?,
+                        "timeout_seconds": flag(args, "--timeout").and_then(|v| v.parse::<u64>().ok()),
+                        "secret_handle": flag(args, "--secret-handle"),
+                    }),
+                )?,
+                output,
+            )
+        }
+        ("provider", Some("list")) => print_value(&call("provider.list", json!({}))?, output),
+        ("provider", Some("inspect")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("provider.inspect", json!({"name": name}))?, output)
+        }
+        ("provider", Some("test")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("provider.test", json!({"name": name}))?, output)
+        }
+        ("provider", Some("set-default")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(
+                &call("provider.set_default", json!({"name": name}))?,
+                output,
+            )
+        }
+        ("provider", Some("remove")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("provider.remove", json!({"name": name}))?, output)
+        }
         ("run", Some("start")) => {
             let ws = need_flag(args, "--workspace")?;
             let th = need_flag(args, "--thread")?;

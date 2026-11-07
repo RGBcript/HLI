@@ -11,10 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hli_core::{time::now_iso, HliError};
+mod providers;
 mod supervisor;
 
 use hli_agent::{build_manifest, execute_tool, permission_for, Permission, Provider, SimProvider};
-use hli_provider::ChatProvider;
+use hli_provider::{ChatProvider, ChatRequest, OllamaProvider, OpenAiProvider};
 use hli_store::{Reader, Store, Writer};
 use serde_json::{json, Value};
 
@@ -425,6 +426,134 @@ fn dispatch(
         "memory.forget" => Ok(serde_json::to_value(
             w.forget_memory(&s(args, "memory_id")?)?,
         )?),
+        "provider.add" => {
+            let name = s(args, "name")?;
+            let mut cfg = providers::load(home);
+            let entry = providers::ProviderEntry {
+                kind: s(args, "kind")?,
+                base_url: s(args, "base_url")?,
+                model: s(args, "model")?,
+                timeout_seconds: args
+                    .get("timeout_seconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(120),
+                secret_handle: args
+                    .get("secret_handle")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            entry.validate()?;
+            cfg.providers.insert(name.clone(), entry);
+            providers::save(home, &cfg)?;
+            Ok(json!({"added": name}))
+        }
+        "provider.list" => {
+            let cfg = providers::load(home);
+            let list: Vec<Value> = cfg
+                .providers
+                .iter()
+                .map(|(name, e)| {
+                    json!({
+                        "name": name,
+                        "kind": e.kind,
+                        "base_url": e.base_url,
+                        "model": e.model,
+                        "timeout_seconds": e.timeout_seconds,
+                        "has_secret": e.secret_handle.is_some(),
+                        "default": cfg.default_provider.as_deref() == Some(name.as_str()),
+                    })
+                })
+                .collect();
+            Ok(json!({"default_provider": cfg.default_provider, "providers": list}))
+        }
+        "provider.inspect" => {
+            let name = s(args, "name")?;
+            let cfg = providers::load(home);
+            let e = cfg
+                .providers
+                .get(&name)
+                .ok_or_else(|| HliError::not_found(&format!("proveedor: {name}")))?;
+            Ok(json!({
+                "name": name,
+                "kind": e.kind,
+                "base_url": e.base_url,
+                "model": e.model,
+                "timeout_seconds": e.timeout_seconds,
+                "secret_handle": e.secret_handle,
+                "has_secret": e.secret_handle.is_some(),
+                "default": cfg.default_provider.as_deref() == Some(name.as_str()),
+            }))
+        }
+        "provider.set_default" => {
+            let name = s(args, "name")?;
+            let mut cfg = providers::load(home);
+            if !cfg.providers.contains_key(&name) {
+                return Err(HliError::not_found(&format!("proveedor: {name}")));
+            }
+            cfg.default_provider = Some(name.clone());
+            providers::save(home, &cfg)?;
+            Ok(json!({"default_provider": name}))
+        }
+        "provider.remove" => {
+            let name = s(args, "name")?;
+            let mut cfg = providers::load(home);
+            if cfg.providers.remove(&name).is_none() {
+                return Err(HliError::not_found(&format!("proveedor: {name}")));
+            }
+            if cfg.default_provider.as_deref() == Some(name.as_str()) {
+                cfg.default_provider = None;
+            }
+            providers::save(home, &cfg)?;
+            Ok(json!({"removed": name}))
+        }
+        "provider.test" => {
+            let name = s(args, "name")?;
+            let cfg = providers::load(home);
+            let e = cfg
+                .providers
+                .get(&name)
+                .ok_or_else(|| HliError::not_found(&format!("proveedor: {name}")))?
+                .clone();
+            e.validate()?;
+            let started = std::time::Instant::now();
+            let req = ChatRequest {
+                system: "Responde solo con pong.",
+                user: "ping",
+                temperature: 0.0,
+                max_tokens: 8,
+            };
+            let (provider, model, text, usage) = match e.kind.as_str() {
+                "sim" => (
+                    "sim".to_string(),
+                    e.model.clone(),
+                    "pong".to_string(),
+                    json!({"usage_source": "estimated"}),
+                ),
+                "ollama" => {
+                    let p = OllamaProvider::new(&e.base_url, &e.model, e.timeout_seconds);
+                    let r = p.chat(&req)?;
+                    (r.provider, r.model, r.text, json!(r.usage))
+                }
+                "openai" => {
+                    let handle = e
+                        .secret_handle
+                        .as_deref()
+                        .ok_or_else(|| HliError::invalid("proveedor openai sin secret_handle"))?;
+                    let (key, _) = read_secret(home, handle)?;
+                    let p = OpenAiProvider::new(&e.base_url, &e.model, &key, e.timeout_seconds);
+                    let r = p.chat(&req)?;
+                    (r.provider, r.model, r.text, json!(r.usage))
+                }
+                _ => unreachable!(),
+            };
+            Ok(json!({
+                "provider": provider,
+                "model": model,
+                "latency_ms": started.elapsed().as_millis() as i64,
+                "usage": usage,
+                "text": text,
+            }))
+        }
         "run.start" => {
             let ws = s(args, "workspace_id")?;
             let th = s(args, "thread_id")?;
@@ -434,11 +563,22 @@ fn dispatch(
                 .get("budget_tokens")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(2_048);
-            let provider_name = args
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .unwrap_or("sim")
-                .to_string();
+            let cfg = providers::load(home);
+            let requested = args.get("provider").and_then(|v| v.as_str());
+            let selected = requested
+                .map(str::to_string)
+                .or_else(|| cfg.default_provider.clone());
+            let entry = selected
+                .as_ref()
+                .and_then(|n| cfg.providers.get(n))
+                .cloned();
+            if let Some(e) = &entry {
+                e.validate()?;
+            }
+            let provider_name = entry
+                .as_ref()
+                .map(|e| e.kind.clone())
+                .unwrap_or_else(|| selected.clone().unwrap_or_else(|| "sim".into()));
             let default_model = match provider_name.as_str() {
                 "ollama" => "gemma4:31b-cloud",
                 "openai" => "gpt-4o-mini",
@@ -447,20 +587,25 @@ fn dispatch(
             let model = args
                 .get("model")
                 .and_then(|v| v.as_str())
-                .unwrap_or(default_model)
-                .to_string();
+                .map(str::to_string)
+                .or_else(|| entry.as_ref().map(|e| e.model.clone()))
+                .unwrap_or_else(|| default_model.to_string());
             let base_url = args
                 .get("base_url")
                 .and_then(|v| v.as_str())
-                .unwrap_or(if provider_name == "ollama" {
-                    "http://127.0.0.1:11434"
-                } else {
-                    "https://api.openai.com/v1"
-                })
-                .to_string();
+                .map(str::to_string)
+                .or_else(|| entry.as_ref().map(|e| e.base_url.clone()))
+                .unwrap_or_else(|| {
+                    if provider_name == "ollama" {
+                        "http://127.0.0.1:11434".to_string()
+                    } else {
+                        "https://api.openai.com/v1".to_string()
+                    }
+                });
             let timeout = args
                 .get("timeout_secs")
                 .and_then(|v| v.as_u64())
+                .or_else(|| entry.as_ref().map(|e| e.timeout_seconds))
                 .unwrap_or(120);
             let temperature = args
                 .get("temperature")
@@ -474,11 +619,16 @@ fn dispatch(
             let mut secret_handles: Vec<Value> = Vec::new();
             let mut api_key = String::new();
             if provider_name == "openai" {
-                let handle = args
-                    .get("secret")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| HliError::invalid("openai requiere --secret HANDLE"))?;
-                let (value, version) = read_secret(home, handle)?;
+                let handle = entry
+                    .as_ref()
+                    .and_then(|e| e.secret_handle.clone())
+                    .or_else(|| {
+                        args.get("secret")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+                    .ok_or_else(|| HliError::invalid("openai requiere --secret o secret_handle"))?;
+                let (value, version) = read_secret(home, &handle)?;
                 api_key = value;
                 secret_handles.push(json!({"id": handle, "version": version}));
             }
