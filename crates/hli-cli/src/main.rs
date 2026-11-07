@@ -42,8 +42,8 @@ fn daemon_info() -> Result<Value, String> {
 fn call(cmd: &str, args: Value) -> Result<Value, String> {
     let info = daemon_info()?;
     let port = info["port"].as_u64().ok_or("daemon.json sin puerto")? as u16;
-    let mut stream =
-        TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("no se pudo conectar al daemon: {e}"))?;
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .map_err(|e| format!("no se pudo conectar al daemon: {e}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
@@ -54,7 +54,8 @@ fn call(cmd: &str, args: Value) -> Result<Value, String> {
     BufReader::new(stream)
         .read_line(&mut line)
         .map_err(|e| format!("sin respuesta del daemon: {e}"))?;
-    let resp: Value = serde_json::from_str(&line).map_err(|e| format!("respuesta inválida: {e}"))?;
+    let resp: Value =
+        serde_json::from_str(&line).map_err(|e| format!("respuesta inválida: {e}"))?;
     if resp["ok"].as_bool() == Some(true) {
         Ok(resp["data"].clone())
     } else {
@@ -69,7 +70,11 @@ fn run(args: &[String]) -> Result<(), String> {
         if std::io::stdout().is_terminal() {
             let tui = std::env::current_exe()
                 .map_err(|e| e.to_string())?
-                .with_file_name(if cfg!(windows) { "hli-tui.exe" } else { "hli-tui" });
+                .with_file_name(if cfg!(windows) {
+                    "hli-tui.exe"
+                } else {
+                    "hli-tui"
+                });
             std::process::Command::new(tui)
                 .env("HLI_HOME", home())
                 .status()
@@ -97,7 +102,10 @@ fn run(args: &[String]) -> Result<(), String> {
         ("thread", Some("create")) => {
             let title = args.get(2).ok_or("falta el título")?;
             let ws = need_flag(args, "--workspace")?;
-            print_value(&call("thread.create", json!({"workspace_id": ws, "title": title}))?, output)
+            print_value(
+                &call("thread.create", json!({"workspace_id": ws, "title": title}))?,
+                output,
+            )
         }
         ("thread", Some("list")) => {
             let ws = need_flag(args, "--workspace")?;
@@ -134,7 +142,8 @@ fn run(args: &[String]) -> Result<(), String> {
             let kind = need_flag(args, "--type")?;
             let ws = need_flag(args, "--workspace")?;
             let payload_raw = flag(args, "--payload").unwrap_or_else(|| "{}".into());
-            let payload: Value = serde_json::from_str(&payload_raw).map_err(|e| format!("payload inválido: {e}"))?;
+            let payload: Value =
+                serde_json::from_str(&payload_raw).map_err(|e| format!("payload inválido: {e}"))?;
             let v = call(
                 "event.append",
                 json!({
@@ -151,23 +160,35 @@ fn run(args: &[String]) -> Result<(), String> {
         ("event", Some("list")) => {
             let ws = need_flag(args, "--workspace")?;
             let branch = flag(args, "--branch");
-            print_value(&call("event.list", json!({"workspace_id": ws, "branch_id": branch}))?, output)
+            print_value(
+                &call(
+                    "event.list",
+                    json!({"workspace_id": ws, "branch_id": branch}),
+                )?,
+                output,
+            )
         }
         ("artifact", Some("put")) => {
             let path = args.get(2).ok_or("falta la ruta del archivo")?;
             let ws = need_flag(args, "--workspace")?;
-            print_value(&call("artifact.put", json!({"workspace_id": ws, "path": path}))?, output)
+            print_value(
+                &call("artifact.put", json!({"workspace_id": ws, "path": path}))?,
+                output,
+            )
         }
         ("artifact", Some("slice")) => {
             let id = args.get(2).ok_or("falta artifact_id")?;
             let ws = need_flag(args, "--workspace")?;
-            let v = call("artifact.slice", json!({
-                "artifact_id": id, "workspace_id": ws,
-                "kind": flag(args, "--kind").unwrap_or_else(|| "full_text_if_small".into()),
-                "start": flag(args, "--start").and_then(|v| v.parse::<u64>().ok()),
-                "end": flag(args, "--end").and_then(|v| v.parse::<u64>().ok()),
-                "reason": flag(args, "--reason").unwrap_or_else(|| "selected".into())
-            }))?;
+            let v = call(
+                "artifact.slice",
+                json!({
+                    "artifact_id": id, "workspace_id": ws,
+                    "kind": flag(args, "--kind").unwrap_or_else(|| "full_text_if_small".into()),
+                    "start": flag(args, "--start").and_then(|v| v.parse::<u64>().ok()),
+                    "end": flag(args, "--end").and_then(|v| v.parse::<u64>().ok()),
+                    "reason": flag(args, "--reason").unwrap_or_else(|| "selected".into())
+                }),
+            )?;
             print_value(&v, output)
         }
         ("artifact", Some("list")) => {
@@ -181,7 +202,10 @@ fn run(args: &[String]) -> Result<(), String> {
         ("export", _) => {
             let ws = args.get(1).ok_or("falta workspace_id")?;
             let out = need_flag(args, "--out")?;
-            print_value(&call("export", json!({"workspace_id": ws, "out": out}))?, output)
+            print_value(
+                &call("export", json!({"workspace_id": ws, "out": out}))?,
+                output,
+            )
         }
         ("import", _) => {
             let archive = args.get(1).ok_or("falta el archivo")?;
@@ -206,12 +230,15 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         ("mch", Some("create")) => {
             let name = args.get(2).ok_or("falta el nombre")?;
-            let v = call("mch.create", json!({
-                "name": name,
-                "module": flag(args, "--module").unwrap_or_else(|| "hli-memory".into()),
-                "domain": flag(args, "--domain").unwrap_or_else(|| "memory".into()),
-                "workspace_id": flag(args, "--workspace")
-            }))?;
+            let v = call(
+                "mch.create",
+                json!({
+                    "name": name,
+                    "module": flag(args, "--module").unwrap_or_else(|| "hli-memory".into()),
+                    "domain": flag(args, "--domain").unwrap_or_else(|| "memory".into()),
+                    "workspace_id": flag(args, "--workspace")
+                }),
+            )?;
             print_value(&v, output)
         }
         ("mch", Some("list")) => print_value(&call("mch.list", json!({}))?, output),
@@ -234,12 +261,16 @@ fn run(args: &[String]) -> Result<(), String> {
         ("mch", Some("invoke")) => {
             let name = args.get(2).ok_or("falta el nombre")?;
             let op = args.get(3).ok_or("falta la operación")?;
-            let arguments: Value = serde_json::from_str(&flag(args, "--args").unwrap_or_else(|| "{}".into()))
-                .map_err(|e| format!("args inválidos: {e}"))?;
-            let v = call("mch.invoke", json!({
-                "name": name, "operation": op, "arguments": arguments,
-                "workspace_id": flag(args, "--workspace")
-            }))?;
+            let arguments: Value =
+                serde_json::from_str(&flag(args, "--args").unwrap_or_else(|| "{}".into()))
+                    .map_err(|e| format!("args inválidos: {e}"))?;
+            let v = call(
+                "mch.invoke",
+                json!({
+                    "name": name, "operation": op, "arguments": arguments,
+                    "workspace_id": flag(args, "--workspace")
+                }),
+            )?;
             print_value(&v, output)
         }
         ("memory", Some("commit")) => {
@@ -247,7 +278,9 @@ fn run(args: &[String]) -> Result<(), String> {
             let kind = need_flag(args, "--type")?;
             let content = need_flag(args, "--content")?;
             let scope = flag(args, "--scope").unwrap_or_else(|| "workspace".into());
-            let supersedes: Vec<String> = args.iter().enumerate()
+            let supersedes: Vec<String> = args
+                .iter()
+                .enumerate()
                 .filter(|(_, a)| *a == "--supersedes")
                 .filter_map(|(i, _)| args.get(i + 1).cloned())
                 .collect();
@@ -266,7 +299,13 @@ fn run(args: &[String]) -> Result<(), String> {
             let ws = need_flag(args, "--workspace")?;
             let query = need_flag(args, "--query")?;
             let limit = flag(args, "--limit").and_then(|v| v.parse::<u64>().ok());
-            print_value(&call("memory.search", json!({"workspace_id": ws, "query": query, "limit": limit}))?, output)
+            print_value(
+                &call(
+                    "memory.search",
+                    json!({"workspace_id": ws, "query": query, "limit": limit}),
+                )?,
+                output,
+            )
         }
         ("memory", Some("get")) => {
             let id = args.get(2).ok_or("falta memory_id")?;
@@ -348,7 +387,9 @@ fn output_mode(args: &[String]) -> &'static str {
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn need_flag(args: &[String], name: &str) -> Result<String, String> {
@@ -410,9 +451,16 @@ fn daemon_start() -> Result<(), String> {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let daemon = exe.with_file_name(if cfg!(windows) { "hli-daemon.exe" } else { "hli-daemon" });
+    let daemon = exe.with_file_name(if cfg!(windows) {
+        "hli-daemon.exe"
+    } else {
+        "hli-daemon"
+    });
     if !daemon.exists() {
-        return Err(format!("no se encontró el binario del daemon en {}", daemon.display()));
+        return Err(format!(
+            "no se encontró el binario del daemon en {}",
+            daemon.display()
+        ));
     }
     std::fs::create_dir_all(home()).map_err(|e| format!("no se pudo crear HLI_HOME: {e}"))?;
     let log = std::fs::OpenOptions::new()
@@ -434,7 +482,10 @@ fn daemon_start() -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(80));
         if call("daemon.ping", json!({})).is_ok() {
             let info = daemon_info()?;
-            println!("{}", serde_json::to_string_pretty(&json!({"daemon": "started", "info": info})).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({"daemon": "started", "info": info})).unwrap()
+            );
             return Ok(());
         }
     }
@@ -466,7 +517,11 @@ fn daemon_status() -> Result<(), String> {
     match call("daemon.ping", json!({})) {
         Ok(v) => {
             let info = daemon_info().unwrap_or(json!({}));
-            println!("{}", serde_json::to_string_pretty(&json!({"running": true, "ping": v, "info": info})).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({"running": true, "ping": v, "info": info}))
+                    .unwrap()
+            );
             Ok(())
         }
         Err(_) => {

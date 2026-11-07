@@ -15,10 +15,11 @@ fn hli_bin() -> PathBuf {
 }
 
 fn daemon_bin() -> PathBuf {
-    hli_bin()
-        .parent()
-        .unwrap()
-        .join(if cfg!(windows) { "hli-daemon.exe" } else { "hli-daemon" })
+    hli_bin().parent().unwrap().join(if cfg!(windows) {
+        "hli-daemon.exe"
+    } else {
+        "hli-daemon"
+    })
 }
 
 struct Ctx {
@@ -31,7 +32,11 @@ impl Ctx {
         let home = std::env::temp_dir().join(format!("hli-e2e-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
-        assert!(daemon_bin().exists(), "falta {:?}: ejecuta `cargo build --workspace`", daemon_bin());
+        assert!(
+            daemon_bin().exists(),
+            "falta {:?}: ejecuta `cargo build --workspace`",
+            daemon_bin()
+        );
         Self { home, child: None }
     }
 
@@ -50,13 +55,18 @@ impl Ctx {
 
     fn ok(&self, args: &[&str]) -> String {
         let (code, stdout, stderr) = self.run(args);
-        assert_eq!(code, 0, "falló {:?}\nstdout: {stdout}\nstderr: {stderr}", args);
+        assert_eq!(
+            code, 0,
+            "falló {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            args
+        );
         stdout
     }
 
     fn json(&self, args: &[&str]) -> Value {
         let stdout = self.ok(args);
-        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("json inválido en {:?}: {e}\n{stdout}", args))
+        serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("json inválido en {:?}: {e}\n{stdout}", args))
     }
 
     fn start_daemon(&mut self) {
@@ -109,8 +119,16 @@ fn lifecycle_survives_daemon_restart() {
     let th = ctx.json(&["thread", "create", "research", "--workspace", &ws_id]);
     let th_id = th["id"].as_str().unwrap().to_string();
     let ev = ctx.json(&[
-        "event", "append", "--type", "test.recorded", "--payload", r#"{"n":1}"#,
-        "--workspace", &ws_id, "--thread", &th_id,
+        "event",
+        "append",
+        "--type",
+        "test.recorded",
+        "--payload",
+        r#"{"n":1}"#,
+        "--workspace",
+        &ws_id,
+        "--thread",
+        &th_id,
     ]);
     let ev_id = ev["event_id"].as_str().unwrap().to_string();
     let br = ctx.json(&["branch", "create", "alternative", "--from", &ev_id]);
@@ -124,13 +142,23 @@ fn lifecycle_survives_daemon_restart() {
     ctx.start_daemon();
 
     let after = ctx.json(&["branch", "show", &br_id]);
-    assert_eq!(after["branch"]["head_sequence"].as_i64().unwrap(), before_seq);
+    assert_eq!(
+        after["branch"]["head_sequence"].as_i64().unwrap(),
+        before_seq
+    );
     assert_eq!(after["chain_head"].as_str().unwrap(), before_head);
     assert_eq!(after["branch"]["name"].as_str().unwrap(), "alternative");
-    let snap_id = after["branch"]["snapshot_id"].as_str().expect("snapshot_id");
+    let snap_id = after["branch"]["snapshot_id"]
+        .as_str()
+        .expect("snapshot_id");
     assert!(snap_id.starts_with("snap_"));
     let seq = after["branch"]["head_sequence"].as_i64().unwrap();
-    assert!(ctx.home.join("snapshots").join(&br_id).join(format!("{seq}.json")).exists());
+    assert!(ctx
+        .home
+        .join("snapshots")
+        .join(&br_id)
+        .join(format!("{seq}.json"))
+        .exists());
 
     let verify = ctx.json(&["verify", "--workspace", &ws_id]);
     assert_eq!(verify["ok"].as_bool(), Some(true));
@@ -146,16 +174,32 @@ fn export_import_roundtrip_is_verifiable() {
     let th = ctx.json(&["thread", "create", "research", "--workspace", &ws_id]);
     let th_id = th["id"].as_str().unwrap().to_string();
     let ev = ctx.json(&[
-        "event", "append", "--type", "test.recorded", "--payload", r#"{"n":2}"#,
-        "--workspace", &ws_id, "--thread", &th_id,
+        "event",
+        "append",
+        "--type",
+        "test.recorded",
+        "--payload",
+        r#"{"n":2}"#,
+        "--workspace",
+        &ws_id,
+        "--thread",
+        &th_id,
     ]);
     let ev_id = ev["event_id"].as_str().unwrap().to_string();
-    let br = ctx.json(&["branch", "create", "alt", "--thread", &th_id, "--from", &ev_id]);
+    let br = ctx.json(&[
+        "branch", "create", "alt", "--thread", &th_id, "--from", &ev_id,
+    ]);
     let br_id = br["id"].as_str().unwrap().to_string();
 
     let note = ctx.home.join("note.txt");
     std::fs::write(&note, b"hola hli").unwrap();
-    let art = ctx.json(&["artifact", "put", note.to_str().unwrap(), "--workspace", &ws_id]);
+    let art = ctx.json(&[
+        "artifact",
+        "put",
+        note.to_str().unwrap(),
+        "--workspace",
+        &ws_id,
+    ]);
     assert!(art["sha256"].as_str().unwrap().starts_with("sha256:"));
 
     let archive = ctx.home.join("demo.hliar");
@@ -190,12 +234,28 @@ fn append_is_idempotent() {
     let ws_id = ws["id"].as_str().unwrap().to_string();
 
     let first = ctx.json(&[
-        "event", "append", "--type", "test.recorded", "--payload", r#"{"n":3}"#,
-        "--workspace", &ws_id, "--idem", "k-1",
+        "event",
+        "append",
+        "--type",
+        "test.recorded",
+        "--payload",
+        r#"{"n":3}"#,
+        "--workspace",
+        &ws_id,
+        "--idem",
+        "k-1",
     ]);
     let second = ctx.json(&[
-        "event", "append", "--type", "test.recorded", "--payload", r#"{"n":4}"#,
-        "--workspace", &ws_id, "--idem", "k-1",
+        "event",
+        "append",
+        "--type",
+        "test.recorded",
+        "--payload",
+        r#"{"n":4}"#,
+        "--workspace",
+        &ws_id,
+        "--idem",
+        "k-1",
     ]);
     assert_eq!(first["event_id"], second["event_id"]);
     assert_eq!(first["sequence"], second["sequence"]);

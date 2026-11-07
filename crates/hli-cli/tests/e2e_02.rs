@@ -12,10 +12,11 @@ fn hli_bin() -> PathBuf {
 }
 
 fn daemon_bin() -> PathBuf {
-    hli_bin()
-        .parent()
-        .unwrap()
-        .join(if cfg!(windows) { "hli-daemon.exe" } else { "hli-daemon" })
+    hli_bin().parent().unwrap().join(if cfg!(windows) {
+        "hli-daemon.exe"
+    } else {
+        "hli-daemon"
+    })
 }
 
 struct Ctx {
@@ -32,8 +33,16 @@ impl Ctx {
         let root = base.join("root");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&root).unwrap();
-        assert!(daemon_bin().exists(), "falta {:?}: ejecuta `cargo build --workspace`", daemon_bin());
-        Self { home, root, child: None }
+        assert!(
+            daemon_bin().exists(),
+            "falta {:?}: ejecuta `cargo build --workspace`",
+            daemon_bin()
+        );
+        Self {
+            home,
+            root,
+            child: None,
+        }
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
@@ -51,13 +60,18 @@ impl Ctx {
 
     fn ok(&self, args: &[&str]) -> String {
         let (code, stdout, stderr) = self.run(args);
-        assert_eq!(code, 0, "falló {:?}\nstdout: {stdout}\nstderr: {stderr}", args);
+        assert_eq!(
+            code, 0,
+            "falló {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            args
+        );
         stdout
     }
 
     fn json(&self, args: &[&str]) -> Value {
         let stdout = self.ok(args);
-        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("json inválido en {:?}: {e}\n{stdout}", args))
+        serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("json inválido en {:?}: {e}\n{stdout}", args))
     }
 
     fn start_daemon(&mut self) {
@@ -93,7 +107,13 @@ impl Ctx {
     }
 
     fn seed(&self) -> (String, String, String) {
-        let ws = self.json(&["workspace", "create", "demo", "--root", self.root.to_str().unwrap()]);
+        let ws = self.json(&[
+            "workspace",
+            "create",
+            "demo",
+            "--root",
+            self.root.to_str().unwrap(),
+        ]);
         let ws_id = ws["id"].as_str().unwrap().to_string();
         let th = self.json(&["thread", "create", "research", "--workspace", &ws_id]);
         let th_id = th["id"].as_str().unwrap().to_string();
@@ -119,7 +139,16 @@ fn run_manifest_receipt_and_restart() {
     let (ws, th, br) = ctx.seed();
 
     let run = ctx.json(&[
-        "run", "start", "--workspace", &ws, "--thread", &th, "--branch", &br, "--prompt", "hola",
+        "run",
+        "start",
+        "--workspace",
+        &ws,
+        "--thread",
+        &th,
+        "--branch",
+        &br,
+        "--prompt",
+        "hola",
     ]);
     let run_id = run["id"].as_str().unwrap().to_string();
     assert_eq!(run["state"].as_str(), Some("completed"));
@@ -128,20 +157,32 @@ fn run_manifest_receipt_and_restart() {
     let got = ctx.json(&["run", "get", &run_id]);
     assert_eq!(got["run"]["state"].as_str(), Some("completed"));
     let manifest = &got["manifest"];
-    assert!(manifest["manifest_id"].as_str().unwrap().starts_with("ctx_"));
-    assert!(manifest["content_hash"].as_str().unwrap().starts_with("sha256:"));
+    assert!(manifest["manifest_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("ctx_"));
+    assert!(manifest["content_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
     assert_eq!(manifest["run_id"].as_str().unwrap(), run_id);
     assert!(manifest["recent_events"].as_array().unwrap().len() >= 2);
 
     let receipt = &got["run"]["receipt"];
     assert_eq!(receipt["provider"].as_str(), Some("sim"));
-    assert_eq!(receipt["context_manifest"].as_str(), manifest["manifest_id"].as_str());
+    assert_eq!(
+        receipt["context_manifest"].as_str(),
+        manifest["manifest_id"].as_str()
+    );
     assert!(receipt["effective_permissions"]["filesystem.write"].as_str() == Some("ask"));
 
     // El manifiesto se emite antes de model.requested.
     let events = ctx.json(&["event", "list", "--workspace", &ws]);
     let arr = events.as_array().unwrap();
-    let m = arr.iter().find(|e| e["type"] == "context.manifest.created").unwrap();
+    let m = arr
+        .iter()
+        .find(|e| e["type"] == "context.manifest.created")
+        .unwrap();
     let r = arr.iter().find(|e| e["type"] == "model.requested").unwrap();
     assert!(m["sequence"].as_i64() < r["sequence"].as_i64());
     assert_eq!(
@@ -155,7 +196,10 @@ fn run_manifest_receipt_and_restart() {
 
     let after = ctx.json(&["run", "get", &run_id]);
     assert_eq!(after["run"]["state"].as_str(), Some("completed"));
-    assert_eq!(after["manifest"]["content_hash"].as_str().unwrap(), hash_before);
+    assert_eq!(
+        after["manifest"]["content_hash"].as_str().unwrap(),
+        hash_before
+    );
 
     let verify = ctx.json(&["verify", "--workspace", &ws]);
     assert_eq!(verify["ok"].as_bool(), Some(true));
@@ -169,12 +213,26 @@ fn tool_read_is_allowed() {
     std::fs::write(ctx.root.join("note.txt"), b"contenido").unwrap();
 
     let run = ctx.json(&[
-        "run", "start", "--workspace", &ws, "--thread", &th, "--branch", &br,
-        "--prompt", "tool:read note.txt",
+        "run",
+        "start",
+        "--workspace",
+        &ws,
+        "--thread",
+        &th,
+        "--branch",
+        &br,
+        "--prompt",
+        "tool:read note.txt",
     ]);
     assert_eq!(run["state"].as_str(), Some("completed"));
-    assert_eq!(run["result"]["observation"]["status"].as_str(), Some("success"));
-    assert_eq!(run["result"]["observation"]["stdout"].as_str(), Some("contenido"));
+    assert_eq!(
+        run["result"]["observation"]["status"].as_str(),
+        Some("success")
+    );
+    assert_eq!(
+        run["result"]["observation"]["stdout"].as_str(),
+        Some("contenido")
+    );
 }
 
 #[test]
@@ -184,8 +242,16 @@ fn tool_write_requires_approval() {
     let (ws, th, br) = ctx.seed();
 
     let run = ctx.json(&[
-        "run", "start", "--workspace", &ws, "--thread", &th, "--branch", &br,
-        "--prompt", "tool:write out.txt hola mundo",
+        "run",
+        "start",
+        "--workspace",
+        &ws,
+        "--thread",
+        &th,
+        "--branch",
+        &br,
+        "--prompt",
+        "tool:write out.txt hola mundo",
     ]);
     let run_id = run["id"].as_str().unwrap().to_string();
     assert_eq!(run["state"].as_str(), Some("waiting_approval"));
@@ -193,7 +259,10 @@ fn tool_write_requires_approval() {
 
     let approved = ctx.json(&["run", "approve", &run_id]);
     assert_eq!(approved["state"].as_str(), Some("completed"));
-    assert_eq!(std::fs::read_to_string(ctx.root.join("out.txt")).unwrap(), "hola mundo");
+    assert_eq!(
+        std::fs::read_to_string(ctx.root.join("out.txt")).unwrap(),
+        "hola mundo"
+    );
 }
 
 #[test]
@@ -203,8 +272,16 @@ fn tool_shell_is_denied() {
     let (ws, th, br) = ctx.seed();
 
     let run = ctx.json(&[
-        "run", "start", "--workspace", &ws, "--thread", &th, "--branch", &br,
-        "--prompt", "tool:shell whoami",
+        "run",
+        "start",
+        "--workspace",
+        &ws,
+        "--thread",
+        &th,
+        "--branch",
+        &br,
+        "--prompt",
+        "tool:shell whoami",
     ]);
     assert_eq!(run["state"].as_str(), Some("failed"));
     assert!(run["result"]["error"].as_str().is_some());
