@@ -9,6 +9,7 @@ use serde_json::Value;
 fn hli() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_hli"))
 }
+static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 fn daemon() -> PathBuf {
     hli().parent().unwrap().join(if cfg!(windows) {
         "hli-daemon.exe"
@@ -23,7 +24,8 @@ struct Ctx {
 }
 impl Ctx {
     fn new() -> Self {
-        let base = std::env::temp_dir().join(format!("hli-09-{}", std::process::id()));
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let base = std::env::temp_dir().join(format!("hli-09-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         Self {

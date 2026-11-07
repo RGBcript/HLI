@@ -9,7 +9,7 @@
 | Límites de contenedores | hecho | `.hlimod` 256 MiB, `.hliar` 2 GiB, entrada 128 MiB, 10 000 entradas; duplicados y `.`/`..` rechazados; 4 pruebas |
 | Proveedor configurable | hecho | `providers.toml`, `provider add/list/inspect/test/set-default/remove`, default persistente, `secret_handle`; 2 pruebas e2e |
 | Formato y clippy | verde | `cargo fmt --check`, `cargo clippy -D warnings` |
-| Tests | verde | 73 + 2 nuevas = 75 pruebas |
+| Tests | verde | 79 pruebas; e2e aislados por `HLI_HOME` |
 
 ## Pendiente para cerrar 0.9
 
