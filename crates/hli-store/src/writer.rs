@@ -1,0 +1,1025 @@
+//! Actor único de escritura. Todas las mutaciones pasan por este hilo.
+
+use std::path::PathBuf;
+use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender};
+use std::thread;
+
+use hli_core::{
+    canon::{canonical_json, zero_hash},
+    ids::new_id,
+    model::*,
+    time::now_iso,
+    HliError, Result,
+};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use crate::export::{self, ArchiveFile};
+use crate::schema;
+
+pub type Reply<T> = SyncSender<Result<T>>;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ArtifactInfo {
+    pub id: String,
+    pub sha256: String,
+    pub mime: String,
+    pub bytes: i64,
+    pub path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SnapshotInfo {
+    pub id: String,
+    pub branch_id: String,
+    pub at_sequence: i64,
+    pub path: String,
+    pub content_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExportReport {
+    pub path: String,
+    pub manifest_hash: String,
+    pub events: i64,
+    pub artifacts: i64,
+    pub chain_head: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ImportReport {
+    pub workspace_id: String,
+    pub events: i64,
+    pub artifacts: i64,
+    pub verified: bool,
+    pub chain_head: String,
+}
+
+pub enum WriteCmd {
+    CreateWorkspace {
+        name: String,
+        root: String,
+        reply: Reply<Workspace>,
+    },
+    CreateThread {
+        workspace_id: String,
+        title: String,
+        reply: Reply<Thread>,
+    },
+    CreateBranch {
+        thread_id: String,
+        name: String,
+        from_event: Option<String>,
+        reply: Reply<Branch>,
+    },
+    AppendEvent {
+        workspace_id: String,
+        thread_id: Option<String>,
+        branch_id: Option<String>,
+        kind: String,
+        payload: Value,
+        idempotency_key: Option<String>,
+        reply: Reply<Event>,
+    },
+    PutArtifact {
+        workspace_id: String,
+        source: PathBuf,
+        reply: Reply<ArtifactInfo>,
+    },
+    Snapshot {
+        branch_id: String,
+        reply: Reply<SnapshotInfo>,
+    },
+    Export {
+        workspace_id: String,
+        out: PathBuf,
+        reply: Reply<ExportReport>,
+    },
+    Import {
+        archive: PathBuf,
+        reply: Reply<ImportReport>,
+    },
+    Stop {
+        reply: Reply<()>,
+    },
+}
+
+#[derive(Clone)]
+pub struct Writer {
+    tx: Sender<WriteCmd>,
+}
+
+impl Writer {
+    fn call<T>(&self, make: impl FnOnce(Reply<T>) -> WriteCmd) -> Result<T> {
+        let (tx, rx) = sync_channel(1);
+        self.tx
+            .send(make(tx))
+            .map_err(|_| HliError::internal("writer actor detenido"))?;
+        rx.recv()
+            .map_err(|_| HliError::internal("writer actor sin respuesta"))?
+    }
+
+    pub fn create_workspace(&self, name: &str, root: &str) -> Result<Workspace> {
+        self.call(|reply| WriteCmd::CreateWorkspace {
+            name: name.to_string(),
+            root: root.to_string(),
+            reply,
+        })
+    }
+
+    pub fn create_thread(&self, workspace_id: &str, title: &str) -> Result<Thread> {
+        self.call(|reply| WriteCmd::CreateThread {
+            workspace_id: workspace_id.to_string(),
+            title: title.to_string(),
+            reply,
+        })
+    }
+
+    pub fn create_branch(
+        &self,
+        thread_id: &str,
+        name: &str,
+        from_event: Option<String>,
+    ) -> Result<Branch> {
+        self.call(|reply| WriteCmd::CreateBranch {
+            thread_id: thread_id.to_string(),
+            name: name.to_string(),
+            from_event,
+            reply,
+        })
+    }
+
+    pub fn append_event(
+        &self,
+        workspace_id: &str,
+        thread_id: Option<String>,
+        branch_id: Option<String>,
+        kind: &str,
+        payload: Value,
+        idempotency_key: Option<String>,
+    ) -> Result<Event> {
+        self.call(|reply| WriteCmd::AppendEvent {
+            workspace_id: workspace_id.to_string(),
+            thread_id,
+            branch_id,
+            kind: kind.to_string(),
+            payload,
+            idempotency_key,
+            reply,
+        })
+    }
+
+    pub fn put_artifact(&self, workspace_id: &str, source: PathBuf) -> Result<ArtifactInfo> {
+        self.call(|reply| WriteCmd::PutArtifact {
+            workspace_id: workspace_id.to_string(),
+            source,
+            reply,
+        })
+    }
+
+    pub fn snapshot(&self, branch_id: &str) -> Result<SnapshotInfo> {
+        self.call(|reply| WriteCmd::Snapshot {
+            branch_id: branch_id.to_string(),
+            reply,
+        })
+    }
+
+    pub fn export(&self, workspace_id: &str, out: PathBuf) -> Result<ExportReport> {
+        self.call(|reply| WriteCmd::Export {
+            workspace_id: workspace_id.to_string(),
+            out,
+            reply,
+        })
+    }
+
+    pub fn import(&self, archive: PathBuf) -> Result<ImportReport> {
+        self.call(|reply| WriteCmd::Import { archive, reply })
+    }
+
+    pub fn stop(&self) -> Result<()> {
+        self.call(|reply| WriteCmd::Stop { reply })
+    }
+}
+
+struct State {
+    conn: Connection,
+    artifacts_dir: PathBuf,
+    snapshots_dir: PathBuf,
+}
+
+pub fn spawn(conn: Connection, artifacts_dir: PathBuf, snapshots_dir: PathBuf) -> Writer {
+    let (tx, rx) = channel::<WriteCmd>();
+    thread::Builder::new()
+        .name("hli-writer".into())
+        .spawn(move || {
+            let mut st = State { conn, artifacts_dir, snapshots_dir };
+            while let Ok(cmd) = rx.recv() {
+                let stop = matches!(cmd, WriteCmd::Stop { .. });
+                st.dispatch(cmd);
+                if stop {
+                    break;
+                }
+            }
+        })
+        .expect("no se pudo arrancar el writer actor");
+    Writer { tx }
+}
+
+impl State {
+    fn dispatch(&mut self, cmd: WriteCmd) {
+        match cmd {
+            WriteCmd::CreateWorkspace { name, root, reply } => {
+                let _ = reply.send(self.create_workspace(&name, &root));
+            }
+            WriteCmd::CreateThread { workspace_id, title, reply } => {
+                let _ = reply.send(self.create_thread(&workspace_id, &title));
+            }
+            WriteCmd::CreateBranch { thread_id, name, from_event, reply } => {
+                let _ = reply.send(self.create_branch(&thread_id, &name, from_event));
+            }
+            WriteCmd::AppendEvent {
+                workspace_id,
+                thread_id,
+                branch_id,
+                kind,
+                payload,
+                idempotency_key,
+                reply,
+            } => {
+                let r = (|| {
+                    let tx = self.conn.transaction()?;
+                    let ev = append_event(
+                        &tx,
+                        &workspace_id,
+                        thread_id.as_deref(),
+                        branch_id.as_deref(),
+                        &kind,
+                        json!({"kind": "user", "id": "cli"}),
+                        payload,
+                        vec![],
+                        idempotency_key.as_deref(),
+                    )?;
+                    tx.commit()?;
+                    Ok(ev)
+                })();
+                let _ = reply.send(r);
+            }
+            WriteCmd::PutArtifact { workspace_id, source, reply } => {
+                let _ = reply.send(self.put_artifact(&workspace_id, &source));
+            }
+            WriteCmd::Snapshot { branch_id, reply } => {
+                let _ = reply.send(self.snapshot(&branch_id));
+            }
+            WriteCmd::Export { workspace_id, out, reply } => {
+                let _ = reply.send(self.export(&workspace_id, &out));
+            }
+            WriteCmd::Import { archive, reply } => {
+                let _ = reply.send(self.import(&archive));
+            }
+            WriteCmd::Stop { reply } => {
+                let _ = reply.send(Ok(()));
+            }
+        }
+    }
+
+    fn create_workspace(&mut self, name: &str, root: &str) -> Result<Workspace> {
+        if name.trim().is_empty() {
+            return Err(HliError::invalid("el nombre del workspace no puede estar vacío"));
+        }
+        let tx = self.conn.transaction()?;
+        let ws = Workspace {
+            id: new_id("ws"),
+            name: name.to_string(),
+            root_path: root.to_string(),
+            created_at: now_iso(),
+            archived_at: None,
+            config: json!({}),
+        };
+        tx.execute(
+            "INSERT INTO workspaces(id, name, root_path, created_at, archived_at, config_json)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+            params![ws.id, ws.name, ws.root_path, ws.created_at, canonical_json(&ws.config)],
+        )?;
+        append_event(
+            &tx,
+            &ws.id,
+            None,
+            None,
+            "workspace.created",
+            json!({"kind": "user", "id": "cli"}),
+            json!({"name": ws.name, "root_path": ws.root_path}),
+            vec![],
+            None,
+        )?;
+        tx.commit()?;
+        Ok(ws)
+    }
+
+    fn create_thread(&mut self, workspace_id: &str, title: &str) -> Result<Thread> {
+        schema::require_workspace(&self.conn, workspace_id)?;
+        if title.trim().is_empty() {
+            return Err(HliError::invalid("el título del thread no puede estar vacío"));
+        }
+        let tx = self.conn.transaction()?;
+        let th = Thread {
+            id: new_id("thr"),
+            workspace_id: workspace_id.to_string(),
+            title: title.to_string(),
+            created_at: now_iso(),
+            archived_at: None,
+        };
+        tx.execute(
+            "INSERT INTO threads(id, workspace_id, title, created_at, archived_at)
+             VALUES (?1, ?2, ?3, ?4, NULL)",
+            params![th.id, th.workspace_id, th.title, th.created_at],
+        )?;
+        append_event(
+            &tx,
+            workspace_id,
+            Some(&th.id),
+            None,
+            "thread.created",
+            json!({"kind": "user", "id": "cli"}),
+            json!({"title": th.title}),
+            vec![],
+            None,
+        )?;
+        tx.commit()?;
+        Ok(th)
+    }
+
+    fn create_branch(
+        &mut self,
+        thread_id: &str,
+        name: &str,
+        from_event: Option<String>,
+    ) -> Result<Branch> {
+        let (workspace_id, _title): (String, String) = self
+            .conn
+            .query_row(
+                "SELECT workspace_id, title FROM threads WHERE id = ?1",
+                [thread_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("thread {thread_id}")))?;
+
+        let mut head_event_id = None;
+        let mut head_sequence = 0i64;
+        if let Some(ev_id) = &from_event {
+            let ev = load_event(&self.conn, ev_id)?
+                .ok_or_else(|| HliError::not_found(&format!("event {ev_id}")))?;
+            if ev.workspace_id != workspace_id {
+                return Err(HliError::conflict("el evento de bifurcación pertenece a otro workspace"));
+            }
+            head_event_id = Some(ev.event_id.clone());
+            head_sequence = ev.sequence;
+        }
+
+        let tx = self.conn.transaction()?;
+        let br = Branch {
+            id: new_id("br"),
+            thread_id: thread_id.to_string(),
+            name: name.to_string(),
+            parent_branch_id: None,
+            fork_event_id: head_event_id.clone(),
+            head_event_id: head_event_id.clone(),
+            head_sequence,
+            snapshot_id: None,
+            created_at: now_iso(),
+        };
+        tx.execute(
+            "INSERT INTO branches(id, thread_id, name, parent_branch_id, fork_event_id,
+                                  head_event_id, head_sequence, snapshot_id, created_at)
+             VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, NULL, ?7)",
+            params![
+                br.id,
+                br.thread_id,
+                name,
+                br.fork_event_id,
+                br.head_event_id,
+                br.head_sequence,
+                br.created_at
+            ],
+        )?;
+        append_event(
+            &tx,
+            &workspace_id,
+            Some(thread_id),
+            Some(&br.id),
+            "branch.created",
+            json!({"kind": "user", "id": "cli"}),
+            json!({"name": name, "from_event": from_event}),
+            vec![],
+            None,
+        )?;
+        tx.commit()?;
+        Ok(br)
+    }
+
+    fn put_artifact(&mut self, workspace_id: &str, source: &PathBuf) -> Result<ArtifactInfo> {
+        schema::require_workspace(&self.conn, workspace_id)?;
+        let bytes = std::fs::read(source)?;
+        let sha = export::sha256_hex(&bytes);
+        let mime = export::guess_mime(&source.to_string_lossy());
+        let sha_ref = format!("sha256:{sha}");
+
+        if let Some((id, path)) = self
+            .conn
+            .query_row(
+                "SELECT id, sha256 FROM artifacts WHERE workspace_id = ?1 AND sha256 = ?2",
+                params![workspace_id, sha],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            return Ok(ArtifactInfo {
+                id,
+                sha256: sha_ref,
+                mime: mime.to_string(),
+                bytes: bytes.len() as i64,
+                path,
+            });
+        }
+
+        let dest = self.artifacts_dir.join(&sha);
+        std::fs::write(&dest, &bytes)?;
+
+        let tx = self.conn.transaction()?;
+        let info = ArtifactInfo {
+            id: new_id("art"),
+            sha256: sha_ref.clone(),
+            mime: mime.to_string(),
+            bytes: bytes.len() as i64,
+            path: dest.to_string_lossy().to_string(),
+        };
+        tx.execute(
+            "INSERT INTO artifacts(id, workspace_id, sha256, mime, bytes, source_event_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+            params![info.id, workspace_id, sha, info.mime, info.bytes, now_iso()],
+        )?;
+        append_event(
+            &tx,
+            workspace_id,
+            None,
+            None,
+            "artifact.created",
+            json!({"kind": "user", "id": "cli"}),
+            json!({"sha256": sha_ref, "mime": info.mime, "bytes": info.bytes}),
+            vec![ArtifactRef {
+                sha256: format!("sha256:{sha}"),
+                mime: info.mime.clone(),
+                bytes: info.bytes,
+            }],
+            None,
+        )?;
+        tx.commit()?;
+        Ok(info)
+    }
+
+    fn snapshot(&mut self, branch_id: &str) -> Result<SnapshotInfo> {
+        let br: Branch = self
+            .conn
+            .query_row(
+                "SELECT id, thread_id, name, parent_branch_id, fork_event_id, head_event_id,
+                        head_sequence, snapshot_id, created_at
+                 FROM branches WHERE id = ?1",
+                [branch_id],
+                row_to_branch,
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("branch {branch_id}")))?;
+        let ws_id: String = self
+            .conn
+            .query_row("SELECT workspace_id FROM threads WHERE id = ?1", [&br.thread_id], |r| r.get(0))?;
+        let head = br
+            .head_event_id
+            .as_ref()
+            .and_then(|id| load_event(&self.conn, id).ok().flatten());
+
+        let content = json!({
+            "branch": br,
+            "head_event": head,
+            "at": now_iso()
+        });
+        let hash = hli_core::canon::hash_canonical(&content);
+        let dir = self.snapshots_dir.join(branch_id);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{}.json", br.head_sequence));
+        std::fs::write(&path, canonical_json(&content))?;
+
+        let info = SnapshotInfo {
+            id: new_id("snap"),
+            branch_id: branch_id.to_string(),
+            at_sequence: br.head_sequence,
+            path: path.to_string_lossy().to_string(),
+            content_hash: hash,
+        };
+        self.conn.execute(
+            "INSERT INTO snapshots(id, workspace_id, branch_id, at_sequence, path, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(branch_id, at_sequence) DO UPDATE SET path=excluded.path, content_hash=excluded.content_hash",
+            params![info.id, ws_id, info.branch_id, info.at_sequence, info.path, info.content_hash, now_iso()],
+        )?;
+        Ok(info)
+    }
+
+    fn export(&mut self, workspace_id: &str, out: &PathBuf) -> Result<ExportReport> {
+        schema::require_workspace(&self.conn, workspace_id)?;
+
+        let ws = self
+            .conn
+            .query_row(
+                "SELECT id, name, root_path, created_at, archived_at, config_json
+                 FROM workspaces WHERE id = ?1",
+                [workspace_id],
+                |r| {
+                    Ok(Workspace {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        root_path: r.get(2)?,
+                        created_at: r.get(3)?,
+                        archived_at: r.get(4)?,
+                        config: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or(json!({})),
+                    })
+                },
+            )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workspace_id, title, created_at, archived_at FROM threads
+             WHERE workspace_id = ?1 ORDER BY created_at",
+        )?;
+        let threads: Vec<Thread> = stmt
+            .query_map([workspace_id], |r| {
+                Ok(Thread {
+                    id: r.get(0)?,
+                    workspace_id: r.get(1)?,
+                    title: r.get(2)?,
+                    created_at: r.get(3)?,
+                    archived_at: r.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT b.id, b.thread_id, b.name, b.parent_branch_id, b.fork_event_id, b.head_event_id,
+                    b.head_sequence, b.snapshot_id, b.created_at
+             FROM branches b JOIN threads t ON t.id = b.thread_id
+             WHERE t.workspace_id = ?1 ORDER BY b.created_at",
+        )?;
+        let branches: Vec<Branch> = stmt
+            .query_map([workspace_id], row_to_branch)?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+
+        let events = load_events(&self.conn, workspace_id)?;
+        let chain_head = events
+            .last()
+            .map(|e| e.integrity.event_hash.clone())
+            .unwrap_or_else(zero_hash);
+
+        let mut files: Vec<ArchiveFile> = Vec::new();
+
+        let state = json!({"workspace": ws, "threads": threads, "branches": branches});
+        let state_bytes = canonical_json(&state).into_bytes();
+        files.push(ArchiveFile { path: "state.json".into(), bytes: state_bytes });
+
+        let mut ndjson = String::new();
+        for e in &events {
+            ndjson.push_str(&canonical_json(&serde_json::to_value(e)?));
+            ndjson.push('\n');
+        }
+        files.push(ArchiveFile { path: "events.ndjson".into(), bytes: ndjson.into_bytes() });
+
+        let mut stmt = self
+            .conn
+            .prepare("SELECT sha256 FROM artifacts WHERE workspace_id = ?1 ORDER BY sha256")?;
+        let shas: Vec<String> = stmt
+            .query_map([workspace_id], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+        for sha in &shas {
+            let p = self.artifacts_dir.join(sha);
+            if p.exists() {
+                files.push(ArchiveFile {
+                    path: format!("artifacts/{sha}"),
+                    bytes: std::fs::read(&p)?,
+                });
+            }
+        }
+
+        let file_meta: Vec<Value> = files
+            .iter()
+            .map(|f| {
+                json!({
+                    "path": f.path,
+                    "sha256": format!("sha256:{}", export::sha256_hex(&f.bytes)),
+                    "bytes": f.bytes.len()
+                })
+            })
+            .collect();
+
+        let range = if events.is_empty() {
+            json!([0, 0])
+        } else {
+            json!([events.first().unwrap().sequence, events.last().unwrap().sequence])
+        };
+
+        let manifest = json!({
+            "format": export::FORMAT,
+            "workspace_id": workspace_id,
+            "exported_at": now_iso(),
+            "sequence_range": range,
+            "chain_head": chain_head,
+            "counts": {
+                "events": events.len(),
+                "threads": threads.len(),
+                "branches": branches.len(),
+                "artifacts": shas.len()
+            },
+            "files": file_meta,
+            "redactions": {"secrets": "handles-only"}
+        });
+        let mhash = export::manifest_hash(&manifest);
+
+        let mut all = vec![ArchiveFile {
+            path: "manifest.json".into(),
+            bytes: canonical_json(&manifest).into_bytes(),
+        }];
+        all.extend(files);
+        let container = export::container_bytes(&all);
+        std::fs::write(out, &container)?;
+
+        Ok(ExportReport {
+            path: out.to_string_lossy().to_string(),
+            manifest_hash: mhash,
+            events: events.len() as i64,
+            artifacts: shas.len() as i64,
+            chain_head,
+        })
+    }
+
+    fn import(&mut self, archive: &PathBuf) -> Result<ImportReport> {
+        let raw = std::fs::read(archive)?;
+        let files = export::read_container(&raw)?;
+        let manifest_bytes = files
+            .iter()
+            .find(|f| f.path == "manifest.json")
+            .ok_or_else(|| HliError::invalid("archivo sin manifest.json"))?
+            .bytes
+            .clone();
+        let manifest: Value = serde_json::from_slice(&manifest_bytes)?;
+        if manifest["format"] != export::FORMAT {
+            return Err(HliError::invalid("formato de archivo no soportado"));
+        }
+        let workspace_id = manifest["workspace_id"]
+            .as_str()
+            .ok_or_else(|| HliError::invalid("manifest sin workspace_id"))?
+            .to_string();
+
+        for meta in manifest["files"].as_array().unwrap_or(&vec![]) {
+            let path = meta["path"].as_str().unwrap_or_default();
+            let expect = meta["sha256"].as_str().unwrap_or_default();
+            let f = files
+                .iter()
+                .find(|f| f.path == path)
+                .ok_or_else(|| HliError::invalid(format!("falta {path} en el archivo")))?;
+            let got = format!("sha256:{}", export::sha256_hex(&f.bytes));
+            if got != expect {
+                return Err(HliError::conflict(format!("hash no coincide para {path}")));
+            }
+        }
+
+        let exists: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workspaces WHERE id = ?1",
+            [&workspace_id],
+            |r| r.get(0),
+        )?;
+        if exists > 0 {
+            return Err(HliError::conflict(format!("workspace {workspace_id} ya existe")));
+        }
+
+        let state: Value = serde_json::from_slice(
+            &files
+                .iter()
+                .find(|f| f.path == "state.json")
+                .ok_or_else(|| HliError::invalid("archivo sin state.json"))?
+                .bytes,
+        )?;
+        let events: Vec<Event> = {
+            let raw = files
+                .iter()
+                .find(|f| f.path == "events.ndjson")
+                .ok_or_else(|| HliError::invalid("archivo sin events.ndjson"))?
+                .bytes
+                .clone();
+            let text = String::from_utf8(raw).map_err(|_| HliError::invalid("events.ndjson no es UTF-8"))?;
+            let mut out = Vec::new();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                out.push(serde_json::from_str::<Event>(line)?);
+            }
+            out
+        };
+
+        // Verificación completa antes de escribir.
+        let mut prev = zero_hash();
+        for e in &events {
+            if e.integrity.previous_hash != prev {
+                return Err(HliError::conflict(format!(
+                    "cadena rota en sequence {}: prev_hash no coincide",
+                    e.sequence
+                )));
+            }
+            if !e.verify() {
+                return Err(HliError::conflict(format!(
+                    "event_hash inválido en sequence {}",
+                    e.sequence
+                )));
+            }
+            prev = e.integrity.event_hash.clone();
+        }
+        let chain_head = events.last().map(|e| e.integrity.event_hash.clone()).unwrap_or_else(zero_hash);
+        if let Some(h) = manifest["chain_head"].as_str() {
+            if h != chain_head {
+                return Err(HliError::conflict("chain_head del manifiesto no coincide"));
+            }
+        }
+
+        let tx = self.conn.transaction()?;
+        let ws = &state["workspace"];
+        tx.execute(
+            "INSERT INTO workspaces(id, name, root_path, created_at, archived_at, config_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                ws["id"].as_str().unwrap_or(&workspace_id),
+                ws["name"].as_str().unwrap_or("imported"),
+                ws["root_path"].as_str().unwrap_or(""),
+                ws["created_at"].as_str().unwrap_or(""),
+                ws["archived_at"].as_str(),
+                canonical_json(&ws["config"])
+            ],
+        )?;
+
+        for t in state["threads"].as_array().unwrap_or(&vec![]) {
+            tx.execute(
+                "INSERT INTO threads(id, workspace_id, title, created_at, archived_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    t["id"].as_str(),
+                    t["workspace_id"].as_str(),
+                    t["title"].as_str(),
+                    t["created_at"].as_str(),
+                    t["archived_at"].as_str()
+                ],
+            )?;
+        }
+        for b in state["branches"].as_array().unwrap_or(&vec![]) {
+            tx.execute(
+                "INSERT INTO branches(id, thread_id, name, parent_branch_id, fork_event_id,
+                                      head_event_id, head_sequence, snapshot_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    b["id"].as_str(),
+                    b["thread_id"].as_str(),
+                    b["name"].as_str().unwrap_or(b["id"].as_str().unwrap_or("branch")),
+                    b["parent_branch_id"].as_str(),
+                    b["fork_event_id"].as_str(),
+                    b["head_event_id"].as_str(),
+                    b["head_sequence"].as_i64().unwrap_or(0),
+                    b["snapshot_id"].as_str(),
+                    b["created_at"].as_str()
+                ],
+            )?;
+        }
+        for e in &events {
+            tx.execute(
+                "INSERT INTO events(event_id, workspace_id, thread_id, branch_id, run_id, sequence,
+                                    type, schema_version, created_at, actor_json, payload_json,
+                                    artifacts_json, causation_id, correlation_id, idempotency_key,
+                                    prev_hash, event_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                params![
+                    e.event_id,
+                    e.workspace_id,
+                    e.thread_id,
+                    e.branch_id,
+                    e.run_id,
+                    e.sequence,
+                    e.kind,
+                    e.schema_version,
+                    e.created_at,
+                    canonical_json(&e.actor),
+                    canonical_json(&e.payload),
+                    canonical_json(&serde_json::to_value(&e.artifacts)?),
+                    e.causation_id,
+                    e.correlation_id,
+                    e.idempotency_key,
+                    e.integrity.previous_hash,
+                    e.integrity.event_hash
+                ],
+            )?;
+        }
+
+        let mut imported_artifacts = 0i64;
+        for f in files.iter().filter(|f| f.path.starts_with("artifacts/")) {
+            let sha = f.path.trim_start_matches("artifacts/").to_string();
+            std::fs::write(self.artifacts_dir.join(&sha), &f.bytes)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO artifacts(id, workspace_id, sha256, mime, bytes, source_event_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+                params![
+                    new_id("art"),
+                    workspace_id,
+                    sha,
+                    export::guess_mime(&f.path),
+                    f.bytes.len() as i64,
+                    now_iso()
+                ],
+            )?;
+            imported_artifacts += 1;
+        }
+
+        tx.commit()?;
+        Ok(ImportReport {
+            workspace_id,
+            events: events.len() as i64,
+            artifacts: imported_artifacts,
+            verified: true,
+            chain_head,
+        })
+    }
+}
+
+fn append_event(
+    tx: &Transaction<'_>,
+    workspace_id: &str,
+    thread_id: Option<&str>,
+    branch_id: Option<&str>,
+    kind: &str,
+    actor: Value,
+    payload: Value,
+    artifacts: Vec<ArtifactRef>,
+    idempotency_key: Option<&str>,
+) -> Result<Event> {
+    if let Some(key) = idempotency_key {
+        if let Some(existing) = tx
+            .query_row(
+                "SELECT event_id FROM events WHERE workspace_id = ?1 AND idempotency_key = ?2",
+                params![workspace_id, key],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return load_event_from(tx, &existing)?
+                .ok_or_else(|| HliError::internal("idempotencia: evento perdido"));
+        }
+    }
+
+    let seq: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE workspace_id = ?1",
+        [workspace_id],
+        |r| r.get(0),
+    )?;
+    let prev: String = tx
+        .query_row(
+            "SELECT event_hash FROM events WHERE workspace_id = ?1 ORDER BY sequence DESC LIMIT 1",
+            [workspace_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or_else(zero_hash);
+
+    let mut ev = Event {
+        event_id: new_id("evt"),
+        workspace_id: workspace_id.to_string(),
+        thread_id: thread_id.map(str::to_string),
+        branch_id: branch_id.map(str::to_string),
+        run_id: None,
+        causation_id: None,
+        correlation_id: None,
+        idempotency_key: idempotency_key.map(str::to_string),
+        sequence: seq,
+        kind: kind.to_string(),
+        schema_version: EVENT_SCHEMA_VERSION,
+        created_at: now_iso(),
+        actor,
+        payload,
+        artifacts,
+        integrity: Integrity {
+            canonicalization: "RFC8785".into(),
+            hash_alg: "sha256".into(),
+            previous_hash: prev,
+            event_hash: String::new(),
+        },
+    };
+    ev.seal();
+
+    tx.execute(
+        "INSERT INTO events(event_id, workspace_id, thread_id, branch_id, run_id, sequence,
+                            type, schema_version, created_at, actor_json, payload_json,
+                            artifacts_json, causation_id, correlation_id, idempotency_key,
+                            prev_hash, event_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        params![
+            ev.event_id,
+            ev.workspace_id,
+            ev.thread_id,
+            ev.branch_id,
+            ev.run_id,
+            ev.sequence,
+            ev.kind,
+            ev.schema_version,
+            ev.created_at,
+            canonical_json(&ev.actor),
+            canonical_json(&ev.payload),
+            canonical_json(&serde_json::to_value(&ev.artifacts)?),
+            ev.causation_id,
+            ev.correlation_id,
+            ev.idempotency_key,
+            ev.integrity.previous_hash,
+            ev.integrity.event_hash
+        ],
+    )?;
+
+    if let Some(b) = branch_id {
+        tx.execute(
+            "UPDATE branches SET head_event_id = ?1, head_sequence = ?2 WHERE id = ?3",
+            params![ev.event_id, ev.sequence, b],
+        )?;
+    }
+    Ok(ev)
+}
+
+pub(crate) fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
+    Ok(Event {
+        event_id: r.get(0)?,
+        workspace_id: r.get(1)?,
+        thread_id: r.get(2)?,
+        branch_id: r.get(3)?,
+        run_id: r.get(4)?,
+        sequence: r.get(5)?,
+        kind: r.get(6)?,
+        schema_version: r.get(7)?,
+        created_at: r.get(8)?,
+        actor: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or(json!({})),
+        payload: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or(json!({})),
+        artifacts: serde_json::from_str(&r.get::<_, String>(11)?).unwrap_or_default(),
+        causation_id: r.get(12)?,
+        correlation_id: r.get(13)?,
+        idempotency_key: r.get(14)?,
+        integrity: Integrity {
+            canonicalization: "RFC8785".into(),
+            hash_alg: "sha256".into(),
+            previous_hash: r.get(15)?,
+            event_hash: r.get(16)?,
+        },
+    })
+}
+
+pub(crate) fn row_to_branch(r: &rusqlite::Row<'_>) -> rusqlite::Result<Branch> {
+    Ok(Branch {
+        id: r.get(0)?,
+        thread_id: r.get(1)?,
+        name: r.get(2)?,
+        parent_branch_id: r.get(3)?,
+        fork_event_id: r.get(4)?,
+        head_event_id: r.get(5)?,
+        head_sequence: r.get(6)?,
+        snapshot_id: r.get(7)?,
+        created_at: r.get(8)?,
+    })
+}
+
+pub(crate) const EVENT_COLS: &str = "event_id, workspace_id, thread_id, branch_id, run_id, sequence, type,
+    schema_version, created_at, actor_json, payload_json, artifacts_json, causation_id,
+    correlation_id, idempotency_key, prev_hash, event_hash";
+
+pub(crate) fn load_event(conn: &Connection, id: &str) -> Result<Option<Event>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {EVENT_COLS} FROM events WHERE event_id = ?1"),
+            [id],
+            row_to_event,
+        )
+        .optional()?)
+}
+
+fn load_event_from(tx: &Transaction<'_>, id: &str) -> Result<Option<Event>> {
+    Ok(tx
+        .query_row(
+            &format!("SELECT {EVENT_COLS} FROM events WHERE event_id = ?1"),
+            [id],
+            row_to_event,
+        )
+        .optional()?)
+}
+
+pub(crate) fn load_events(conn: &Connection, workspace_id: &str) -> Result<Vec<Event>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {EVENT_COLS} FROM events WHERE workspace_id = ?1 ORDER BY sequence"
+    ))?;
+    let rows = stmt.query_map([workspace_id], row_to_event)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
