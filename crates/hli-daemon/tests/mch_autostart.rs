@@ -10,7 +10,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const INSTANCE: &str = "autostart-main";
 

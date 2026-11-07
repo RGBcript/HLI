@@ -12,16 +12,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use hli_core::{time::now_iso, HliError};
+use hli_core::{HliError, time::now_iso};
 mod providers;
 mod supervisor;
 
-use hli_agent::{build_manifest, execute_tool, permission_for, Permission, Provider, SimProvider};
+use hli_agent::{Permission, Provider, SimProvider, build_manifest, execute_tool, permission_for};
 use hli_provider::{ChatProvider, ChatRequest, OllamaProvider, OpenAiProvider};
 use hli_store::{Reader, Store, Writer};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn main() {
+    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+        println!("hli-daemon {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let home = hli_home();
     if let Err(e) = run(home) {
         eprintln!("hli-daemon: {e}");
@@ -51,7 +55,7 @@ fn run(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let port = listener.local_addr()?.port();
 
     let info = json!({
-        "version": "0.1.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "pid": std::process::id(),
         "port": port,
         "home": home.to_string_lossy(),
@@ -346,7 +350,9 @@ fn dispatch(
     home: &std::path::Path,
 ) -> Result<Value, HliError> {
     match cmd {
-        "daemon.ping" => Ok(json!({"pong": true, "version": "0.1.0", "pid": std::process::id()})),
+        "daemon.ping" => Ok(
+            json!({"pong": true, "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id()}),
+        ),
         "daemon.stop" => Ok(json!({"stopping": true})),
         "workspace.create" => {
             let ws = w.create_workspace(
@@ -781,13 +787,12 @@ fn dispatch(
                 }
             }
             for m in manifest.memories.iter_mut() {
-                if let Some(o) = m.as_object_mut() {
-                    if let Some(c) = o.get("content").and_then(|v| v.as_str()) {
-                        if c.chars().count() > 400 {
-                            let cut: String = c.chars().take(400).collect();
-                            o.insert("content".into(), json!(format!("{cut}…")));
-                        }
-                    }
+                if let Some(o) = m.as_object_mut()
+                    && let Some(c) = o.get("content").and_then(|v| v.as_str())
+                    && c.chars().count() > 400
+                {
+                    let cut: String = c.chars().take(400).collect();
+                    o.insert("content".into(), json!(format!("{cut}…")));
                 }
             }
 
@@ -889,10 +894,10 @@ fn dispatch(
                 std::thread::spawn(move || {
                     let _ = w2.set_run_state(&run2.id, "running");
                     let started = std::time::Instant::now();
-                    if provider2 == "sim" {
-                        if let Some(ms) = sim_delay_ms {
-                            std::thread::sleep(Duration::from_millis(ms));
-                        }
+                    if provider2 == "sim"
+                        && let Some(ms) = sim_delay_ms
+                    {
+                        std::thread::sleep(Duration::from_millis(ms));
                     }
                     let call: Result<
                         (String, hli_provider::Usage, String, String, String),
@@ -1378,13 +1383,13 @@ fn dispatch(
                         return Err(HliError::conflict(format!(
                             "paquete .hlimod con versión futura {n} > {}; actualiza HLI",
                             hli_core::versions::HLIMOD_FORMAT_VERSION
-                        )))
+                        )));
                     }
                     Some(n) if n == hli_core::versions::HLIMOD_FORMAT_VERSION as u64 => {}
                     Some(n) => {
                         return Err(HliError::invalid(format!(
                             "paquete .hlimod con versión desconocida {n}"
-                        )))
+                        )));
                     }
                     None => return Err(HliError::invalid("format_version no numérico")),
                 },
@@ -1576,10 +1581,10 @@ fn dispatch(
             let name = s(args, "name")?;
             let instance = r.mch(&name)?;
             let process = supervisor::status(&name);
-            if let Some(p) = &process {
-                if let Some(st) = p["state"].as_str() {
-                    let _ = w.mch_set_state(&name, st, p["pid"].as_i64());
-                }
+            if let Some(p) = &process
+                && let Some(st) = p["state"].as_str()
+            {
+                let _ = w.mch_set_state(&name, st, p["pid"].as_i64());
             }
             Ok(json!({"instance": instance, "process": process}))
         }
@@ -1647,7 +1652,7 @@ fn dispatch(
         }
         "status" => {
             let ws = r.workspaces()?;
-            Ok(json!({"workspaces": ws.len(), "version": "0.1.0"}))
+            Ok(json!({"workspaces": ws.len(), "version": env!("CARGO_PKG_VERSION")}))
         }
         other => Err(HliError::new(
             "unknown_command",

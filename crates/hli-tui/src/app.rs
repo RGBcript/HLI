@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::client;
 
@@ -262,13 +262,12 @@ impl App {
             .and_then(|id| self.runs.iter().position(|r| r["id"].as_str() == Some(id)))
             .unwrap_or(0);
         self.collection_index = idx;
-        if let Some(run) = self.runs.get(idx).cloned() {
-            if let Some(id) = run["id"].as_str() {
-                self.selected_run_id = Some(id.to_string());
-                if let Ok(got) = client::call("run.get", json!({"run_id": id})) {
-                    self.selected_run = Some(got["run"].clone());
-                    self.manifest = Some(got["manifest"].clone());
-                }
+        let run = self.runs.get(idx).cloned();
+        if let Some(id) = run.as_ref().and_then(|r| r["id"].as_str()) {
+            self.selected_run_id = Some(id.to_string());
+            if let Ok(got) = client::call("run.get", json!({"run_id": id})) {
+                self.selected_run = Some(got["run"].clone());
+                self.manifest = Some(got["manifest"].clone());
             }
         }
         self.last_runs = Instant::now();

@@ -12,13 +12,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use hli_core::{time::now_iso, HliError, Result};
+use hli_core::{HliError, Result, time::now_iso};
 use hli_store::Writer;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Clone, Debug)]
 pub struct SupervisorPolicy {
@@ -128,13 +128,13 @@ fn limit_state(name: &str) -> Arc<Mutex<LimitState>> {
 }
 
 fn expire_window(s: &mut LimitState, window: Duration) {
-    if let Some(started) = s.window_started {
-        if started.elapsed() >= window {
-            s.count = 0;
-            s.window_started = None;
-            s.window_started_at = None;
-            s.next_restart_at = None;
-        }
+    if let Some(started) = s.window_started
+        && started.elapsed() >= window
+    {
+        s.count = 0;
+        s.window_started = None;
+        s.window_started_at = None;
+        s.next_restart_at = None;
     }
 }
 

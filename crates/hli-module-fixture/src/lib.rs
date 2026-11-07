@@ -11,7 +11,7 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn read_config(path: PathBuf) -> Option<Value> {
     std::fs::read_to_string(path)
@@ -174,10 +174,12 @@ pub fn run() {
             }
             "invoke" => {
                 invoke_count += 1;
-                if let Some(n) = cfg.get("crash_after_invokes").and_then(|v| v.as_u64()) {
-                    if invoke_count >= n {
-                        std::process::exit(1);
-                    }
+                if cfg
+                    .get("crash_after_invokes")
+                    .and_then(|v| v.as_u64())
+                    .is_some_and(|n| invoke_count >= n)
+                {
+                    std::process::exit(1);
                 }
                 if mode == "invalid_json"
                     || cfg.get("emit_invalid_json_on").and_then(|v| v.as_str()) == Some("invoke")

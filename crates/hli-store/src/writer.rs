@@ -1,19 +1,19 @@
 //! Actor único de escritura. Todas las mutaciones pasan por este hilo.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, sync_channel, Sender, SyncSender};
+use std::sync::mpsc::{Sender, SyncSender, channel, sync_channel};
 use std::thread;
 
 use hli_core::{
+    HliError, Result,
     canon::{canonical_json, zero_hash},
     ids::new_id,
     model::*,
     time::now_iso,
-    HliError, Result,
 };
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::export::{self, ArchiveFile};
 use crate::schema;
@@ -1789,13 +1789,13 @@ impl State {
                     return Err(HliError::conflict(format!(
                         "archivo hliar con versión futura {n} > {}; actualiza HLI",
                         export::FORMAT_VERSION
-                    )))
+                    )));
                 }
                 Some(n) if n == export::FORMAT_VERSION as u64 => {}
                 Some(n) => {
                     return Err(HliError::invalid(format!(
                         "archivo hliar con versión desconocida {n}"
-                    )))
+                    )));
                 }
                 None => return Err(HliError::invalid("format_version no numérico")),
             },
@@ -1873,10 +1873,10 @@ impl State {
             .last()
             .map(|e| e.integrity.event_hash.clone())
             .unwrap_or_else(zero_hash);
-        if let Some(h) = manifest["chain_head"].as_str() {
-            if h != chain_head {
-                return Err(HliError::conflict("chain_head del manifiesto no coincide"));
-            }
+        if let Some(h) = manifest["chain_head"].as_str()
+            && h != chain_head
+        {
+            return Err(HliError::conflict("chain_head del manifiesto no coincide"));
         }
 
         let tx = self.conn.transaction()?;
@@ -2056,18 +2056,17 @@ fn append_event(
     artifacts: Vec<ArtifactRef>,
     idempotency_key: Option<&str>,
 ) -> Result<Event> {
-    if let Some(key) = idempotency_key {
-        if let Some(existing) = tx
+    if let Some(key) = idempotency_key
+        && let Some(existing) = tx
             .query_row(
                 "SELECT event_id FROM events WHERE workspace_id = ?1 AND idempotency_key = ?2",
                 params![workspace_id, key],
                 |r| r.get::<_, String>(0),
             )
             .optional()?
-        {
-            return load_event_from(tx, &existing)?
-                .ok_or_else(|| HliError::internal("idempotencia: evento perdido"));
-        }
+    {
+        return load_event_from(tx, &existing)?
+            .ok_or_else(|| HliError::internal("idempotencia: evento perdido"));
     }
 
     let seq: i64 = tx.query_row(

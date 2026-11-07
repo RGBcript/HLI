@@ -3,13 +3,13 @@
 use std::path::Path;
 
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
-use hli_core::{canon::canonical_json, time::now_iso, HliError, Result};
-use hli_store::export::{read_container_limited, ArchiveFile, HLIMOD_LIMITS};
+use hli_core::{HliError, Result, canon::canonical_json, time::now_iso};
+use hli_store::export::{ArchiveFile, HLIMOD_LIMITS, read_container_limited};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::util::{b64_decode, b64_encode, fingerprint, sha256_hex};
-use crate::{keys, trust, SignatureState};
+use crate::{SignatureState, keys, trust};
 
 pub const SIGNATURE_FILE: &str = "signature.json";
 
@@ -247,7 +247,7 @@ pub fn verify_files(files: &[ArchiveFile], home: &Path) -> Result<Verification> 
                     Some(sig.public_key_fingerprint),
                     Some(computed),
                     "clave pública confiada corrupta",
-                ))
+                ));
             }
         },
         Err(_) => {
@@ -257,7 +257,7 @@ pub fn verify_files(files: &[ArchiveFile], home: &Path) -> Result<Verification> 
                 Some(sig.public_key_fingerprint),
                 Some(computed),
                 "clave pública confiada corrupta",
-            ))
+            ));
         }
     };
     if fingerprint(&public) != trusted.fingerprint {
@@ -278,7 +278,7 @@ pub fn verify_files(files: &[ArchiveFile], home: &Path) -> Result<Verification> 
                 Some(sig.public_key_fingerprint),
                 Some(computed),
                 "clave pública inválida",
-            ))
+            ));
         }
     };
     let signature_bytes = match b64_decode(&sig.signature) {
@@ -290,7 +290,7 @@ pub fn verify_files(files: &[ArchiveFile], home: &Path) -> Result<Verification> 
                 Some(sig.public_key_fingerprint),
                 Some(computed),
                 "firma no es base64 válido",
-            ))
+            ));
         }
     };
     let signature = match Signature::from_slice(&signature_bytes) {
@@ -302,7 +302,7 @@ pub fn verify_files(files: &[ArchiveFile], home: &Path) -> Result<Verification> 
                 Some(sig.public_key_fingerprint),
                 Some(computed),
                 "firma con longitud inválida",
-            ))
+            ));
         }
     };
     if verifying.verify(payload.as_bytes(), &signature).is_err() {

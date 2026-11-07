@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use hli_core::{canon::zero_hash, model::*, HliError, Result};
+use hli_core::{HliError, Result, canon::zero_hash, model::*};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 

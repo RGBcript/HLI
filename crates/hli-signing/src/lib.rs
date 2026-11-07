@@ -13,7 +13,7 @@ pub mod policy;
 pub mod trust;
 mod util;
 
-pub use package::{verify_files, verify_package, SignatureFile, Verification};
+pub use package::{SignatureFile, Verification, verify_files, verify_package};
 pub use policy::{Policy, PolicyOutcome};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

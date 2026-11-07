@@ -5,7 +5,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 fn hli() -> PathBuf {
@@ -78,10 +78,10 @@ impl Ctx {
         self.child = Some(child);
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if let Ok(v) = serde_json::from_str::<Value>(&self.run(&["daemon", "status"]).1) {
-                if v["running"].as_bool() == Some(true) {
-                    return;
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&self.run(&["daemon", "status"]).1)
+                && v["running"].as_bool() == Some(true)
+            {
+                return;
             }
             std::thread::sleep(Duration::from_millis(50));
         }

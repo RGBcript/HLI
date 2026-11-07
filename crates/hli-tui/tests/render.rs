@@ -1,7 +1,7 @@
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
-use hli_tui::app::{layout_mode, split_command, App, FocusArea, LayoutMode};
+use hli_tui::app::{App, FocusArea, LayoutMode, layout_mode, split_command};
 use hli_tui::ui;
 
 fn render(app: &App, w: u16, h: u16) -> String {

@@ -3,8 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use hli_core::{canon::hash_canonical, ids::new_id, model::*, time::now_iso, HliError, Result};
-use serde_json::{json, Value};
+use hli_core::{HliError, Result, canon::hash_canonical, ids::new_id, model::*, time::now_iso};
+use serde_json::{Value, json};
 
 pub const POLICY_VERSION: &str = "context/v1";
 pub const DEFAULT_BUDGET_TOKENS: i64 = 8_192;
@@ -352,7 +352,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hli_core::model::{Integrity, EVENT_SCHEMA_VERSION};
+    use hli_core::model::{EVENT_SCHEMA_VERSION, Integrity};
 
     fn ev(seq: i64, kind: &str, payload: Value) -> Event {
         Event {

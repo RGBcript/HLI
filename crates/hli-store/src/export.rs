@@ -4,7 +4,7 @@
 //! Determinista: el orden de archivos lo fija el exportador y el manifiesto
 //! excluye `exported_at` de su hash.
 
-use hli_core::{canon::hash_canonical, HliError, Result};
+use hli_core::{HliError, Result, canon::hash_canonical};
 use serde_json::Value;
 
 pub const MAGIC: &[u8] = b"HLIAR1\n";

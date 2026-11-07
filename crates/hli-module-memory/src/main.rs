@@ -8,10 +8,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const MODULE: &str = "hli-memory";
-const VERSION: &str = "0.4.0";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
     let stdin = std::io::stdin();

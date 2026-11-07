@@ -62,10 +62,10 @@ impl Ctx {
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(80));
-            if let Ok(v) = serde_json::from_str::<Value>(&self.run(&["daemon", "status"]).1) {
-                if v["running"].as_bool() == Some(true) {
-                    return;
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&self.run(&["daemon", "status"]).1)
+                && v["running"].as_bool() == Some(true)
+            {
+                return;
             }
         }
         panic!("daemon no arrancó");

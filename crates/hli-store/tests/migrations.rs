@@ -188,9 +188,11 @@ fn migrated_memory_preserves_supersession() {
     let old = r.memory(FIXTURE_MEMORY_SUPERSEDED).unwrap();
     assert_eq!(active.status, "active");
     assert_eq!(old.status, "superseded");
-    assert!(active
-        .supersedes
-        .contains(&FIXTURE_MEMORY_SUPERSEDED.to_string()));
+    assert!(
+        active
+            .supersedes
+            .contains(&FIXTURE_MEMORY_SUPERSEDED.to_string())
+    );
     assert!(old.superseded_at.is_some());
 }
 

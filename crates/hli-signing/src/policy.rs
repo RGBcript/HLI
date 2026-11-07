@@ -37,10 +37,10 @@ impl Policy {
 
     /// `HLI_MODULE_POLICY` tiene prioridad sobre `HLI_HOME/module-policy.json`.
     pub fn load(home: &Path) -> Self {
-        if let Ok(raw) = std::env::var("HLI_MODULE_POLICY") {
-            if let Ok(p) = Self::parse(&raw) {
-                return p;
-            }
+        if let Ok(raw) = std::env::var("HLI_MODULE_POLICY")
+            && let Ok(p) = Self::parse(&raw)
+        {
+            return p;
         }
         std::fs::read_to_string(home.join("module-policy.json"))
             .ok()

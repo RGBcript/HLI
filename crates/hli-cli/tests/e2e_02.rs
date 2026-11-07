@@ -87,12 +87,11 @@ impl Ctx {
         while start.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(80));
             let (code, stdout, _) = self.run(&["daemon", "status"]);
-            if code == 0 {
-                if let Ok(v) = serde_json::from_str::<Value>(&stdout) {
-                    if v["running"].as_bool() == Some(true) {
-                        return;
-                    }
-                }
+            if code == 0
+                && let Ok(v) = serde_json::from_str::<Value>(&stdout)
+                && v["running"].as_bool() == Some(true)
+            {
+                return;
             }
         }
         panic!("el daemon no arrancó en 10 s");
@@ -157,14 +156,18 @@ fn run_manifest_receipt_and_restart() {
     let got = ctx.json(&["run", "get", &run_id]);
     assert_eq!(got["run"]["state"].as_str(), Some("completed"));
     let manifest = &got["manifest"];
-    assert!(manifest["manifest_id"]
-        .as_str()
-        .unwrap()
-        .starts_with("ctx_"));
-    assert!(manifest["content_hash"]
-        .as_str()
-        .unwrap()
-        .starts_with("sha256:"));
+    assert!(
+        manifest["manifest_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("ctx_")
+    );
+    assert!(
+        manifest["content_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
     assert_eq!(manifest["run_id"].as_str().unwrap(), run_id);
     assert!(manifest["recent_events"].as_array().unwrap().len() >= 2);
 

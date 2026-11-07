@@ -82,12 +82,11 @@ impl Ctx {
         while start.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(80));
             let (code, stdout, _) = self.run(&["daemon", "status"]);
-            if code == 0 {
-                if let Ok(v) = serde_json::from_str::<Value>(&stdout) {
-                    if v["running"].as_bool() == Some(true) {
-                        return;
-                    }
-                }
+            if code == 0
+                && let Ok(v) = serde_json::from_str::<Value>(&stdout)
+                && v["running"].as_bool() == Some(true)
+            {
+                return;
             }
         }
         panic!("el daemon no arrancó en 10 s (home {:?})", self.home);
@@ -153,12 +152,13 @@ fn lifecycle_survives_daemon_restart() {
         .expect("snapshot_id");
     assert!(snap_id.starts_with("snap_"));
     let seq = after["branch"]["head_sequence"].as_i64().unwrap();
-    assert!(ctx
-        .home
-        .join("snapshots")
-        .join(&br_id)
-        .join(format!("{seq}.json"))
-        .exists());
+    assert!(
+        ctx.home
+            .join("snapshots")
+            .join(&br_id)
+            .join(format!("{seq}.json"))
+            .exists()
+    );
 
     let verify = ctx.json(&["verify", "--workspace", &ws_id]);
     assert_eq!(verify["ok"].as_bool(), Some(true));

@@ -1,6 +1,6 @@
 //! Utilidades comunes de codificación y hashing.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use hli_core::{HliError, Result};
 use sha2::{Digest, Sha256};
 

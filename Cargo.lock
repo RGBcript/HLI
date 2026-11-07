@@ -394,7 +394,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hli-agent"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "hli-core",
  "serde_json",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "hli-cli"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "hex",
  "hli-signing",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "hli-core"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "hex",
  "rusqlite",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "hli-daemon"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "hex",
  "hli-agent",
@@ -441,28 +441,28 @@ dependencies = [
 
 [[package]]
 name = "hli-mcp"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "hli-module-fixture"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "hli-module-memory"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "hli-provider"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "hli-core",
  "serde",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "hli-signing"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -487,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "hli-store"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "hex",
  "hli-core",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "hli-tui"
-version = "0.1.0"
+version = "0.9.0-beta.1"
 dependencies = [
  "crossterm",
  "ratatui",

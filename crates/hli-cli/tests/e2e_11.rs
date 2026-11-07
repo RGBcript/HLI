@@ -17,7 +17,7 @@ fn daemon() -> PathBuf {
     })
 }
 fn module_pkg() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dist/hli-memory-0.4.0.hlimod")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dist/hli-memory-0.9.0-beta.1.hlimod")
 }
 static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -65,10 +65,10 @@ impl Ctx {
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(80));
-            if let Ok(v) = serde_json::from_str::<Value>(&self.run(&["daemon", "status"]).1) {
-                if v["running"].as_bool() == Some(true) {
-                    return;
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&self.run(&["daemon", "status"]).1)
+                && v["running"].as_bool() == Some(true)
+            {
+                return;
             }
         }
         panic!("daemon no arrancó");

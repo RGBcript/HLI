@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use hli_core::{time::now_iso, HliError, Result};
+use hli_core::{HliError, Result, time::now_iso};
 use rusqlite::{Connection, Transaction};
 
 pub const DATABASE_SCHEMA_VERSION: i64 = hli_core::versions::DATABASE_SCHEMA_VERSION;

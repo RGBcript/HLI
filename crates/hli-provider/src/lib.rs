@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use hli_core::{HliError, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Usage {

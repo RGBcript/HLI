@@ -8,7 +8,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const INSTANCE: &str = "limit-main";
 const OTHER: &str = "limit-other";
@@ -339,7 +339,7 @@ fn mch_health_recovery_returns_ready() {
     let mut c = prepare(
         "reg-recovery",
         &[(INSTANCE, false)],
-        json!({"mode": "recover_after_n", "recover_after_n": 3, "skip_first_health": true}),
+        json!({"mode": "recover_after_n", "recover_after_n": 8, "skip_first_health": true}),
         &env,
     );
     c.start_env(&env);

@@ -116,7 +116,7 @@ def main():
     base = tempfile.mkdtemp(prefix="hli-gate-04-")
     env = dict(os.environ, HLI_HOME=os.path.join(base, "home"))
     os.makedirs(env["HLI_HOME"], exist_ok=True)
-    pkg = os.path.join(base, "hli-memory-0.4.0.hlimod")
+    pkg = os.path.join(base, "hli-memory-0.9.0-beta.1.hlimod")
     build_package(pkg)
 
     d = start(env)

@@ -7,9 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::SigningKey;
-use hli_core::{time::now_iso, HliError, Result};
+use hli_core::{HliError, Result, time::now_iso};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::util::{b64_decode, b64_encode, fingerprint, sha256_hex};
 

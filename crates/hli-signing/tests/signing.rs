@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use hli_signing::package::{canonical_payload, sign_files, verify_files, SIGNATURE_FILE};
-use hli_signing::{keys, policy, trust, Policy, SignatureState};
-use hli_store::export::{container_bytes, sha256_hex, ArchiveFile};
-use serde_json::{json, Value};
+use hli_signing::package::{SIGNATURE_FILE, canonical_payload, sign_files, verify_files};
+use hli_signing::{Policy, SignatureState, keys, policy, trust};
+use hli_store::export::{ArchiveFile, container_bytes, sha256_hex};
+use serde_json::{Value, json};
 
 static SEQ: AtomicUsize = AtomicUsize::new(0);
 

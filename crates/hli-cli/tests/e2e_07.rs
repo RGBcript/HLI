@@ -69,10 +69,10 @@ impl Ctx {
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(80));
-            if let Ok(v) = serde_json::from_str::<Value>(&self.ok(&["daemon", "status"])) {
-                if v["running"].as_bool() == Some(true) {
-                    return;
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&self.ok(&["daemon", "status"]))
+                && v["running"].as_bool() == Some(true)
+            {
+                return;
             }
         }
         panic!("daemon no arrancó");
@@ -192,11 +192,13 @@ fn superseded_memory_is_not_retrieved() {
         "--limit",
         "10",
     ]);
-    assert!(!found
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|m| m["id"] == old.as_str()));
+    assert!(
+        !found
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == old.as_str())
+    );
 }
 
 #[test]
@@ -329,11 +331,13 @@ fn receipt_records_used_memory_and_slice_and_excludes_candidates() {
     ]);
     let r = &rv["receipt"];
     assert!(!r["used_memory_ids"].as_array().unwrap().is_empty());
-    assert!(r["used_slice_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|x| x == sl.as_str()));
+    assert!(
+        r["used_slice_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == sl.as_str())
+    );
     assert!(!r["used_event_ids"].as_array().unwrap().is_empty());
     assert!(r["candidate_memory_ids"].as_array().unwrap().len() >= 2);
     assert!(!r["rejected_memory_ids"].as_array().unwrap().is_empty());
@@ -372,10 +376,12 @@ fn receipt_survives_restart_and_export_import() {
     c.stop();
     c.start();
     let after = c.json(&["run", "get", &id]);
-    assert!(!after["run"]["receipt"]["used_memory_ids"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !after["run"]["receipt"]["used_memory_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let archive = c.home.join("ws.hliar");
     c.ok(&["export", &ws, "--out", archive.to_str().unwrap()]);
     c.stop();
@@ -383,8 +389,10 @@ fn receipt_survives_restart_and_export_import() {
     c2.start();
     c2.ok(&["import", archive.to_str().unwrap()]);
     let imported = c2.json(&["run", "get", &id]);
-    assert!(!imported["run"]["receipt"]["used_memory_ids"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !imported["run"]["receipt"]["used_memory_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }

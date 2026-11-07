@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use hli_core::{time::now_iso, HliError, Result};
+use hli_core::{HliError, Result, time::now_iso};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::util::{b64_decode, b64_encode, fingerprint, sha256_hex};
 
@@ -108,7 +108,7 @@ pub fn add(home: &Path, public_key: &str, label: &str) -> Result<TrustRecord> {
 /// Acepta el JSON de `key export-public` o un archivo con la clave en base64.
 pub fn add_file(home: &Path, path: &Path) -> Result<TrustRecord> {
     let raw = std::fs::read_to_string(path)?;
-    let text = raw.trim();
+    let text = raw.trim().trim_start_matches('\u{feff}').trim();
     if text.starts_with('{') {
         let value: Value = serde_json::from_str(text)
             .map_err(|e| HliError::invalid(format!("clave pública inválida: {e}")))?;
@@ -118,18 +118,18 @@ pub fn add_file(home: &Path, path: &Path) -> Result<TrustRecord> {
             .ok_or_else(|| HliError::invalid("falta public_key"))?;
         let bytes = b64_decode(public)?;
         let fingerprint_calc = fingerprint(&bytes);
-        if let Some(fp) = value.get("fingerprint").and_then(|v| v.as_str()) {
-            if fp != fingerprint_calc {
-                return Err(HliError::conflict(
-                    "el fingerprint no coincide con la clave",
-                ));
-            }
+        if let Some(fp) = value.get("fingerprint").and_then(|v| v.as_str())
+            && fp != fingerprint_calc
+        {
+            return Err(HliError::conflict(
+                "el fingerprint no coincide con la clave",
+            ));
         }
-        if let Some(id) = value.get("key_id").and_then(|v| v.as_str()) {
-            let expected = format!("key_{}", &sha256_hex(&bytes)[..16]);
-            if id != expected {
-                return Err(HliError::conflict("el key_id no coincide con la clave"));
-            }
+        let expected = format!("key_{}", &sha256_hex(&bytes)[..16]);
+        if let Some(id) = value.get("key_id").and_then(|v| v.as_str())
+            && id != expected
+        {
+            return Err(HliError::conflict("el key_id no coincide con la clave"));
         }
         let label = value
             .get("label")

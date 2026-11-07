@@ -6,9 +6,13 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn main() {
+    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+        println!("hli-mcp {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let home = hli_home();
     let stdin = std::io::stdin();
     let mut reader = std::io::BufReader::new(stdin.lock());

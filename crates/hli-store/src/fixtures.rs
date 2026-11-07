@@ -5,10 +5,10 @@
 use std::path::Path;
 
 use hli_core::{
-    canon::hash_canonical,
-    model::{Event, Integrity, EVENT_SCHEMA_VERSION},
-    time::now_iso,
     Result,
+    canon::hash_canonical,
+    model::{EVENT_SCHEMA_VERSION, Event, Integrity},
+    time::now_iso,
 };
 use rusqlite::Connection;
 use serde_json::json;

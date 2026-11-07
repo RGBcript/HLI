@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -66,6 +66,10 @@ fn call(cmd: &str, args: Value) -> Result<Value, String> {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("hli {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.is_empty() {
         if std::io::stdout().is_terminal() {
             let tui = std::env::current_exe()
@@ -690,26 +694,27 @@ fn print_value(v: &Value, mode: &str) -> Result<(), String> {
 }
 
 fn human_line(v: &Value) -> String {
-    if let Some(inst) = v.get("instance") {
-        if inst.is_object() && inst.get("name").is_some() {
-            let name = inst["name"].as_str().unwrap_or("-");
-            let state = inst["state"].as_str().unwrap_or("-");
-            let proc = &v["process"];
-            let pid = match proc["pid"].as_i64() {
-                Some(p) => p.to_string(),
-                None => "-".into(),
-            };
-            let generation = match proc["generation"].as_u64() {
-                Some(g) => g.to_string(),
-                None => "-".into(),
-            };
-            let restarts = proc["restart_count_in_window"].as_u64().unwrap_or(0);
-            let next = proc["next_restart_at"].as_str().unwrap_or("-");
-            let code = proc["last_error"]["code"].as_str().unwrap_or("-");
-            return format!(
-                "{name}  state={state} pid={pid} generation={generation} restarts_window={restarts} next_restart_at={next} last_error={code}"
-            );
-        }
+    if let Some(inst) = v.get("instance")
+        && inst.is_object()
+        && inst.get("name").is_some()
+    {
+        let name = inst["name"].as_str().unwrap_or("-");
+        let state = inst["state"].as_str().unwrap_or("-");
+        let proc = &v["process"];
+        let pid = match proc["pid"].as_i64() {
+            Some(p) => p.to_string(),
+            None => "-".into(),
+        };
+        let generation = match proc["generation"].as_u64() {
+            Some(g) => g.to_string(),
+            None => "-".into(),
+        };
+        let restarts = proc["restart_count_in_window"].as_u64().unwrap_or(0);
+        let next = proc["next_restart_at"].as_str().unwrap_or("-");
+        let code = proc["last_error"]["code"].as_str().unwrap_or("-");
+        return format!(
+            "{name}  state={state} pid={pid} generation={generation} restarts_window={restarts} next_restart_at={next} last_error={code}"
+        );
     }
     if let Some(b) = v.get("branch") {
         let id = b.get("id").and_then(|x| x.as_str()).unwrap_or("-");
@@ -737,6 +742,46 @@ fn human_line(v: &Value) -> String {
     }
 }
 
+#[cfg(windows)]
+fn suppress_std_handle_inheritance() -> Vec<isize> {
+    use std::ffi::c_void;
+    unsafe extern "system" {
+        fn GetStdHandle(kind: u32) -> *mut c_void;
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    let mut saved = Vec::new();
+    for kind in [(-10i32) as u32, (-11i32) as u32, (-12i32) as u32] {
+        let handle = unsafe { GetStdHandle(kind) };
+        if handle.is_null() || handle as isize == -1 {
+            continue;
+        }
+        unsafe {
+            SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+        }
+        saved.push(handle as isize);
+    }
+    saved
+}
+
+#[cfg(windows)]
+fn restore_std_handle_inheritance(handles: &[isize]) {
+    use std::ffi::c_void;
+    unsafe extern "system" {
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    for handle in handles {
+        unsafe {
+            SetHandleInformation(
+                *handle as *mut c_void,
+                HANDLE_FLAG_INHERIT,
+                HANDLE_FLAG_INHERIT,
+            );
+        }
+    }
+}
+
 fn daemon_start() -> Result<(), String> {
     if call("daemon.ping", json!({})).is_ok() {
         println!("{}", json!({"daemon": "already_running"}));
@@ -761,13 +806,17 @@ fn daemon_start() -> Result<(), String> {
         .open(home().join("daemon.log"))
         .map_err(|e| e.to_string())?;
     let log_err = log.try_clone().map_err(|e| e.to_string())?;
-    Command::new(&daemon)
+    #[cfg(windows)]
+    let saved_handles = suppress_std_handle_inheritance();
+    let spawned = Command::new(&daemon)
         .env("HLI_HOME", home())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log_err)
-        .spawn()
-        .map_err(|e| format!("no se pudo arrancar el daemon: {e}"))?;
+        .spawn();
+    #[cfg(windows)]
+    restore_std_handle_inheritance(&saved_handles);
+    spawned.map_err(|e| format!("no se pudo arrancar el daemon: {e}"))?;
 
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(8) {
@@ -825,7 +874,7 @@ fn daemon_status() -> Result<(), String> {
 
 fn usage() -> Result<(), String> {
     eprintln!(
-        "hli 0.1
+        "hli {}
   hli daemon start|stop|status
   hli workspace create <name> [--root PATH] | list | get <id>
   hli thread create <title> --workspace <id> | list --workspace <id>
@@ -853,7 +902,8 @@ fn usage() -> Result<(), String> {
   hli export <workspace_id> --out <file>
   hli import <file>
   hli status
-Todas las salidas aceptan --output json|human"
+Todas las salidas aceptan --output json|human",
+        env!("CARGO_PKG_VERSION")
     );
     Err("uso".into())
 }
