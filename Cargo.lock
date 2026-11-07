@@ -158,6 +158,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hli-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "hli-store"
 version = "0.1.0"
 dependencies = [

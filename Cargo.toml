@@ -5,6 +5,7 @@ members = [
     "crates/hli-agent",
     "crates/hli-daemon",
     "crates/hli-cli",
+    "crates/hli-mcp",
 ]
 resolver = "2"
 

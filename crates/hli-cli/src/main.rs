@@ -165,6 +165,42 @@ fn run(args: &[String]) -> Result<(), String> {
             let archive = args.get(1).ok_or("falta el archivo")?;
             print_value(&call("import", json!({"archive": archive}))?, output)
         }
+        ("memory", Some("commit")) => {
+            let ws = need_flag(args, "--workspace")?;
+            let kind = need_flag(args, "--type")?;
+            let content = need_flag(args, "--content")?;
+            let scope = flag(args, "--scope").unwrap_or_else(|| "workspace".into());
+            let v = call(
+                "memory.commit",
+                json!({"workspace_id": ws, "type": kind, "content": content, "scope": scope}),
+            )?;
+            print_value(&v, output)
+        }
+        ("memory", Some("search")) => {
+            let ws = need_flag(args, "--workspace")?;
+            let query = need_flag(args, "--query")?;
+            print_value(&call("memory.search", json!({"workspace_id": ws, "query": query}))?, output)
+        }
+        ("memory", Some("get")) => {
+            let id = args.get(2).ok_or("falta memory_id")?;
+            print_value(&call("memory.get", json!({"memory_id": id}))?, output)
+        }
+        ("memory", Some("list")) => {
+            let ws = need_flag(args, "--workspace")?;
+            print_value(&call("memory.list", json!({"workspace_id": ws}))?, output)
+        }
+        ("memory", Some("forget")) => {
+            let id = args.get(2).ok_or("falta memory_id")?;
+            print_value(&call("memory.forget", json!({"memory_id": id}))?, output)
+        }
+        ("memory", Some("update")) => {
+            let id = args.get(2).ok_or("falta memory_id")?;
+            let v = call(
+                "memory.update",
+                json!({"memory_id": id, "content": flag(args, "--content"), "status": flag(args, "--status")}),
+            )?;
+            print_value(&v, output)
+        }
         ("run", Some("start")) => {
             let ws = need_flag(args, "--workspace")?;
             let th = need_flag(args, "--thread")?;
@@ -345,6 +381,8 @@ fn usage() -> Result<(), String> {
   hli run start --workspace <id> --thread <id> --branch <id> --prompt PROMPT 
   hli run get <run_id> | list --workspace <id> | approve <run_id>
   hli manifest get <manifest_id>
+  hli memory commit --workspace <id> --type TYPE --content TEXT [--scope S]
+  hli memory search --workspace <id> --query TEXT | get <id> | list --workspace <id> | forget <id>
   hli verify --workspace <id>
   hli export <workspace_id> --out <file>
   hli import <file>

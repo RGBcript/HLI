@@ -116,6 +116,7 @@ fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>) -> std::io::Re
 fn make_receipt(
     provider: &SimProvider,
     manifest: &hli_core::model::ContextManifest,
+    result: &Value,
 ) -> hli_core::model::Receipt {
     hli_core::model::Receipt {
         provider: provider.name().to_string(),
@@ -135,6 +136,7 @@ fn make_receipt(
         sampling: json!({"temperature": 0.0, "seed": 0}),
         result_artifacts: vec![],
         sandbox: json!({"mode": "none", "note": "0.2 no implementa sandbox; shell denegado"}),
+        result_hash: hli_core::canon::hash_canonical(result),
         terminal_event: None,
     }
 }
@@ -210,6 +212,39 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
             let rep = w.import(PathBuf::from(s(args, "archive")?))?;
             Ok(serde_json::to_value(rep)?)
         }
+        "memory.commit" => {
+            let supersedes = args.get("supersedes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let contradicts = args.get("contradicts").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let m = w.commit_memory(
+                &s(args, "workspace_id")?,
+                args.get("scope").and_then(|v| v.as_str()).unwrap_or("workspace"),
+                o(args, "scope_id"),
+                &s(args, "type")?,
+                &s(args, "content")?,
+                supersedes.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                contradicts.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+            )?;
+            Ok(serde_json::to_value(m)?)
+        }
+        "memory.get" => Ok(serde_json::to_value(r.memory(&s(args, "memory_id")?)?)?),
+        "memory.list" => Ok(serde_json::to_value(r.memories(&s(args, "workspace_id")?)?)?),
+        "memory.search" => {
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+            Ok(serde_json::to_value(r.search_memories(
+                &s(args, "workspace_id")?,
+                &s(args, "query")?,
+                limit,
+            )?)?)
+        }
+        "memory.update" => {
+            let m = w.update_memory(
+                &s(args, "memory_id")?,
+                o(args, "content"),
+                o(args, "status"),
+            )?;
+            Ok(serde_json::to_value(m)?)
+        }
+        "memory.forget" => Ok(serde_json::to_value(w.forget_memory(&s(args, "memory_id")?)?)?),
         "run.start" => {
             let ws = s(args, "workspace_id")?;
             let th = s(args, "thread_id")?;
@@ -218,7 +253,6 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
             let budget = args.get("budget_tokens").and_then(|v| v.as_i64()).unwrap_or(8_192);
 
             let run = w.create_run(&ws, &th, &br, &prompt)?;
-            let events = r.events(&ws, None)?;
             let ws_obj = r.workspace(&ws)?;
             let instructions = ws_obj
                 .config
@@ -226,7 +260,9 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let manifest = build_manifest(&run, &events, instructions, budget);
+            let visible = r.visible_events(&br, run.branch_revision)?;
+            let memories = r.search_memories(&ws, &prompt, 5)?;
+            let manifest = build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
             let manifest = w.save_manifest(manifest)?;
 
             w.run_event(
@@ -289,7 +325,7 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
                 }
             }
 
-            let receipt = make_receipt(&provider, &manifest);
+            let receipt = make_receipt(&provider, &manifest, &result);
             let done = w.finish_run(&run.id, state, Some(result), Some(receipt))?;
             Ok(serde_json::to_value(done)?)
         }
@@ -318,7 +354,7 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader) -> Result<Value, Hl
                 o.remove("pending_tool");
             }
             result["observation"] = serde_json::to_value(&outcome)?;
-            let receipt = make_receipt(&SimProvider, &manifest);
+            let receipt = make_receipt(&SimProvider, &manifest, &result);
             let state = if outcome.status == "success" { "completed" } else { "failed" };
             let done = w.finish_run(&run_id, state, Some(result), Some(receipt))?;
             Ok(serde_json::to_value(done)?)

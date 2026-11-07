@@ -14,14 +14,15 @@ use crate::writer::{row_to_branch, row_to_event};
 
 pub struct Reader {
     conn: Mutex<Connection>,
+    artifacts_dir: std::path::PathBuf,
 }
 
 impl Reader {
-    pub fn open(db: &Path) -> Result<Self> {
+    pub fn open(db: &Path, artifacts_dir: std::path::PathBuf) -> Result<Self> {
         let conn = Connection::open(db)?;
         conn.pragma_update(None, "query_only", true)?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), artifacts_dir })
     }
 
     fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -198,6 +199,156 @@ impl Reader {
             )
             .optional()?
             .ok_or_else(|| HliError::not_found(&format!("event {id}")))
+        })
+    }
+
+    /// Eventos visibles para una rama: su trayectoria ancestral materializada.
+    pub fn visible_events(&self, branch_id: &str, revision: i64) -> Result<Vec<Event>> {
+        self.with(|c| {
+            let mut chain: Vec<(String, i64)> = Vec::new();
+            let mut cur = branch_id.to_string();
+            let mut limit = revision;
+            loop {
+                let (parent, fork): (Option<String>, Option<String>) = c
+                    .query_row(
+                        "SELECT parent_branch_id, fork_event_id FROM branches WHERE id = ?1",
+                        [&cur],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?
+                    .ok_or_else(|| HliError::not_found(&format!("branch {cur}")))?;
+                chain.push((cur.clone(), limit));
+                match parent {
+                    Some(p) => {
+                        let fseq: i64 = match fork {
+                            Some(f) => c
+                                .query_row("SELECT sequence FROM events WHERE event_id = ?1", [&f], |r| r.get(0))
+                                .optional()?
+                                .unwrap_or(i64::MAX),
+                            None => i64::MAX,
+                        };
+                        limit = fseq;
+                        cur = p;
+                    }
+                    None => break,
+                }
+            }
+
+            let mut out: Vec<Event> = Vec::new();
+            for (b, lim) in &chain {
+                let mut stmt = c.prepare(&format!(
+                    "SELECT {} FROM events WHERE branch_id = ?1 AND sequence <= ?2 ORDER BY sequence",
+                    crate::writer::EVENT_COLS
+                ))?;
+                let rows = stmt.query_map(rusqlite::params![b, lim], row_to_event)?;
+                for e in rows {
+                    out.push(e?);
+                }
+            }
+
+            // Eventos del thread que no pertenecen a ninguna rama (creación del thread).
+            let thread_id: String = c.query_row(
+                "SELECT thread_id FROM branches WHERE id = ?1",
+                [branch_id],
+                |r| r.get(0),
+            )?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {} FROM events WHERE thread_id = ?1 AND branch_id IS NULL AND sequence <= ?2",
+                crate::writer::EVENT_COLS
+            ))?;
+            let rows = stmt.query_map(rusqlite::params![thread_id, revision], row_to_event)?;
+            for e in rows {
+                out.push(e?);
+            }
+
+            out.sort_by_key(|e| e.sequence);
+            out.dedup_by(|a, b| a.event_id == b.event_id);
+            Ok(out)
+        })
+    }
+
+    pub fn memory(&self, id: &str) -> Result<Memory> {
+        self.with(|c| {
+            c.query_row(
+                &format!("SELECT {} FROM memories WHERE id = ?1", crate::writer::MEMORY_COLS),
+                [id],
+                crate::writer::row_to_memory,
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("memoria {id}")))
+        })
+    }
+
+    pub fn memories(&self, workspace_id: &str) -> Result<Vec<Memory>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {} FROM memories WHERE workspace_id = ?1 ORDER BY created_at",
+                crate::writer::MEMORY_COLS
+            ))?;
+            let rows = stmt.query_map([workspace_id], crate::writer::row_to_memory)?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn search_memories(&self, workspace_id: &str, query: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+        self.with(|c| {
+            let terms: Vec<String> = query
+                .to_lowercase()
+                .split(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '-')
+                .filter(|t| t.chars().count() >= 2)
+                .map(|t| t.replace('"', ""))
+                .take(12)
+                .collect();
+            if terms.is_empty() {
+                return Ok(vec![]);
+            }
+            let match_expr = terms.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(" OR ");
+            let mut stmt = c.prepare(
+                "SELECT m.id, m.type, m.status, m.scope, m.content, bm25(memories_fts) AS score
+                 FROM memories_fts f JOIN memories m ON m.id = f.mem_id
+                 WHERE memories_fts MATCH ?1 AND f.workspace_id = ?2 AND m.status = 'active'
+                 ORDER BY score LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![match_expr, workspace_id, limit as i64], |r| {
+                Ok(serde_json::json!({
+                    "id": r.get::<_, String>(0)?,
+                    "type": r.get::<_, String>(1)?,
+                    "status": r.get::<_, String>(2)?,
+                    "scope": r.get::<_, String>(3)?,
+                    "content": r.get::<_, String>(4)?,
+                    "score": r.get::<_, f64>(5)?.abs()
+                }))
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn artifact(&self, id: &str) -> Result<crate::writer::ArtifactInfo> {
+        self.with(|c| {
+            let (id, sha, mime, bytes): (String, String, String, i64) = c
+                .query_row(
+                    "SELECT id, sha256, mime, bytes FROM artifacts WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?
+                .ok_or_else(|| HliError::not_found(&format!("artifact {id}")))?;
+            let path = self.artifacts_dir.join(&sha).to_string_lossy().to_string();
+            Ok(crate::writer::ArtifactInfo {
+                id,
+                sha256: format!("sha256:{sha}"),
+                mime,
+                bytes,
+                path,
+            })
+        })
+    }
+
+    pub fn workspace_of_thread(&self, thread_id: &str) -> Result<String> {
+        self.with(|c| {
+            c.query_row("SELECT workspace_id FROM threads WHERE id = ?1", [thread_id], |r| r.get(0))
+                .optional()?
+                .ok_or_else(|| HliError::not_found(&format!("thread {thread_id}")))
         })
     }
 

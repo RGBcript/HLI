@@ -115,6 +115,33 @@ CREATE TABLE IF NOT EXISTS context_manifests (
   created_at       TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS memories (
+  id               TEXT PRIMARY KEY,
+  workspace_id     TEXT NOT NULL REFERENCES workspaces(id),
+  scope            TEXT NOT NULL,
+  scope_id         TEXT,
+  type             TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  content          TEXT NOT NULL,
+  valid_from       TEXT NOT NULL,
+  valid_until      TEXT,
+  supersedes_json  TEXT NOT NULL DEFAULT '[]',
+  contradicts_json TEXT NOT NULL DEFAULT '[]',
+  sensitivity      TEXT NOT NULL,
+  authorship_json  TEXT NOT NULL,
+  source_events    TEXT NOT NULL DEFAULT '[]',
+  created_at       TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+  content,
+  mem_id UNINDEXED,
+  workspace_id UNINDEXED,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_ws ON memories(workspace_id, status);
+
 CREATE INDEX IF NOT EXISTS idx_runs_ws      ON runs(workspace_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_manifests_run ON context_manifests(run_id);
 

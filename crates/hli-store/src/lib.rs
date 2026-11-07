@@ -43,7 +43,7 @@ impl Store {
         let conn = Connection::open(&self.db_path)?;
         schema::apply(&conn)?;
         let writer = writer::spawn(conn, self.artifacts_dir.clone(), self.snapshots_dir.clone());
-        let reader = Reader::open(&self.db_path)?;
+        let reader = Reader::open(&self.db_path, self.artifacts_dir.clone())?;
         Ok((writer, reader))
     }
 }

@@ -61,7 +61,8 @@ impl Provider for SimProvider {
     }
 
     fn complete(&self, req: &ProviderRequest) -> Result<ProviderResponse> {
-        let prompt = req.prompt.trim();
+        // El prompt efectivo es el del manifiesto: es lo que queda cubierto por el hash.
+        let prompt = req.manifest.user_input.content.trim();
         if let Some(rest) = prompt.strip_prefix("tool:read ") {
             return Ok(ProviderResponse {
                 text: String::new(),
@@ -111,14 +112,13 @@ impl Provider for SimProvider {
 /// Construye el manifiesto con los eventos del thread hasta la revisión del run.
 pub fn build_manifest(
     run: &Run,
-    events: &[Event],
+    visible_events: &[Event],
     instructions: Vec<Value>,
+    prompt: &str,
+    memories: &[Value],
     budget_tokens: i64,
 ) -> ContextManifest {
-    let mut eligible: Vec<&Event> = events
-        .iter()
-        .filter(|e| e.sequence <= run.branch_revision && e.thread_id.as_deref() == Some(&run.thread_id))
-        .collect();
+    let mut eligible: Vec<&Event> = visible_events.iter().collect();
     eligible.sort_by_key(|e| e.sequence);
 
     let mut recent = Vec::new();
@@ -151,8 +151,12 @@ pub fn build_manifest(
         run_id: run.id.clone(),
         branch_revision: run.branch_revision,
         budget_tokens,
+        user_input: UserInput {
+            content: prompt.to_string(),
+            content_hash: hash_canonical(&json!(prompt)),
+        },
         instructions: instructions.clone(),
-        memories: vec![],
+        memories: memories.to_vec(),
         recent_events: recent,
         summaries: vec![],
         artifact_slices: vec![],
@@ -163,6 +167,7 @@ pub fn build_manifest(
     };
 
     let total_chars = used_chars
+        + manifest.user_input.content.chars().count()
         + manifest
             .instructions
             .iter()
@@ -322,8 +327,8 @@ mod tests {
     #[test]
     fn manifest_is_deterministic_and_sealed() {
         let events = vec![ev(1, "workspace.created", json!({"name": "d"})), ev(2, "thread.created", json!({"title": "t"}))];
-        let a = build_manifest(&run(2), &events, vec![], 1024);
-        let b = build_manifest(&run(2), &events, vec![], 1024);
+        let a = build_manifest(&run(2), &events, vec![], "hola", &[], 1024);
+        let b = build_manifest(&run(2), &events, vec![], "hola", &[], 1024);
         assert_eq!(a.recent_events.len(), 2);
         assert_eq!(a.estimated_tokens, b.estimated_tokens);
         assert!(!a.content_hash.is_empty());
@@ -331,9 +336,11 @@ mod tests {
     }
 
     #[test]
-    fn manifest_excludes_future_events() {
-        let events = vec![ev(1, "a", json!({})), ev(2, "b", json!({})), ev(3, "c", json!({}))];
-        let m = build_manifest(&run(2), &events, vec![], 1024);
+    fn manifest_respects_given_visibility() {
+        // La exclusión por rama y por revisión vive en Reader::visible_events;
+        // aquí se comprueba que el manifiesto incluye exactamente lo que recibe.
+        let events = vec![ev(1, "a", json!({})), ev(2, "b", json!({}))];
+        let m = build_manifest(&run(2), &events, vec![], "hola", &[], 1024);
         assert_eq!(m.recent_events.len(), 2);
         assert_eq!(m.recent_events[1]["sequence"], 2);
     }
@@ -349,12 +356,36 @@ mod tests {
     fn sim_provider_is_deterministic() {
         let p = SimProvider;
         let events = vec![ev(1, "a", json!({}))];
-        let m = build_manifest(&run(1), &events, vec![], 1024);
+        let m = build_manifest(&run(1), &events, vec![], "hola", &[], 1024);
         let req = ProviderRequest { run_id: "run_1".into(), prompt: "hola".into(), manifest: m.clone() };
         let a = p.complete(&req).unwrap();
         let b = p.complete(&req).unwrap();
         assert_eq!(a.text, b.text);
         assert!(a.text.starts_with("sim:"));
+    }
+
+    #[test]
+    fn prompt_is_covered_by_manifest_hash() {
+        let events = vec![ev(1, "a", json!({}))];
+        let a = build_manifest(&run(1), &events, vec![], "hola", &[], 1024);
+        let b = build_manifest(&run(1), &events, vec![], "adios", &[], 1024);
+        assert_eq!(a.user_input.content, "hola");
+        assert_ne!(a.user_input.content_hash, b.user_input.content_hash);
+        assert_ne!(a.content_hash, b.content_hash);
+    }
+
+    #[test]
+    fn provider_receives_manifest_prompt() {
+        let events = vec![ev(1, "a", json!({}))];
+        let m = build_manifest(&run(1), &events, vec![], "hola", &[], 1024);
+        let p = SimProvider;
+        let req = ProviderRequest {
+            run_id: "run_1".into(),
+            prompt: "otro texto distinto".into(),
+            manifest: m,
+        };
+        let out = p.complete(&req).unwrap();
+        assert!(out.text.starts_with("sim:"));
     }
 
     #[test]

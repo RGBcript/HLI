@@ -124,6 +124,26 @@ pub enum WriteCmd {
         receipt: Option<Receipt>,
         reply: Reply<Run>,
     },
+    CommitMemory {
+        workspace_id: String,
+        scope: String,
+        scope_id: Option<String>,
+        kind: String,
+        content: String,
+        supersedes: Vec<String>,
+        contradicts: Vec<String>,
+        reply: Reply<Memory>,
+    },
+    UpdateMemory {
+        id: String,
+        content: Option<String>,
+        status: Option<String>,
+        reply: Reply<Memory>,
+    },
+    ForgetMemory {
+        id: String,
+        reply: Reply<Memory>,
+    },
     Stop {
         reply: Reply<()>,
     },
@@ -266,6 +286,36 @@ impl Writer {
         })
     }
 
+    pub fn commit_memory(
+        &self,
+        workspace_id: &str,
+        scope: &str,
+        scope_id: Option<String>,
+        kind: &str,
+        content: &str,
+        supersedes: Vec<String>,
+        contradicts: Vec<String>,
+    ) -> Result<Memory> {
+        self.call(|reply| WriteCmd::CommitMemory {
+            workspace_id: workspace_id.to_string(),
+            scope: scope.to_string(),
+            scope_id,
+            kind: kind.to_string(),
+            content: content.to_string(),
+            supersedes,
+            contradicts,
+            reply,
+        })
+    }
+
+    pub fn update_memory(&self, id: &str, content: Option<String>, status: Option<String>) -> Result<Memory> {
+        self.call(|reply| WriteCmd::UpdateMemory { id: id.to_string(), content, status, reply })
+    }
+
+    pub fn forget_memory(&self, id: &str) -> Result<Memory> {
+        self.call(|reply| WriteCmd::ForgetMemory { id: id.to_string(), reply })
+    }
+
     pub fn stop(&self) -> Result<()> {
         self.call(|reply| WriteCmd::Stop { reply })
     }
@@ -358,6 +408,19 @@ impl State {
             WriteCmd::FinishRun { run_id, state, result, receipt, reply } => {
                 let _ = reply.send(self.finish_run(&run_id, &state, result, receipt));
             }
+            WriteCmd::CommitMemory {
+                workspace_id, scope, scope_id, kind, content, supersedes, contradicts, reply,
+            } => {
+                let _ = reply.send(self.commit_memory(
+                    &workspace_id, &scope, scope_id, &kind, &content, supersedes, contradicts,
+                ));
+            }
+            WriteCmd::UpdateMemory { id, content, status, reply } => {
+                let _ = reply.send(self.update_memory(&id, content, status));
+            }
+            WriteCmd::ForgetMemory { id, reply } => {
+                let _ = reply.send(self.forget_memory(&id));
+            }
             WriteCmd::Stop { reply } => {
                 let _ = reply.send(Ok(()));
             }
@@ -448,12 +511,14 @@ impl State {
 
         let mut head_event_id = None;
         let mut head_sequence = 0i64;
+        let mut parent_branch_id = None;
         if let Some(ev_id) = &from_event {
             let ev = load_event(&self.conn, ev_id)?
                 .ok_or_else(|| HliError::not_found(&format!("event {ev_id}")))?;
             if ev.workspace_id != workspace_id {
                 return Err(HliError::conflict("el evento de bifurcación pertenece a otro workspace"));
             }
+            parent_branch_id = ev.branch_id.clone();
             head_event_id = Some(ev.event_id.clone());
             head_sequence = ev.sequence;
         }
@@ -463,7 +528,7 @@ impl State {
             id: new_id("br"),
             thread_id: thread_id.to_string(),
             name: name.to_string(),
-            parent_branch_id: None,
+            parent_branch_id,
             fork_event_id: head_event_id.clone(),
             head_event_id: head_event_id.clone(),
             head_sequence,
@@ -473,11 +538,12 @@ impl State {
         tx.execute(
             "INSERT INTO branches(id, thread_id, name, parent_branch_id, fork_event_id,
                                   head_event_id, head_sequence, snapshot_id, created_at)
-             VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, NULL, ?7)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
             params![
                 br.id,
                 br.thread_id,
                 name,
+                br.parent_branch_id,
                 br.fork_event_id,
                 br.head_event_id,
                 br.head_sequence,
@@ -635,7 +701,7 @@ impl State {
                 run_id
             ],
         )?;
-        append_event(
+        let ev = append_event(
             &tx, &run.workspace_id, Some(&run.thread_id), Some(&run.branch_id),
             &format!("run.{state}"),
             json!({"kind": "agent", "id": "hli"}),
@@ -643,6 +709,16 @@ impl State {
                    "receipt": receipt.is_some(), "result": result.is_some()}),
             vec![], None,
         )?;
+
+        // Cierre causal: el receipt referencia el evento terminal, que ya existe.
+        let mut receipt = receipt;
+        if let Some(r) = receipt.as_mut() {
+            if r.terminal_event.is_none() {
+                r.terminal_event = Some(ev.event_id.clone());
+            }
+            let body = canonical_json(&serde_json::to_value(r).unwrap_or(json!({})));
+            tx.execute("UPDATE runs SET receipt_json = ?1 WHERE id = ?2", params![body, run_id])?;
+        }
         tx.commit()?;
         let mut out = load_run(&self.conn, run_id)?
             .ok_or_else(|| HliError::internal("run desaparecido"))?;
@@ -650,6 +726,126 @@ impl State {
             out.receipt = Some(r);
         }
         Ok(out)
+    }
+
+    fn commit_memory(
+        &mut self,
+        workspace_id: &str,
+        scope: &str,
+        scope_id: Option<String>,
+        kind: &str,
+        content: &str,
+        supersedes: Vec<String>,
+        contradicts: Vec<String>,
+    ) -> Result<Memory> {
+        schema::require_workspace(&self.conn, workspace_id)?;
+        const KINDS: [&str; 6] = ["fact", "decision", "constraint", "summary", "reference", "procedure"];
+        const SCOPES: [&str; 4] = ["global", "workspace", "thread", "branch"];
+        if !KINDS.contains(&kind) {
+            return Err(HliError::invalid(format!("tipo de memoria inválido: {kind}")));
+        }
+        if !SCOPES.contains(&scope) {
+            return Err(HliError::invalid(format!("ámbito inválido: {scope}")));
+        }
+        if content.trim().is_empty() {
+            return Err(HliError::invalid("la memoria no puede estar vacía"));
+        }
+        let m = Memory {
+            id: new_id("mem"),
+            workspace_id: workspace_id.to_string(),
+            scope: scope.to_string(),
+            scope_id,
+            kind: kind.to_string(),
+            status: "active".into(),
+            content: content.to_string(),
+            valid_from: now_iso(),
+            valid_until: None,
+            supersedes,
+            contradicts,
+            sensitivity: "internal".into(),
+            authorship: json!({"kind": "user", "id": "cli"}),
+            source_events: vec![],
+            created_at: now_iso(),
+        };
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO memories(id, workspace_id, scope, scope_id, type, status, content,
+                                  valid_from, valid_until, supersedes_json, contradicts_json,
+                                  sensitivity, authorship_json, source_events, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                m.id, m.workspace_id, m.scope, m.scope_id, m.kind, m.status, m.content,
+                m.valid_from, canonical_json(&json!(m.supersedes)),
+                canonical_json(&json!(m.contradicts)), m.sensitivity,
+                canonical_json(&m.authorship), canonical_json(&json!(m.source_events)), m.created_at
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO memories_fts(mem_id, content, workspace_id) VALUES (?1, ?2, ?3)",
+            params![m.id, m.content, m.workspace_id],
+        )?;
+        append_event(
+            &tx, workspace_id, None, None, "memory.committed",
+            json!({"kind": "user", "id": "cli"}),
+            json!({"memory_id": m.id, "type": m.kind, "scope": m.scope,
+                   "content_hash": hli_core::canon::hash_canonical(&json!(m.content))}),
+            vec![], None,
+        )?;
+        tx.commit()?;
+        Ok(m)
+    }
+
+    fn update_memory(&mut self, id: &str, content: Option<String>, status: Option<String>) -> Result<Memory> {
+        let mut m = load_memory(&self.conn, id)?
+            .ok_or_else(|| HliError::not_found(&format!("memoria {id}")))?;
+        if let Some(c) = content {
+            if c.trim().is_empty() {
+                return Err(HliError::invalid("la memoria no puede estar vacía"));
+            }
+            m.content = c;
+        }
+        if let Some(s) = status {
+            const STATES: [&str; 5] = ["proposed", "active", "superseded", "revoked", "deleted_by_policy"];
+            if !STATES.contains(&s.as_str()) {
+                return Err(HliError::invalid(format!("estado inválido: {s}")));
+            }
+            m.status = s;
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE memories SET content = ?1, status = ?2 WHERE id = ?3",
+            params![m.content, m.status, m.id],
+        )?;
+        tx.execute("DELETE FROM memories_fts WHERE mem_id = ?1", [&m.id])?;
+        if m.status == "active" || m.status == "proposed" {
+            tx.execute(
+                "INSERT INTO memories_fts(mem_id, content, workspace_id) VALUES (?1, ?2, ?3)",
+                params![m.id, m.content, m.workspace_id],
+            )?;
+        }
+        append_event(
+            &tx, &m.workspace_id, None, None, "memory.updated",
+            json!({"kind": "user", "id": "cli"}),
+            json!({"memory_id": m.id, "status": m.status}), vec![], None,
+        )?;
+        tx.commit()?;
+        Ok(m)
+    }
+
+    fn forget_memory(&mut self, id: &str) -> Result<Memory> {
+        let mut m = load_memory(&self.conn, id)?
+            .ok_or_else(|| HliError::not_found(&format!("memoria {id}")))?;
+        m.status = "revoked".into();
+        let tx = self.conn.transaction()?;
+        tx.execute("UPDATE memories SET status = 'revoked' WHERE id = ?1", [&m.id])?;
+        tx.execute("DELETE FROM memories_fts WHERE mem_id = ?1", [&m.id])?;
+        append_event(
+            &tx, &m.workspace_id, None, None, "memory.forgotten",
+            json!({"kind": "user", "id": "cli"}),
+            json!({"memory_id": m.id}), vec![], None,
+        )?;
+        tx.commit()?;
+        Ok(m)
     }
 
     fn put_artifact(&mut self, workspace_id: &str, source: &PathBuf) -> Result<ArtifactInfo> {
@@ -827,6 +1023,30 @@ impl State {
         }
         files.push(ArchiveFile { path: "events.ndjson".into(), bytes: ndjson.into_bytes() });
 
+        let runs = load_runs(&self.conn, workspace_id)?;
+        let mut runs_nd = String::new();
+        for r in &runs {
+            runs_nd.push_str(&canonical_json(&serde_json::to_value(r)?));
+            runs_nd.push('\n');
+        }
+        files.push(ArchiveFile { path: "runs.ndjson".into(), bytes: runs_nd.into_bytes() });
+
+        let manifests = load_manifests(&self.conn, workspace_id)?;
+        let mut man_nd = String::new();
+        for m in &manifests {
+            man_nd.push_str(&canonical_json(&serde_json::to_value(m)?));
+            man_nd.push('\n');
+        }
+        files.push(ArchiveFile { path: "manifests.ndjson".into(), bytes: man_nd.into_bytes() });
+
+        let memories = load_memories(&self.conn, workspace_id)?;
+        let mut mem_nd = String::new();
+        for m in &memories {
+            mem_nd.push_str(&canonical_json(&serde_json::to_value(m)?));
+            mem_nd.push('\n');
+        }
+        files.push(ArchiveFile { path: "memories.ndjson".into(), bytes: mem_nd.into_bytes() });
+
         let mut stmt = self
             .conn
             .prepare("SELECT sha256 FROM artifacts WHERE workspace_id = ?1 ORDER BY sha256")?;
@@ -871,7 +1091,10 @@ impl State {
                 "events": events.len(),
                 "threads": threads.len(),
                 "branches": branches.len(),
-                "artifacts": shas.len()
+                "artifacts": shas.len(),
+                "runs": runs.len(),
+                "manifests": manifests.len(),
+                "memories": memories.len()
             },
             "files": file_meta,
             "redactions": {"secrets": "handles-only"}
@@ -1054,6 +1277,60 @@ impl State {
                     e.integrity.event_hash
                 ],
             )?;
+        }
+
+        // Runs, manifiestos y memorias (0.3).
+        if let Some(f) = files.iter().find(|f| f.path == "runs.ndjson") {
+            let text = String::from_utf8_lossy(&f.bytes).to_string();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let r: Run = serde_json::from_str(line)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO runs(id, workspace_id, thread_id, branch_id, branch_revision,
+                        state, prompt, started_at, ended_at, result_json, receipt_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![r.id, r.workspace_id, r.thread_id, r.branch_id, r.branch_revision,
+                            r.state, r.prompt, r.started_at, r.ended_at,
+                            r.result.as_ref().map(canonical_json),
+                            r.receipt.as_ref().map(|x| canonical_json(&serde_json::to_value(x).unwrap_or(json!({}))))],
+                )?;
+            }
+        }
+        if let Some(f) = files.iter().find(|f| f.path == "manifests.ndjson") {
+            let text = String::from_utf8_lossy(&f.bytes).to_string();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let m: ContextManifest = serde_json::from_str(line)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO context_manifests(id, workspace_id, run_id, branch_revision,
+                        budget_tokens, estimated_tokens, content_hash, body_json, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![m.manifest_id, m.workspace_id, m.run_id, m.branch_revision,
+                            m.budget_tokens, m.estimated_tokens, m.content_hash,
+                            canonical_json(&serde_json::to_value(&m).unwrap_or(json!({}))), m.created_at],
+                )?;
+            }
+        }
+        if let Some(f) = files.iter().find(|f| f.path == "memories.ndjson") {
+            let text = String::from_utf8_lossy(&f.bytes).to_string();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let m: Memory = serde_json::from_str(line)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO memories(id, workspace_id, scope, scope_id, type, status,
+                        content, valid_from, valid_until, supersedes_json, contradicts_json,
+                        sensitivity, authorship_json, source_events, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    params![m.id, m.workspace_id, m.scope, m.scope_id, m.kind, m.status, m.content,
+                            m.valid_from, m.valid_until, canonical_json(&json!(m.supersedes)),
+                            canonical_json(&json!(m.contradicts)), m.sensitivity,
+                            canonical_json(&m.authorship), canonical_json(&json!(m.source_events)),
+                            m.created_at],
+                )?;
+                if m.status == "active" || m.status == "proposed" {
+                    tx.execute(
+                        "INSERT INTO memories_fts(mem_id, content, workspace_id) VALUES (?1, ?2, ?3)",
+                        params![m.id, m.content, m.workspace_id],
+                    )?;
+                }
+            }
         }
 
         let mut imported_artifacts = 0i64;
@@ -1289,4 +1566,66 @@ pub(crate) fn load_manifest(conn: &Connection, id: &str) -> Result<Option<Contex
         .query_row("SELECT body_json FROM context_manifests WHERE id = ?1", [id], |r| r.get(0))
         .optional()?;
     Ok(body.and_then(|b| serde_json::from_str(&b).ok()))
+}
+
+
+pub(crate) const MEMORY_COLS: &str = "id, workspace_id, scope, scope_id, type, status, content,
+    valid_from, valid_until, supersedes_json, contradicts_json, sensitivity, authorship_json,
+    source_events, created_at";
+
+pub(crate) fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
+    Ok(Memory {
+        id: r.get(0)?,
+        workspace_id: r.get(1)?,
+        scope: r.get(2)?,
+        scope_id: r.get(3)?,
+        kind: r.get(4)?,
+        status: r.get(5)?,
+        content: r.get(6)?,
+        valid_from: r.get(7)?,
+        valid_until: r.get(8)?,
+        supersedes: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default(),
+        contradicts: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
+        sensitivity: r.get(11)?,
+        authorship: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or(json!({})),
+        source_events: serde_json::from_str(&r.get::<_, String>(13)?).unwrap_or_default(),
+        created_at: r.get(14)?,
+    })
+}
+
+pub(crate) fn load_memory(conn: &Connection, id: &str) -> Result<Option<Memory>> {
+    Ok(conn
+        .query_row(&format!("SELECT {MEMORY_COLS} FROM memories WHERE id = ?1"), [id], row_to_memory)
+        .optional()?)
+}
+
+
+fn load_runs(conn: &Connection, workspace_id: &str) -> Result<Vec<Run>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {RUN_COLS} FROM runs WHERE workspace_id = ?1 ORDER BY started_at"
+    ))?;
+    let rows = stmt.query_map([workspace_id], row_to_run)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn load_manifests(conn: &Connection, workspace_id: &str) -> Result<Vec<ContextManifest>> {
+    let mut stmt = conn.prepare(
+        "SELECT body_json FROM context_manifests WHERE workspace_id = ?1 ORDER BY created_at",
+    )?;
+    let rows = stmt.query_map([workspace_id], |r| r.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        if let Ok(m) = serde_json::from_str::<ContextManifest>(&row?) {
+            out.push(m);
+        }
+    }
+    Ok(out)
+}
+
+fn load_memories(conn: &Connection, workspace_id: &str) -> Result<Vec<Memory>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MEMORY_COLS} FROM memories WHERE workspace_id = ?1 ORDER BY created_at"
+    ))?;
+    let rows = stmt.query_map([workspace_id], row_to_memory)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }

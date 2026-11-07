@@ -182,6 +182,7 @@ pub struct Receipt {
     pub sampling: Value,
     pub result_artifacts: Vec<String>,
     pub sandbox: Value,
+    pub result_hash: String,
     pub terminal_event: Option<String>,
 }
 
@@ -193,6 +194,7 @@ pub struct ContextManifest {
     pub run_id: String,
     pub branch_revision: i64,
     pub budget_tokens: i64,
+    pub user_input: UserInput,
     pub instructions: Vec<Value>,
     pub memories: Vec<Value>,
     pub recent_events: Vec<Value>,
@@ -214,6 +216,7 @@ impl ContextManifest {
             "run_id": self.run_id,
             "branch_revision": self.branch_revision,
             "budget_tokens": self.budget_tokens,
+            "user_input": self.user_input,
             "instructions": self.instructions,
             "memories": self.memories,
             "recent_events": self.recent_events,
@@ -228,6 +231,31 @@ impl ContextManifest {
     pub fn seal(&mut self) {
         self.content_hash = hash_canonical(&self.envelope());
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserInput {
+    pub content: String,
+    pub content_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Memory {
+    pub id: String,
+    pub workspace_id: String,
+    pub scope: String,
+    pub scope_id: Option<String>,
+    pub kind: String,
+    pub status: String,
+    pub content: String,
+    pub valid_from: String,
+    pub valid_until: Option<String>,
+    pub supersedes: Vec<String>,
+    pub contradicts: Vec<String>,
+    pub sensitivity: String,
+    pub authorship: Value,
+    pub source_events: Vec<String>,
+    pub created_at: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
