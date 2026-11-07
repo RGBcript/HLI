@@ -250,6 +250,18 @@ fn run(args: &[String]) -> Result<(), String> {
             let name = args.get(2).ok_or("falta el nombre")?;
             print_value(&call("mch.serve", json!({"name": name}))?, output)
         }
+        ("mch", Some("status")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("mch.status", json!({"name": name}))?, output)
+        }
+        ("mch", Some("restart")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("mch.restart", json!({"name": name}))?, output)
+        }
+        ("mch", Some("logs")) => {
+            let name = args.get(2).ok_or("falta el nombre")?;
+            print_value(&call("mch.logs", json!({"name": name}))?, output)
+        }
         ("mch", Some("stop")) => {
             let name = args.get(2).ok_or("falta el nombre")?;
             print_value(&call("mch.stop", json!({"name": name}))?, output)

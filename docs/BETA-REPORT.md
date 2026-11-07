@@ -10,14 +10,15 @@
 | Proveedor configurable | hecho | `providers.toml`, `provider add/list/inspect/test/set-default/remove`, default persistente, `secret_handle`; 2 pruebas e2e |
 | Formato y clippy | verde | `cargo fmt --check`, `cargo clippy -D warnings` |
 | Runs asíncronos y cancelación | hecho | `--async`, `status`, `wait`, `cancel`, `list --state`; tabla de transiciones; timeout; recuperación a `interrupted`; 4 pruebas e2e |
-| Tests | verde | 83 pruebas; e2e aislados por `HLI_HOME` |
+| MCH persistente (nucleo) | parcial | proceso reutilizado con el mismo PID, restart, stop y deteccion de caida; 2 pruebas e2e; ver `MCH-SUPERVISOR.md` |
+| Tests | verde | 85 pruebas; e2e aislados por `HLI_HOME` |
 
 ## Pendiente para cerrar 0.9
 
 | Bloque | Estado | Nota |
 |---|---|---|
 | Gate visual manual | **no ejecutado** | Guía y entorno listos en `docs/TUI-MANUAL-GATE.md`; requiere Windows Terminal |
-| Supervisor MCH persistente | pendiente | El modelo actual crea un proceso por invocación; faltan pool, health, reinicio y recuperación |
+| Supervisor MCH persistente | parcial | Proceso persistente y reutilización hechos; faltan health periódico, degraded, restart automático, autostart y capabilities/configure |
 | Firma de módulos Ed25519 | pendiente | Sin `signature.json`, trust store ni políticas `allow/warn/require` |
 | Migraciones | pendiente | Sin `migrate status/apply/backup/verify` ni fixture de versión anterior |
 | Empaquetado Windows | pendiente | Sin `install.ps1`, `uninstall.ps1`, `dist` completo ni checksums |
@@ -37,7 +38,7 @@
 | Cancelación | sí |
 | Run completo | sí (síncrono) |
 | Módulo firmado o permitido | no |
-| MCH persistente | no |
+| MCH persistente | parcial: proceso reutilizado y recuperado como `stopped`; falta autostart |
 | Reinicio y recuperación | parcial: `running` → `interrupted`; `queued` no se reencola |
 | Export/import | sí (existente) |
 | Migración | no |
@@ -49,7 +50,7 @@
 
 ## Siguiente bloque
 
-1. Supervisor MCH persistente con health y reinicio acotado.
+1. Completar supervisor MCH: health, degraded, restart automático, autostart y módulo de prueba.
 2. Firma Ed25519 y políticas de módulo.
 3. Migraciones con fixture real.
 4. Empaquetado, licencia, CI y documentación pública.

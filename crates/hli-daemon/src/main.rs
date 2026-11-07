@@ -244,6 +244,18 @@ fn o(args: &Value, key: &str) -> Option<String> {
         .map(|v| v.to_string())
 }
 
+fn mch_bin(r: &Reader, name: &str) -> Result<(PathBuf, String), HliError> {
+    let m = r.mch(name)?;
+    let module = m["module"].as_str().unwrap_or("");
+    let mm = r.module(module)?;
+    let entry = mm["manifest"]["spec"]["runtime"]["entry"]
+        .as_str()
+        .unwrap_or("bin/hli-memory.exe");
+    let bin = PathBuf::from(mm["path"].as_str().unwrap_or("")).join(entry);
+    let ws = m["workspace_id"].as_str().unwrap_or("").to_string();
+    Ok((bin, ws))
+}
+
 fn dispatch(
     cmd: &str,
     args: &Value,
@@ -1365,8 +1377,11 @@ fn dispatch(
                 .as_str()
                 .unwrap_or("bin/hli-memory.exe");
             let bin = PathBuf::from(m["path"].as_str().unwrap_or("")).join(entry);
-            let out = supervisor::health(&bin, home, "")?;
-            Ok(json!({"module": m["name"], "ok": true, "probe": out}))
+            let tmp = format!("__test_{}", m["name"].as_str().unwrap_or("module"));
+            let h = supervisor::start(&tmp, &bin, home, "")?;
+            let probe = supervisor::health(&tmp, std::time::Duration::from_secs(5))?;
+            let _ = supervisor::stop(&tmp);
+            Ok(json!({"module": m["name"], "ok": true, "pid": h.pid, "probe": probe}))
         }
         "module.remove" => {
             let name = s(args, "name")?;
@@ -1397,19 +1412,46 @@ fn dispatch(
         "mch.inspect" => Ok(r.mch(&s(args, "name")?)?),
         "mch.serve" => {
             let name = s(args, "name")?;
-            let m = r.mch(&name)?;
-            let module = m["module"].as_str().unwrap_or("");
-            let mm = r.module(module)?;
-            let entry = mm["manifest"]["spec"]["runtime"]["entry"]
-                .as_str()
-                .unwrap_or("bin/hli-memory.exe");
-            let bin = PathBuf::from(mm["path"].as_str().unwrap_or("")).join(entry);
-            let ws = m["workspace_id"].as_str().unwrap_or("");
-            let probe = supervisor::health(&bin, home, ws)?;
-            let out = w.mch_set_state(&name, "ready", None)?;
-            Ok(json!({"instance": out, "probe": probe}))
+            let (bin, ws) = mch_bin(r, &name)?;
+            w.mch_set_state(&name, "starting", None)?;
+            let h = match supervisor::start(&name, &bin, home, &ws) {
+                Ok(h) => h,
+                Err(e) => {
+                    let _ = w.mch_set_state(&name, "failed", None);
+                    return Err(e);
+                }
+            };
+            let out = w.mch_set_state(&name, "ready", Some(h.pid as i64))?;
+            Ok(json!({"instance": out, "pid": h.pid}))
         }
-        "mch.stop" => Ok(w.mch_set_state(&s(args, "name")?, "stopped", None)?),
+        "mch.stop" => {
+            let name = s(args, "name")?;
+            supervisor::stop(&name)?;
+            Ok(w.mch_set_state(&name, "stopped", None)?)
+        }
+        "mch.status" => {
+            let name = s(args, "name")?;
+            let instance = r.mch(&name)?;
+            Ok(json!({"instance": instance, "process": supervisor::status(&name)}))
+        }
+        "mch.restart" => {
+            let name = s(args, "name")?;
+            let (bin, ws) = mch_bin(r, &name)?;
+            w.mch_set_state(&name, "starting", None)?;
+            let h = match supervisor::restart(&name, &bin, home, &ws) {
+                Ok(h) => h,
+                Err(e) => {
+                    let _ = w.mch_set_state(&name, "failed", None);
+                    return Err(e);
+                }
+            };
+            let out = w.mch_set_state(&name, "ready", Some(h.pid as i64))?;
+            Ok(json!({"instance": out, "pid": h.pid}))
+        }
+        "mch.logs" => {
+            let name = s(args, "name")?;
+            Ok(json!({"logs": supervisor::logs(&name).unwrap_or_default()}))
+        }
         "mch.remove" => {
             let name = s(args, "name")?;
             w.mch_remove(&name)?;
@@ -1435,29 +1477,24 @@ fn dispatch(
                     format!("operación no declarada por el módulo: {op}"),
                 ));
             }
-            let module = m["module"].as_str().unwrap_or("");
-            let mm = r.module(module)?;
-            let entry = mm["manifest"]["spec"]["runtime"]["entry"]
-                .as_str()
-                .unwrap_or("bin/hli-memory.exe");
-            let bin = PathBuf::from(mm["path"].as_str().unwrap_or("")).join(entry);
             let ws = args
                 .get("workspace_id")
                 .and_then(|v| v.as_str())
-                .unwrap_or(m["workspace_id"].as_str().unwrap_or(""));
+                .unwrap_or(m["workspace_id"].as_str().unwrap_or(""))
+                .to_string();
             let arguments = args.get("arguments").cloned().unwrap_or(json!({}));
+            let timeout = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(30);
             let out = supervisor::invoke(
-                &bin,
-                home,
-                ws,
+                &name,
                 &op,
                 &arguments,
-                std::time::Duration::from_secs(30),
+                &ws,
+                std::time::Duration::from_secs(timeout),
             )?;
-            Ok(
-                json!({"instance": name, "operation": op, "result": out.result,
-                       "duration_ms": out.duration_ms}),
-            )
+            Ok(json!({"instance": name, "operation": op, "result": out}))
         }
         "status" => {
             let ws = r.workspaces()?;

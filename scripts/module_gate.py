@@ -182,6 +182,9 @@ def main():
         stop(env, d)
         d = start(env)
         assert run(env, "module", "list")
+        # El proceso MCH no sobrevive al reinicio del daemon: queda stopped.
+        assert run(env, "mch", "list")[0]["state"] == "stopped"
+        run(env, "mch", "serve", "memory-main")
         assert run(env, "mch", "list")[0]["state"] == "ready"
         again = run(env, "memory", "search", "--workspace", ws, "--query", "MCH")
         assert again, "memoria perdida tras reinicio"

@@ -37,6 +37,10 @@ impl Store {
             "UPDATE runs SET state = 'interrupted', ended_at = ?1              WHERE state IN ('queued','running','cancelling','waiting_approval')",
             rusqlite::params![hli_core::time::now_iso()],
         );
+        let _ = conn.execute(
+            "UPDATE mch_instances SET state = 'stopped', pid = NULL              WHERE state IN ('starting','ready','degraded','restarting','stopping')",
+            [],
+        );
         drop(conn);
 
         Ok(Self {
