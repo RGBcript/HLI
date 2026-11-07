@@ -326,6 +326,72 @@ fn run(args: &[String]) -> Result<(), String> {
                 output,
             )
         }
+        ("migrate", Some("status")) => {
+            let db = home().join("hli.db");
+            let st = hli_store::migrations::status_path(&db).map_err(signing_err)?;
+            let pending: Vec<Value> = st
+                .pending
+                .iter()
+                .map(|p| json!({"version": p.version, "name": p.name}))
+                .collect();
+            print_value(
+                &json!({
+                    "db_exists": st.db_exists,
+                    "current_version": st.current_version,
+                    "target_version": st.target_version,
+                    "pending": pending,
+                    "compatible": st.compatible,
+                    "backup_required": st.backup_required
+                }),
+                output,
+            )
+        }
+        ("migrate", Some("backup")) => {
+            let db = home().join("hli.db");
+            let out = hli_store::migrations::backup_path(&db, &home().join("backups"))
+                .map_err(signing_err)?;
+            print_value(&json!({"backup": out.to_string_lossy()}), output)
+        }
+        ("migrate", Some("apply")) => {
+            if daemon_is_running() {
+                return Err(
+                    "el daemon está en marcha; ejecuta hli daemon stop antes de migrar".into(),
+                );
+            }
+            let db = home().join("hli.db");
+            let (report, backup) =
+                hli_store::migrations::apply_path(&db, &home().join("backups"), true)
+                    .map_err(signing_err)?;
+            print_value(
+                &json!({
+                    "from_version": report.from_version,
+                    "to_version": report.to_version,
+                    "applied": report.applied,
+                    "backup": backup.map(|p| p.to_string_lossy().to_string())
+                }),
+                output,
+            )
+        }
+        ("migrate", Some("verify")) => {
+            let db = home().join("hli.db");
+            let report = hli_store::migrations::verify_path(&db).map_err(signing_err)?;
+            print_value(
+                &json!({
+                    "current_version": report.current_version,
+                    "target_version": report.target_version,
+                    "schema_ok": report.schema_ok,
+                    "integrity_ok": report.integrity_ok,
+                    "chain_ok": report.chain_ok,
+                    "events_checked": report.events_checked
+                }),
+                output,
+            )?;
+            if report.schema_ok && report.integrity_ok && report.chain_ok {
+                Ok(())
+            } else {
+                Err("verificación de migración fallida".into())
+            }
+        }
         ("mch", Some("create")) => {
             let name = args.get(2).ok_or("falta el nombre")?;
             let v = call(
@@ -587,6 +653,20 @@ fn signing_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+fn daemon_is_running() -> bool {
+    let Ok(raw) = std::fs::read_to_string(daemon_file()) else {
+        return false;
+    };
+    let Ok(info) = serde_json::from_str::<Value>(&raw) else {
+        return false;
+    };
+    let Some(port) = info["port"].as_u64() else {
+        return false;
+    };
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port as u16));
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok()
+}
+
 fn print_value(v: &Value, mode: &str) -> Result<(), String> {
     if mode == "human" {
         if let Some(arr) = v.as_array() {
@@ -762,6 +842,7 @@ fn usage() -> Result<(), String> {
   hli module sign <file.hlimod> --key <key_id> | verify <file.hlimod>
   hli key generate <name> | list | inspect <key_id> | export-public <key_id> | revoke <key_id>
   hli trust add <public-key-file> | list | remove <key_id> | revoke <key_id>
+  hli migrate status | backup | apply | verify
   hli mch create <name> [--module M] [--domain D] [--workspace W] [--autostart] | list | inspect <name>
   hli mch set-autostart <name> true|false
   hli mch serve <name> | stop <name> | remove <name>

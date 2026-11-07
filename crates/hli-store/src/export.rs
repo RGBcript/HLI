@@ -8,7 +8,34 @@ use hli_core::{canon::hash_canonical, HliError, Result};
 use serde_json::Value;
 
 pub const MAGIC: &[u8] = b"HLIAR1\n";
+pub const FORMAT_VERSION: u32 = hli_core::versions::HLIAR_FORMAT_VERSION;
 pub const FORMAT: &str = "hli-archive/v1";
+
+fn header_len(bytes: &[u8]) -> Result<usize> {
+    if !bytes.starts_with(b"HLIAR") {
+        return Err(HliError::invalid("contenedor hliar: firma incorrecta"));
+    }
+    let nl = bytes[5..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .ok_or_else(|| HliError::invalid("contenedor hliar: cabecera truncada"))?;
+    let raw = std::str::from_utf8(&bytes[5..5 + nl])
+        .map_err(|_| HliError::invalid("contenedor hliar: versión no UTF-8"))?;
+    let version: u32 = raw
+        .parse()
+        .map_err(|_| HliError::invalid(format!("contenedor hliar: versión desconocida '{raw}'")))?;
+    if version > FORMAT_VERSION {
+        return Err(HliError::conflict(format!(
+            "contenedor hliar: versión futura {version} > {FORMAT_VERSION}; actualiza HLI"
+        )));
+    }
+    if version != FORMAT_VERSION {
+        return Err(HliError::invalid(format!(
+            "contenedor hliar: versión desconocida {version}"
+        )));
+    }
+    Ok(5 + nl + 1)
+}
 
 #[derive(Clone, Debug)]
 pub struct ArchiveFile {
@@ -79,10 +106,7 @@ pub fn read_container_limited(bytes: &[u8], limits: ContainerLimits) -> Result<V
             limits.total_bytes
         )));
     }
-    if !bytes.starts_with(MAGIC) {
-        return Err(HliError::invalid("contenedor hliar: firma incorrecta"));
-    }
-    let mut i = MAGIC.len();
+    let mut i = header_len(bytes)?;
     let mut files = Vec::new();
     let mut seen = std::collections::HashSet::new();
     while i < bytes.len() {

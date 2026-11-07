@@ -45,8 +45,20 @@ impl Policy {
         std::fs::read_to_string(home.join("module-policy.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .and_then(|v| v.get("policy").and_then(|p| p.as_str()).map(str::to_string))
-            .and_then(|p| Self::parse(&p).ok())
+            .map(|v| {
+                let future = v["version"]
+                    .as_u64()
+                    .map(|n| n > hli_core::versions::CONFIG_SCHEMA_VERSION as u64)
+                    .unwrap_or(false);
+                if future {
+                    // Configuración desconocida: fallar cerrado.
+                    return Self::RequireSigned;
+                }
+                v.get("policy")
+                    .and_then(|p| p.as_str())
+                    .and_then(|p| Self::parse(p).ok())
+                    .unwrap_or_default()
+            })
             .unwrap_or_default()
     }
 }

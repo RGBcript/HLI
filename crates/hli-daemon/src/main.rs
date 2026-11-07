@@ -40,6 +40,7 @@ fn hli_home() -> PathBuf {
 }
 
 fn run(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    providers::check_version(&home)?;
     // Store::open normaliza los PID y estados de la ejecución anterior antes de
     // publicar daemon.json: ningún proceso persistido se da por vivo.
     let store = Store::open(&home)?;
@@ -1370,6 +1371,24 @@ fn dispatch(
             let manifest_bytes = get("manifest.json")
                 .ok_or_else(|| HliError::invalid("paquete sin manifest.json"))?;
             let manifest: Value = serde_json::from_slice(&manifest_bytes)?;
+            match manifest["spec"].get("format_version") {
+                None | Some(Value::Null) => {}
+                Some(v) => match v.as_u64() {
+                    Some(n) if n > hli_core::versions::HLIMOD_FORMAT_VERSION as u64 => {
+                        return Err(HliError::conflict(format!(
+                            "paquete .hlimod con versión futura {n} > {}; actualiza HLI",
+                            hli_core::versions::HLIMOD_FORMAT_VERSION
+                        )))
+                    }
+                    Some(n) if n == hli_core::versions::HLIMOD_FORMAT_VERSION as u64 => {}
+                    Some(n) => {
+                        return Err(HliError::invalid(format!(
+                            "paquete .hlimod con versión desconocida {n}"
+                        )))
+                    }
+                    None => return Err(HliError::invalid("format_version no numérico")),
+                },
+            }
             let name = manifest["metadata"]["name"]
                 .as_str()
                 .ok_or_else(|| HliError::invalid("manifiesto sin nombre"))?

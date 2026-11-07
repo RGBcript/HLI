@@ -33,6 +33,14 @@ fn read_store(home: &Path) -> Result<Vec<TrustRecord>> {
     let raw = std::fs::read_to_string(&path)?;
     let value: Value = serde_json::from_str(&raw)
         .map_err(|e| HliError::invalid(format!("trust store inválido: {e}")))?;
+    let version = value["version"]
+        .as_u64()
+        .unwrap_or(hli_core::versions::CONFIG_SCHEMA_VERSION as u64);
+    if version > hli_core::versions::CONFIG_SCHEMA_VERSION as u64 {
+        return Err(HliError::conflict(format!(
+            "trust.json con versión futura {version}"
+        )));
+    }
     Ok(value
         .get("keys")
         .and_then(|v| v.as_array())
@@ -45,7 +53,10 @@ fn read_store(home: &Path) -> Result<Vec<TrustRecord>> {
 }
 
 fn write_store(home: &Path, keys: &[TrustRecord]) -> Result<()> {
-    let body = json!({"keys": keys});
+    let body = json!({
+        "version": hli_core::versions::CONFIG_SCHEMA_VERSION,
+        "keys": keys
+    });
     std::fs::write(store_path(home), serde_json::to_vec_pretty(&body)?)?;
     Ok(())
 }

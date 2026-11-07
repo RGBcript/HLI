@@ -43,6 +43,14 @@ fn read_index(home: &Path) -> Result<Vec<KeyRecord>> {
     let raw = std::fs::read_to_string(&path)?;
     let value: Value = serde_json::from_str(&raw)
         .map_err(|e| HliError::invalid(format!("índice de claves inválido: {e}")))?;
+    let version = value["version"]
+        .as_u64()
+        .unwrap_or(hli_core::versions::CONFIG_SCHEMA_VERSION as u64);
+    if version > hli_core::versions::CONFIG_SCHEMA_VERSION as u64 {
+        return Err(HliError::conflict(format!(
+            "keys/index.json con versión futura {version}"
+        )));
+    }
     Ok(value
         .get("keys")
         .and_then(|v| v.as_array())
@@ -56,7 +64,10 @@ fn read_index(home: &Path) -> Result<Vec<KeyRecord>> {
 
 fn write_index(home: &Path, keys: &[KeyRecord]) -> Result<()> {
     std::fs::create_dir_all(keys_dir(home))?;
-    let body = json!({"keys": keys});
+    let body = json!({
+        "version": hli_core::versions::CONFIG_SCHEMA_VERSION,
+        "keys": keys
+    });
     std::fs::write(index_path(home), serde_json::to_vec_pretty(&body)?)?;
     Ok(())
 }

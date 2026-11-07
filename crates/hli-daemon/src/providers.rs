@@ -51,10 +51,16 @@ impl ProviderEntry {
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct ProvidersFile {
+    #[serde(default = "default_config_version")]
+    pub config_version: u32,
     #[serde(default)]
     pub default_provider: Option<String>,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderEntry>,
+}
+
+fn default_config_version() -> u32 {
+    hli_core::versions::CONFIG_SCHEMA_VERSION
 }
 
 pub fn path(home: &Path) -> std::path::PathBuf {
@@ -69,8 +75,27 @@ pub fn load(home: &Path) -> ProvidersFile {
 }
 
 pub fn save(home: &Path, cfg: &ProvidersFile) -> Result<()> {
-    let text = toml::to_string_pretty(cfg)
+    let mut cfg = cfg.clone();
+    cfg.config_version = hli_core::versions::CONFIG_SCHEMA_VERSION;
+    let text = toml::to_string_pretty(&cfg)
         .map_err(|e| HliError::internal(format!("providers.toml: {e}")))?;
     std::fs::write(path(home), text)?;
+    Ok(())
+}
+
+/// Rechaza configuraciones de proveedores de una versión futura.
+pub fn check_version(home: &Path) -> Result<()> {
+    let Ok(text) = std::fs::read_to_string(path(home)) else {
+        return Ok(());
+    };
+    let cfg: ProvidersFile = toml::from_str(&text)
+        .map_err(|e| HliError::invalid(format!("providers.toml inválido: {e}")))?;
+    if cfg.config_version > hli_core::versions::CONFIG_SCHEMA_VERSION {
+        return Err(HliError::conflict(format!(
+            "providers.toml con versión futura {} > {}; actualiza HLI",
+            cfg.config_version,
+            hli_core::versions::CONFIG_SCHEMA_VERSION
+        )));
+    }
     Ok(())
 }

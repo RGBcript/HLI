@@ -1729,6 +1729,7 @@ impl State {
 
         let manifest = json!({
             "format": export::FORMAT,
+            "format_version": export::FORMAT_VERSION,
             "workspace_id": workspace_id,
             "exported_at": now_iso(),
             "sequence_range": range,
@@ -1780,6 +1781,24 @@ impl State {
         let manifest: Value = serde_json::from_slice(&manifest_bytes)?;
         if manifest["format"] != export::FORMAT {
             return Err(HliError::invalid("formato de archivo no soportado"));
+        }
+        match manifest.get("format_version") {
+            None | Some(Value::Null) => {}
+            Some(v) => match v.as_u64() {
+                Some(n) if n > export::FORMAT_VERSION as u64 => {
+                    return Err(HliError::conflict(format!(
+                        "archivo hliar con versión futura {n} > {}; actualiza HLI",
+                        export::FORMAT_VERSION
+                    )))
+                }
+                Some(n) if n == export::FORMAT_VERSION as u64 => {}
+                Some(n) => {
+                    return Err(HliError::invalid(format!(
+                        "archivo hliar con versión desconocida {n}"
+                    )))
+                }
+                None => return Err(HliError::invalid("format_version no numérico")),
+            },
         }
         let workspace_id = manifest["workspace_id"]
             .as_str()

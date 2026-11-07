@@ -11,7 +11,7 @@
 | Formato y clippy | verde | `cargo fmt --check`, `cargo clippy -D warnings` |
 | Runs asíncronos y cancelación | hecho | `--async`, `status`, `wait`, `cancel`, `list --state`; tabla de transiciones; timeout; recuperación a `interrupted`; 4 pruebas e2e |
 | MCH persistente (nucleo) | hecho | proceso reutilizado, lifecycle completo, health periódico, degraded/recovery, restart acotado, autostart y límite de 3 reinicios por ventana; 20 pruebas | 
-| Tests | verde | 119 pruebas en debug y 119 en release; e2e aislados por `HLI_HOME` |
+| Tests | verde | 134 pruebas en debug y 134 en release; e2e aislados por `HLI_HOME` |
 
 ## Pendiente para cerrar 0.9
 
@@ -20,7 +20,7 @@
 | Gate visual manual | **no ejecutado** | Guía y entorno listos en `docs/TUI-MANUAL-GATE.md`; requiere Windows Terminal |
 | Supervisor MCH persistente | **cerrado** | Lifecycle, persistencia, degraded/recovery, autostart, límite de reinicios y recuperación manual demostrados por gate y 20 pruebas Rust |
 | Firma de módulos Ed25519 | **hecho** | `signature.json`, payload canónico, claves locales, trust store, políticas y gate `module_signing_gate.py` |
-| Migraciones | pendiente | Sin `migrate status/apply/backup/verify` ni fixture de versión anterior |
+| Migraciones | **hecho** | 0001–0007 transaccionales, `hli migrate status/backup/apply/verify`, fixture schema 5 y gate `migration_gate.py` |
 | Empaquetado Windows | pendiente | Sin `install.ps1`, `uninstall.ps1`, `dist` completo ni checksums |
 | Documentación pública | parcial | `PROVIDER-GUIDE.md` y `TUI-MANUAL-GATE.md`; faltan el resto |
 | Licencia Apache 2.0 | pendiente | No se declara hasta tener LICENSE/NOTICE e inventario |
@@ -41,7 +41,7 @@
 | MCH persistente | sí: proceso reutilizado, autostart y límite de reinicios |
 | Reinicio y recuperación | parcial: `running` → `interrupted`; `queued` no se reencola |
 | Export/import | sí (existente) |
-| Migración | no |
+| Migración | sí: versionada, transaccional y con backup obligatorio antes de apply |
 | TUI operativa | sí en tests de buffer; gate manual pendiente |
 
 ## Decisión
@@ -93,4 +93,22 @@
 | Módulo revocado | el ya instalado conserva estado y proceso, marcado `signed-revoked`; nuevas instalaciones rechazadas |
 | Limitaciones | sin PKI/X.509, trust store local, revocación local, ACL best-effort |
 
-No se iniciaron migraciones en esta sesión.
+No se iniciaron migraciones en el bloque de firma.
+
+## Cierre de migraciones (2026-11-07)
+
+| Dato | Valor |
+|---|---|
+| Commit inicial | `2f22b68` |
+| Commit final | `feat(store): add versioned transactional migrations` |
+| Pruebas debug | 134 passed, 0 failed |
+| Pruebas release | 134 passed, 0 failed |
+| Migraciones | 0001–0007, transaccionales, con registro en `schema_migrations` |
+| Fixture previa | schema 5 real (sin `autostart`, sin firma) con workspace, thread/branch, 3 eventos, snapshot, run+receipt, memorias activa/superseded, artifact, módulo y MCH |
+| Gate 0.3/0.4/supervisor/firma | `ok: true`, sin regresiones |
+| Gate migración | `ok: true`: previous_fixture, backup_created, schema_upgraded, events/artifacts/memory/mch preserved, rollback_verified, export_import_verified |
+| Backup | `VACUUM INTO` en `HLI_HOME/backups` antes de modificar una base existente |
+| Rollback | fallo simulado (`HLI_MIGRATION_FAIL_AT`) mantiene la versión anterior y la base utilizable |
+| Formatos | `.hliar` y `.hlimod` con versión explícita; futuras/desconocidas rechazadas |
+| Configuración | `providers.toml`, keys index, trust store y policy con `version`; secretos nunca en backups |
+| Limitaciones | sin downgrade automático; backups locales sin cifrar; migraciones no reescriben datos salvo defaults |

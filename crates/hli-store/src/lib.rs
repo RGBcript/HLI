@@ -2,6 +2,8 @@
 //! proyecciones materializadas reconstruibles desde el event log.
 
 pub mod export;
+pub mod fixtures;
+pub mod migrations;
 pub mod reader;
 pub mod schema;
 pub mod writer;
@@ -31,8 +33,9 @@ impl Store {
         std::fs::create_dir_all(&snapshots_dir)?;
         let db_path = home.join("hli.db");
 
-        let conn = Connection::open(&db_path)?;
-        schema::apply(&conn)?;
+        let mut conn = Connection::open(&db_path)?;
+        migrations::ensure(&mut conn)?;
+        migrations::verify_schema(&conn)?;
         let _ = conn.execute(
             "UPDATE runs SET state = 'interrupted', ended_at = ?1              WHERE state IN ('queued','running','cancelling','waiting_approval')",
             rusqlite::params![hli_core::time::now_iso()],
@@ -53,8 +56,9 @@ impl Store {
 
     /// Arranca el actor de escritura y devuelve también un lector independiente.
     pub fn start(self) -> Result<(Writer, Reader)> {
-        let conn = Connection::open(&self.db_path)?;
-        schema::apply(&conn)?;
+        let mut conn = Connection::open(&self.db_path)?;
+        migrations::ensure(&mut conn)?;
+        migrations::verify_schema(&conn)?;
         let writer = writer::spawn(conn, self.artifacts_dir.clone(), self.snapshots_dir.clone());
         let reader = Reader::open(&self.db_path, self.artifacts_dir.clone())?;
         Ok((writer, reader))
