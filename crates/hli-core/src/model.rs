@@ -203,6 +203,7 @@ pub struct ContextManifest {
     pub summaries: Vec<Value>,
     pub artifact_slices: Vec<Value>,
     pub excluded: Vec<Value>,
+    pub payload_hash: String,
     pub estimated_tokens: i64,
     pub content_hash: String,
     pub created_at: String,
@@ -225,6 +226,7 @@ impl ContextManifest {
             "summaries": self.summaries,
             "artifact_slices": self.artifact_slices,
             "excluded": self.excluded,
+            "payload_hash": self.payload_hash,
             "estimated_tokens": self.estimated_tokens,
             "created_at": self.created_at
         })
@@ -233,6 +235,18 @@ impl ContextManifest {
     pub fn seal(&mut self) {
         self.content_hash = hash_canonical(&self.envelope());
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ArtifactSlice {
+    pub slice_id: String,
+    pub artifact_id: String,
+    pub artifact_hash: String,
+    pub media_type: String,
+    pub selector: Value,
+    pub slice_hash: String,
+    pub estimated_tokens: i64,
+    pub reason: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

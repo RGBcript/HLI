@@ -236,6 +236,43 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             Ok(serde_json::to_value(info)?)
         }
         "artifact.list" => Ok(Value::Array(r.artifacts(&s(args, "workspace_id")?)?)),
+        "artifact.slice" => {
+            let aid = s(args, "artifact_id")?;
+            let meta = r.artifact(&aid)?;
+            let bytes = std::fs::read(&meta.path)?;
+            if bytes.len() > 4 * 1024 * 1024 {
+                return Err(HliError::invalid("artefacto demasiado grande para slice"));
+            }
+            let kind = args.get("kind").and_then(|v| v.as_str()).unwrap_or("full_text_if_small");
+            let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("selected").to_string();
+            let (content, selector) = match kind {
+                "line_range" => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let lines: Vec<&str> = text.lines().collect();
+                    let start = args.get("start").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let end = args.get("end").and_then(|v| v.as_u64()).unwrap_or(lines.len() as u64) as usize;
+                    let end = end.min(lines.len());
+                    let sel = json!({"kind": "line_range", "start": start, "end": end});
+                    (lines[start.min(end)..end].join("\n").into_bytes(), sel)
+                }
+                "byte_range" => {
+                    let start = args.get("start").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let end = args.get("end").and_then(|v| v.as_u64()).unwrap_or(bytes.len() as u64) as usize;
+                    let end = end.min(bytes.len());
+                    let sel = json!({"kind": "byte_range", "start": start, "end": end});
+                    (bytes[start.min(end)..end].to_vec(), sel)
+                }
+                _ => {
+                    let sel = json!({"kind": "full_text_if_small", "bytes": bytes.len()});
+                    (bytes, sel)
+                }
+            };
+            let workspace_id = s(args, "workspace_id")?;
+            let slice = w.create_slice(
+                &aid, &workspace_id, &meta.sha256, &meta.mime, selector, content, &reason,
+            )?;
+            Ok(serde_json::to_value(slice)?)
+        }
         "verify" => Ok(serde_json::to_value(r.verify(&s(args, "workspace_id")?)?)?),
         "export" => {
             let rep = w.export(&s(args, "workspace_id")?, PathBuf::from(s(args, "out")?))?;
@@ -284,7 +321,7 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let th = s(args, "thread_id")?;
             let br = s(args, "branch_id")?;
             let prompt = s(args, "prompt")?;
-            let budget = args.get("budget_tokens").and_then(|v| v.as_i64()).unwrap_or(8_192);
+            let budget = args.get("budget_tokens").and_then(|v| v.as_i64()).unwrap_or(2_048);
             let provider_name = args.get("provider").and_then(|v| v.as_str()).unwrap_or("sim").to_string();
             let default_model = match provider_name.as_str() {
                 "ollama" => "gemma4:31b-cloud",
@@ -315,8 +352,63 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                 .and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let visible = r.visible_events(&br, run.branch_revision)?;
             let memories = r.search_memories(&ws, &prompt, 5)?;
-            let manifest = build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
+            let mut manifest = build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
+
+            // Política adaptativa: no todos los contextos llevan lo mismo.
+            let task = hli_agent::classify_task(&prompt);
+            match task {
+                "memory_lookup" => {
+                    manifest.recent_events.truncate(2);
+                    manifest.memories.truncate(3);
+                }
+                "artifact_analysis" | "code_fix" | "summarization" => {
+                    manifest.recent_events.clear();
+                    manifest.memories.truncate(1);
+                }
+                _ => {
+                    manifest.recent_events.truncate(2);
+                    manifest.memories.truncate(2);
+                }
+            }
+            for m in manifest.memories.iter_mut() {
+                if let Some(o) = m.as_object_mut() {
+                    if let Some(c) = o.get("content").and_then(|v| v.as_str()) {
+                        if c.chars().count() > 400 {
+                            let cut: String = c.chars().take(400).collect();
+                            o.insert("content".into(), json!(format!("{cut}…")));
+                        }
+                    }
+                }
+            }
+
+            // Slices de artefacto: evidencia seleccionada, persistida y verificable.
+            let slice_pairs = match args.get("artifact_id").and_then(|v| v.as_str()) {
+                Some(aid) => r.slices_for_artifact(aid)?,
+                None => vec![],
+            };
+            manifest.artifact_slices = slice_pairs
+                .iter()
+                .map(|(sl, _)| serde_json::to_value(sl).unwrap_or(json!({})))
+                .collect();
+            let payload = hli_agent::build_payload(&manifest, &slice_pairs);
+            manifest.payload_hash = hli_core::canon::hash_canonical(&payload);
+            manifest.estimated_tokens += slice_pairs
+                .iter()
+                .map(|(_, c)| ((c.len() as i64) + 3) / 4)
+                .sum::<i64>();
             let manifest = w.save_manifest(manifest)?;
+
+            // Verificación completa del payload: se reconstruye desde el manifiesto persistido.
+            let mut reloaded = Vec::new();
+            for sl in &manifest.artifact_slices {
+                let id = sl["slice_id"].as_str().unwrap_or("");
+                reloaded.push(r.slice(id)?);
+            }
+            let payload_check = hli_agent::build_payload(&manifest, &reloaded);
+            if hli_core::canon::hash_canonical(&payload_check) != manifest.payload_hash {
+                return Err(HliError::conflict("el payload no coincide con el manifiesto"));
+            }
+            let rendered = hli_agent::render_payload(&manifest, &reloaded);
 
             let prev_provider = r.last_provider(&th).ok().flatten();
             if prev_provider.as_deref() != Some(provider_name.as_str()) {
@@ -328,6 +420,7 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
 
             w.run_event(&run.id, "model.requested", json!({
                 "run_id": run.id, "manifest_id": manifest.manifest_id,
+                "payload_hash": manifest.payload_hash,
                 "provider": provider_name, "model": model
             }))?;
 
@@ -335,15 +428,10 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let system_owned = system.to_string();
             let req = hli_provider::ChatRequest {
                 system: &system_owned,
-                user: &manifest.user_input.content,
+                user: &rendered,
                 temperature,
                 max_tokens,
             };
-
-            // Garantía: el proveedor recibe exactamente el contenido cubierto por el manifiesto.
-            if hli_core::canon::hash_canonical(&json!(req.user)) != manifest.user_input.content_hash {
-                return Err(HliError::conflict("el payload no coincide con el manifiesto"));
-            }
 
             let mut tool_call = None;
             let (text, usage, used_provider, used_model, adapter) = match provider_name.as_str() {

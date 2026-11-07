@@ -167,6 +167,20 @@ CREATE TABLE IF NOT EXISTS mch_instances (
   created_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS artifact_slices (
+  id           TEXT PRIMARY KEY,
+  artifact_id  TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  selector_json TEXT NOT NULL,
+  media_type   TEXT NOT NULL,
+  slice_hash   TEXT NOT NULL,
+  bytes        INTEGER NOT NULL,
+  content      BLOB NOT NULL,
+  reason       TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_slices_artifact ON artifact_slices(artifact_id);
 CREATE INDEX IF NOT EXISTS idx_memories_ws ON memories(workspace_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_runs_ws      ON runs(workspace_id, started_at);

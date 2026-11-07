@@ -62,3 +62,13 @@ cambian; las credenciales son por llamada, no por sesión.
 - `openai-compatible` contra un endpoint con clave.
 - Coste con precios reales del proveedor (hoy es configuración del usuario).
 - `cache` real: se reporta si el proveedor lo da, no se infiere.
+
+## Actualización v2 (2026-11-07)
+
+- El proveedor recibe un **payload canónico** (`instructions`, `user_input`, `memories`,
+  `recent_events`, `summaries`, `artifact_slices`), no el prompt suelto.
+- `payload_hash = SHA-256(JCS(payload))` se persiste en el manifiesto antes de `model.requested`.
+- Antes de llamar, el daemon reconstruye el payload desde el manifiesto y los slices persistidos;
+  si el hash no coincide, el run falla.
+- `model.requested` incluye `payload_hash`.
+- Los slices entran con `slice_hash` y `estimated_tokens`; su contenido se verifica al recargar.

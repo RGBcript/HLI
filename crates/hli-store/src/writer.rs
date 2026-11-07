@@ -175,6 +175,16 @@ pub enum WriteCmd {
         name: String,
         reply: Reply<()>,
     },
+    CreateSlice {
+        artifact_id: String,
+        workspace_id: String,
+        artifact_hash: String,
+        media_type: String,
+        selector: Value,
+        content: Vec<u8>,
+        reason: String,
+        reply: Reply<ArtifactSlice>,
+    },
     Stop {
         reply: Reply<()>,
     },
@@ -413,6 +423,29 @@ impl Writer {
         self.call(|reply| WriteCmd::MchRemove { name: name.to_string(), reply })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_slice(
+        &self,
+        artifact_id: &str,
+        workspace_id: &str,
+        artifact_hash: &str,
+        media_type: &str,
+        selector: Value,
+        content: Vec<u8>,
+        reason: &str,
+    ) -> Result<ArtifactSlice> {
+        self.call(|reply| WriteCmd::CreateSlice {
+            artifact_id: artifact_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            artifact_hash: artifact_hash.to_string(),
+            media_type: media_type.to_string(),
+            selector,
+            content,
+            reason: reason.to_string(),
+            reply,
+        })
+    }
+
     pub fn stop(&self) -> Result<()> {
         self.call(|reply| WriteCmd::Stop { reply })
     }
@@ -532,6 +565,13 @@ impl State {
             }
             WriteCmd::MchRemove { name, reply } => {
                 let _ = reply.send(self.mch_remove(&name));
+            }
+            WriteCmd::CreateSlice {
+                artifact_id, workspace_id, artifact_hash, media_type, selector, content, reason, reply,
+            } => {
+                let _ = reply.send(self.create_slice(
+                    &artifact_id, &workspace_id, &artifact_hash, &media_type, selector, content, &reason,
+                ));
             }
             WriteCmd::Stop { reply } => {
                 let _ = reply.send(Ok(()));
@@ -1036,6 +1076,37 @@ impl State {
         self.conn.execute("DELETE FROM mch_instances WHERE name = ?1", [name])?;
         self.conn.execute("DELETE FROM mch_profiles WHERE name = ?1", [name])?;
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_slice(
+        &mut self,
+        artifact_id: &str,
+        workspace_id: &str,
+        artifact_hash: &str,
+        media_type: &str,
+        selector: Value,
+        content: Vec<u8>,
+        reason: &str,
+    ) -> Result<ArtifactSlice> {
+        let slice = ArtifactSlice {
+            slice_id: new_id("sl"),
+            artifact_id: artifact_id.to_string(),
+            artifact_hash: artifact_hash.to_string(),
+            media_type: media_type.to_string(),
+            selector: selector.clone(),
+            slice_hash: format!("sha256:{}", crate::export::sha256_hex(&content)),
+            estimated_tokens: ((content.len() as i64) + 3) / 4,
+            reason: reason.to_string(),
+        };
+        self.conn.execute(
+            "INSERT INTO artifact_slices(id, artifact_id, workspace_id, selector_json, media_type,
+                                         slice_hash, bytes, content, reason, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![slice.slice_id, artifact_id, workspace_id, canonical_json(&selector),
+                    media_type, slice.slice_hash, content.len() as i64, content, reason, now_iso()],
+        )?;
+        Ok(slice)
     }
 
     fn put_artifact(&mut self, workspace_id: &str, source: &PathBuf) -> Result<ArtifactInfo> {

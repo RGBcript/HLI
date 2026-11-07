@@ -23,6 +23,70 @@ pub enum Permission {
     Deny,
 }
 
+pub fn classify_task(prompt: &str) -> &'static str {
+    let p = prompt.to_lowercase();
+    if p.contains("resume") || p.contains("resumen") || p.contains("log") || p.contains("error grave") {
+        "summarization"
+    } else if p.contains("corrige") || p.contains("bug") {
+        "code_fix"
+    } else if p.contains("integra") || p.contains("combina") {
+        "integration"
+    } else if p.contains("archivo") || p.contains("files") || p.contains("nombra") {
+        "artifact_analysis"
+    } else {
+        "memory_lookup"
+    }
+}
+
+/// Payload canónico que se envía al proveedor.
+pub fn build_payload(manifest: &ContextManifest, slices: &[(ArtifactSlice, Vec<u8>)]) -> Value {
+    let slice_values: Vec<Value> = slices
+        .iter()
+        .map(|(s, content)| {
+            json!({
+                "slice_id": s.slice_id,
+                "artifact_id": s.artifact_id,
+                "artifact_hash": s.artifact_hash,
+                "media_type": s.media_type,
+                "selector": s.selector,
+                "slice_hash": s.slice_hash,
+                "estimated_tokens": s.estimated_tokens,
+                "reason": s.reason,
+                "content": String::from_utf8_lossy(content)
+            })
+        })
+        .collect();
+    json!({
+        "instructions": manifest.instructions,
+        "user_input": manifest.user_input,
+        "memories": manifest.memories,
+        "recent_events": manifest.recent_events,
+        "summaries": manifest.summaries,
+        "artifact_slices": slice_values
+    })
+}
+
+pub fn render_payload(manifest: &ContextManifest, slices: &[(ArtifactSlice, Vec<u8>)]) -> String {
+    let mut out = String::new();
+    for m in &manifest.memories {
+        if let Some(c) = m.get("content").and_then(|v| v.as_str()) {
+            out.push_str(&format!("- memoria: {c}\n"));
+        }
+    }
+    for e in &manifest.recent_events {
+        if let Some(c) = e.get("snippet").and_then(|v| v.as_str()) {
+            out.push_str(&format!("- evento: {c}\n"));
+        }
+    }
+    for (s, content) in slices {
+        out.push_str(&format!("\n[artefacto {} · {} · {}]\n", s.artifact_id, s.media_type, s.reason));
+        out.push_str(&String::from_utf8_lossy(content));
+        out.push('\n');
+    }
+    out.push_str(&format!("\nPetición: {}\n", manifest.user_input.content));
+    out
+}
+
 pub fn permission_for(tool: &str) -> Permission {
     match tool {
         "filesystem.read" => Permission::Allow,
@@ -161,6 +225,7 @@ pub fn build_manifest(
         summaries: vec![],
         artifact_slices: vec![],
         excluded,
+        payload_hash: String::new(),
         estimated_tokens: 0,
         content_hash: String::new(),
         created_at: now_iso(),

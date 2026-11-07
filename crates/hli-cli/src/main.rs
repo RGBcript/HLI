@@ -148,6 +148,18 @@ fn run(args: &[String]) -> Result<(), String> {
             let ws = need_flag(args, "--workspace")?;
             print_value(&call("artifact.put", json!({"workspace_id": ws, "path": path}))?, output)
         }
+        ("artifact", Some("slice")) => {
+            let id = args.get(2).ok_or("falta artifact_id")?;
+            let ws = need_flag(args, "--workspace")?;
+            let v = call("artifact.slice", json!({
+                "artifact_id": id, "workspace_id": ws,
+                "kind": flag(args, "--kind").unwrap_or_else(|| "full_text_if_small".into()),
+                "start": flag(args, "--start").and_then(|v| v.parse::<u64>().ok()),
+                "end": flag(args, "--end").and_then(|v| v.parse::<u64>().ok()),
+                "reason": flag(args, "--reason").unwrap_or_else(|| "selected".into())
+            }))?;
+            print_value(&v, output)
+        }
         ("artifact", Some("list")) => {
             let ws = need_flag(args, "--workspace")?;
             print_value(&call("artifact.list", json!({"workspace_id": ws}))?, output)
@@ -270,6 +282,7 @@ fn run(args: &[String]) -> Result<(), String> {
                     "model": flag(args, "--model"),
                     "base_url": flag(args, "--base-url"),
                     "secret": flag(args, "--secret"),
+                    "artifact_id": flag(args, "--artifact"),
                     "temperature": flag(args, "--temperature").and_then(|v| v.parse::<f64>().ok()),
                     "max_tokens": flag(args, "--max-tokens").and_then(|v| v.parse::<i64>().ok())
                 }),
@@ -443,6 +456,7 @@ fn usage() -> Result<(), String> {
   hli event append --type T --payload JSON --workspace <id> [--thread ID] [--branch ID] [--idem K]
   hli event list --workspace <id> [--branch ID]
   hli artifact put <file> --workspace <id> | list --workspace <id>
+  hli artifact slice <artifact_id> --workspace <id> [--kind K] [--start N] [--end M] [--reason R]
   hli run start --workspace <id> --thread <id> --branch <id> --prompt PROMPT [--provider sim|ollama|openai] [--model M] [--base-url U] [--secret HANDLE] 
   hli run get <run_id> | list --workspace <id> | approve <run_id>
   hli manifest get <manifest_id>

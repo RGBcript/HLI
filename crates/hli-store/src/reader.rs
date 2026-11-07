@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use serde_json::Value;
 use hli_core::{
     canon::zero_hash,
     model::*,
@@ -459,6 +460,58 @@ impl Reader {
             Ok(body
                 .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
                 .and_then(|v| v["provider"].as_str().map(str::to_string)))
+        })
+    }
+
+    pub fn slices_for_artifact(&self, artifact_id: &str) -> Result<Vec<(ArtifactSlice, Vec<u8>)>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, artifact_id, selector_json, media_type, slice_hash, reason, content
+                 FROM artifact_slices WHERE artifact_id = ?1 ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map([artifact_id], |r| {
+                let selector: Value = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(serde_json::json!({}));
+                let slice = ArtifactSlice {
+                    slice_id: r.get(0)?,
+                    artifact_id: r.get(1)?,
+                    artifact_hash: String::new(),
+                    media_type: r.get(3)?,
+                    selector,
+                    slice_hash: r.get(4)?,
+                    estimated_tokens: 0,
+                    reason: r.get(5)?,
+                };
+                Ok((slice, r.get::<_, Vec<u8>>(6)?))
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn slice(&self, id: &str) -> Result<(ArtifactSlice, Vec<u8>)> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT id, artifact_id, selector_json, media_type, slice_hash, reason, content
+                 FROM artifact_slices WHERE id = ?1",
+                [id],
+                |r| {
+                    let selector: Value = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(serde_json::json!({}));
+                    Ok((
+                        ArtifactSlice {
+                            slice_id: r.get(0)?,
+                            artifact_id: r.get(1)?,
+                            artifact_hash: String::new(),
+                            media_type: r.get(3)?,
+                            selector,
+                            slice_hash: r.get(4)?,
+                            estimated_tokens: 0,
+                            reason: r.get(5)?,
+                        },
+                        r.get::<_, Vec<u8>>(6)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("slice {id}")))
         })
     }
 
