@@ -17,6 +17,14 @@
 | Medio | TUI: estados, idioma, cabecera, inspector, selección | corregido, 4 pruebas |
 | Bajo | Clippy y formato | corregido |
 
+## Verificación final
+
+- `cargo fmt --check`: sin diff.
+- `cargo clippy -D warnings`: 0 errores.
+- `cargo test --workspace`: 73 pruebas en verde.
+- `cargo test --workspace --release`: 73 en verde (requiere `cargo build --release --workspace` previo, porque los e2e lanzan el binario del daemon).
+- Gates 0.3 y 0.4: ok.
+
 ## Bloqueantes abiertos
 
 Ninguno **critical** o **high** reproducible en el código actual.
@@ -37,7 +45,6 @@ Ninguno **critical** o **high** reproducible en el código actual.
 - Gate visual de la TUI en terminal real: el entorno no ofrece TTY estable.
 - Integración con un harness anterior: su configuración no expone MCP en 0.2.1-rc.5.
 - Auditoría de dependencias de terceros.
-- `cargo test --release`: no ejecutado en esta sesión por tiempo; el build release no se probó.
 
 ## Recomendación
 

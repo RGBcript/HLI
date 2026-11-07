@@ -38,7 +38,6 @@ impl Io {
         serde_json::from_str(&line)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
-
 }
 
 /// Ejecuta initialize → invoke → shutdown con timeout y límite de salida.
@@ -145,7 +144,6 @@ pub fn health(bin: &Path, home: &Path, workspace_id: &str) -> Result<Value> {
     invoke(bin, home, workspace_id, "memory.search", &json!({"query": ""}), Duration::from_secs(10))
         .map(|o| json!({"ok": true, "stderr": o.stderr, "duration_ms": o.duration_ms, "result": o.result}))
 }
-
 
 #[allow(dead_code)]
 fn _unused(_c: &mut Child) {}

@@ -106,8 +106,9 @@ sin argumentos, `Default` ausente, `let _ = ()`. Corregidos.
 
 ## 7. Evidencia
 
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: sin errores.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: 0 errores.
 - `cargo fmt --all -- --check`: sin diff.
-- `cargo test --workspace`: 20 bloques en verde.
+- `cargo test --workspace`: 20 bloques, 73 pruebas en verde.
+- `cargo test --workspace --release`: 73 pruebas en verde, tras `cargo build --release --workspace` (los e2e lanzan el binario del daemon).
 - `python scripts/mcp_gate.py`: `{"gate":"0.3","ok":true}`.
 - `python scripts/module_gate.py`: `{"gate":"0.4","ok":true}`.
