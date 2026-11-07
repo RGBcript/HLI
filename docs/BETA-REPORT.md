@@ -1,6 +1,6 @@
 # HLI — Informe de Beta 0.9
 
-**Código:** `7e62c9e` · **Fecha:** 2026-11-07 · **Estado:** Beta en progreso, sin tag.
+**Código:** `451b420` · **Fecha:** 2026-11-07 · **Estado:** Beta en progreso, sin tag.
 
 ## Completado en esta etapa
 
@@ -17,7 +17,6 @@
 | Bloque | Estado | Nota |
 |---|---|---|
 | Gate visual manual | **no ejecutado** | Guía y entorno listos en `docs/TUI-MANUAL-GATE.md`; requiere Windows Terminal |
-| Runs asíncronos y cancelables | **hecho** | Ver `docs/ASYNC-RUNS.md`; queda la reanudación de `queued` y el tool loop asíncrono |
 | Supervisor MCH persistente | pendiente | El modelo actual crea un proceso por invocación; faltan pool, health, reinicio y recuperación |
 | Firma de módulos Ed25519 | pendiente | Sin `signature.json`, trust store ni políticas `allow/warn/require` |
 | Migraciones | pendiente | Sin `migrate status/apply/backup/verify` ni fixture de versión anterior |
@@ -46,12 +45,12 @@
 
 ## Decisión
 
-**No se crea `v0.9.0-beta.1`.** El gate no se cumple: faltan runs asíncronos, supervisor persistente, firma, migraciones y el gate visual. Crear el tag ahora sería declarar una beta que no existe.
+**No se crea `v0.9.0-beta.1`.** El gate no se cumple: faltan supervisor persistente, firma, migraciones, paquete y gate visual. Crear el tag ahora sería declarar una beta que no existe.
 
 ## Siguiente bloque
 
-1. Runs asíncronos con `run start --async`, `run status`, `run wait`, `run cancel` y recuperación de runs interrumpidos.
-2. Supervisor MCH persistente con health y reinicio acotado.
-3. Firma Ed25519 y políticas de módulo.
-4. Migraciones con fixture real.
-5. Empaquetado, licencia, CI y documentación pública.
+1. Supervisor MCH persistente con health y reinicio acotado.
+2. Firma Ed25519 y políticas de módulo.
+3. Migraciones con fixture real.
+4. Empaquetado, licencia, CI y documentación pública.
+5. Gate visual manual y gate Beta completo.
