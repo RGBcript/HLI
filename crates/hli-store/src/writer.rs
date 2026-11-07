@@ -172,6 +172,7 @@ pub enum WriteCmd {
         module_name: String,
         domain: String,
         workspace_id: Option<String>,
+        autostart: bool,
         manifest: Value,
         reply: Reply<Value>,
     },
@@ -179,6 +180,11 @@ pub enum WriteCmd {
         name: String,
         state: String,
         pid: Option<i64>,
+        reply: Reply<Value>,
+    },
+    MchSetAutostart {
+        name: String,
+        autostart: bool,
         reply: Reply<Value>,
     },
     MchRemove {
@@ -431,6 +437,7 @@ impl Writer {
         module_name: &str,
         domain: &str,
         workspace_id: Option<String>,
+        autostart: bool,
         manifest: Value,
     ) -> Result<Value> {
         self.call(|reply| WriteCmd::MchCreate {
@@ -438,6 +445,7 @@ impl Writer {
             module_name: module_name.to_string(),
             domain: domain.to_string(),
             workspace_id,
+            autostart,
             manifest,
             reply,
         })
@@ -448,6 +456,14 @@ impl Writer {
             name: name.to_string(),
             state: state.to_string(),
             pid,
+            reply,
+        })
+    }
+
+    pub fn mch_set_autostart(&self, name: &str, autostart: bool) -> Result<Value> {
+        self.call(|reply| WriteCmd::MchSetAutostart {
+            name: name.to_string(),
+            autostart,
             reply,
         })
     }
@@ -679,6 +695,7 @@ impl State {
                 module_name,
                 domain,
                 workspace_id,
+                autostart,
                 manifest,
                 reply,
             } => {
@@ -687,6 +704,7 @@ impl State {
                     &module_name,
                     &domain,
                     workspace_id,
+                    autostart,
                     manifest,
                 ));
             }
@@ -697,6 +715,13 @@ impl State {
                 reply,
             } => {
                 let _ = reply.send(self.mch_set_state(&name, &state, pid));
+            }
+            WriteCmd::MchSetAutostart {
+                name,
+                autostart,
+                reply,
+            } => {
+                let _ = reply.send(self.mch_set_autostart(&name, autostart));
             }
             WriteCmd::MchRemove { name, reply } => {
                 let _ = reply.send(self.mch_remove(&name));
@@ -1348,6 +1373,7 @@ impl State {
         module_name: &str,
         domain: &str,
         workspace_id: Option<String>,
+        autostart: bool,
         manifest: Value,
     ) -> Result<Value> {
         let tx = self.conn.transaction()?;
@@ -1365,13 +1391,20 @@ impl State {
             ],
         )?;
         tx.execute(
-            "INSERT INTO mch_instances(name, profile, workspace_id, state, pid, created_at)
-             VALUES (?1, ?1, ?2, 'configured', NULL, ?3)
-             ON CONFLICT(name) DO UPDATE SET workspace_id=excluded.workspace_id, state='configured'",
-            params![name, workspace_id, now_iso()],
+            "INSERT INTO mch_instances(name, profile, workspace_id, state, pid, autostart, created_at)
+             VALUES (?1, ?1, ?2, 'configured', NULL, ?3, ?4)
+             ON CONFLICT(name) DO UPDATE SET workspace_id=excluded.workspace_id,
+                state='configured', autostart=excluded.autostart",
+            params![name, workspace_id, autostart as i64, now_iso()],
         )?;
         tx.commit()?;
-        Ok(json!({"profile": name, "instance": name, "module": module_name, "domain": domain}))
+        Ok(json!({
+            "profile": name,
+            "instance": name,
+            "module": module_name,
+            "domain": domain,
+            "autostart": autostart
+        }))
     }
 
     fn mch_set_state(&mut self, name: &str, state: &str, pid: Option<i64>) -> Result<Value> {
@@ -1380,6 +1413,17 @@ impl State {
             params![state, pid, name],
         )?;
         Ok(json!({"instance": name, "state": state, "pid": pid}))
+    }
+
+    fn mch_set_autostart(&mut self, name: &str, autostart: bool) -> Result<Value> {
+        let changed = self.conn.execute(
+            "UPDATE mch_instances SET autostart = ?1 WHERE name = ?2",
+            params![autostart as i64, name],
+        )?;
+        if changed == 0 {
+            return Err(HliError::not_found(&format!("MCH {name}")));
+        }
+        Ok(json!({"instance": name, "autostart": autostart}))
     }
 
     fn mch_remove(&mut self, name: &str) -> Result<()> {

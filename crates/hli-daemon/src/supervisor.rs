@@ -104,11 +104,29 @@ pub fn is_alive(name: &str) -> bool {
 }
 
 pub fn start(name: &str, bin: &Path, home: &Path, workspace: &str) -> Result<Shared> {
+    let guard = instance_guard(name);
+    let _held = guard.lock().unwrap_or_else(|e| e.into_inner());
+    start_locked(name, bin, home, workspace)
+}
+
+/// Serializa `start`/`stop` por instancia: autostart y `mch serve` concurrentes
+/// no pueden lanzar dos procesos para el mismo `instance_id`.
+fn instance_guard(name: &str) -> Arc<Mutex<()>> {
+    static G: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    G.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .entry(name.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+fn start_locked(name: &str, bin: &Path, home: &Path, workspace: &str) -> Result<Shared> {
     if let Some(h) = get(name) {
         if h.alive.load(Ordering::SeqCst) {
             return Ok(h);
         }
-        stop(name)?;
+        stop_locked(name)?;
     }
     if !bin.exists() {
         return Err(HliError::not_found(&format!(
@@ -222,7 +240,7 @@ pub fn start(name: &str, bin: &Path, home: &Path, workspace: &str) -> Result<Sha
         Ok(())
     })();
     if let Err(e) = lifecycle {
-        let _ = stop(name);
+        let _ = stop_locked(name);
         return Err(e);
     }
     *h.state.lock().unwrap() = "ready".into();
@@ -299,6 +317,12 @@ pub fn health(name: &str, timeout: Duration) -> Result<Value> {
 }
 
 pub fn stop(name: &str) -> Result<()> {
+    let guard = instance_guard(name);
+    let _held = guard.lock().unwrap_or_else(|e| e.into_inner());
+    stop_locked(name)
+}
+
+fn stop_locked(name: &str) -> Result<()> {
     let h = match registry().lock().unwrap().remove(name) {
         Some(h) => h,
         None => return Ok(()),

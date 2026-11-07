@@ -40,6 +40,8 @@ fn hli_home() -> PathBuf {
 }
 
 fn run(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Store::open normaliza los PID y estados de la ejecución anterior antes de
+    // publicar daemon.json: ningún proceso persistido se da por vivo.
     let store = Store::open(&home)?;
     let (writer, reader) = store.start()?;
     let reader = Arc::new(reader);
@@ -61,6 +63,10 @@ fn run(home: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         "hli-daemon escuchando en 127.0.0.1:{port} (home={})",
         home.display()
     );
+
+    // El listener ya acepta conexiones; el autostart corre en su propio hilo
+    // para que un lifecycle lento o fallido nunca retrase la respuesta.
+    autostart_instances(home.clone(), writer.clone(), reader.clone());
 
     for stream in listener.incoming() {
         match stream {
@@ -254,6 +260,75 @@ fn mch_bin(r: &Reader, name: &str) -> Result<(PathBuf, String), HliError> {
     let bin = PathBuf::from(mm["path"].as_str().unwrap_or("")).join(entry);
     let ws = m["workspace_id"].as_str().unwrap_or("").to_string();
     Ok((bin, ws))
+}
+
+/// Lanza el proceso de una instancia y ejecuta su lifecycle completo
+/// (`initialize → capabilities → configure → health`). Compartido por
+/// `mch.serve`, `mch.restart` y el autostart del arranque.
+fn launch_instance(
+    r: &Reader,
+    w: &Writer,
+    name: &str,
+    home: &std::path::Path,
+) -> Result<(supervisor::Shared, Value), HliError> {
+    let (bin, ws) = mch_bin(r, name)?;
+    w.mch_set_state(name, "starting", None)?;
+    let h = match supervisor::start(name, &bin, home, &ws) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = w.mch_set_state(name, "failed", None);
+            return Err(e);
+        }
+    };
+    let m = r.mch(name)?;
+    let declared = m["manifest"]["spec"]["operations"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let caps = h.capabilities.lock().unwrap().clone();
+    let cap_ops = caps["operations"].as_array().cloned().unwrap_or_default();
+    for op in &declared {
+        if !cap_ops.iter().any(|c| c["name"] == op["name"]) {
+            let _ = supervisor::stop(name);
+            return Err(HliError::conflict(format!(
+                "el modulo no declara la operacion {}",
+                op["name"].as_str().unwrap_or("-")
+            )));
+        }
+    }
+    Ok((h, caps))
+}
+
+/// Inicia en segundo plano las instancias con `autostart = true`. Un fallo se
+/// registra como `failed` y no interrumpe ni bloquea al daemon.
+fn autostart_instances(home: PathBuf, writer: Writer, reader: Arc<Reader>) {
+    std::thread::spawn(move || {
+        let instances = match reader.mchs() {
+            Ok(list) => list,
+            Err(e) => {
+                eprintln!("autostart: no se pudieron leer las instancias: {e}");
+                return;
+            }
+        };
+        for instance in instances {
+            if instance["autostart"].as_bool() != Some(true) {
+                continue;
+            }
+            let Some(name) = instance["name"].as_str().map(str::to_string) else {
+                continue;
+            };
+            match launch_instance(&reader, &writer, &name, &home) {
+                Ok((h, _)) => {
+                    let _ = writer.mch_set_state(&name, "ready", Some(h.pid as i64));
+                    eprintln!("autostart: {name} listo (pid {})", h.pid);
+                }
+                Err(e) => {
+                    let _ = writer.mch_set_state(&name, "failed", None);
+                    eprintln!("autostart: {name} fallo: {}", e.message);
+                }
+            }
+        }
+    });
 }
 
 fn dispatch(
@@ -1405,38 +1480,33 @@ fn dispatch(
                 .unwrap_or("memory")
                 .to_string();
             let ws = o(args, "workspace_id");
-            let out = w.mch_create(&name, &module_name, &domain, ws, m["manifest"].clone())?;
+            let autostart = args
+                .get("autostart")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let out = w.mch_create(
+                &name,
+                &module_name,
+                &domain,
+                ws,
+                autostart,
+                m["manifest"].clone(),
+            )?;
             Ok(out)
         }
         "mch.list" => Ok(Value::Array(r.mchs()?)),
         "mch.inspect" => Ok(r.mch(&s(args, "name")?)?),
+        "mch.set_autostart" => {
+            let name = s(args, "name")?;
+            let autostart = args
+                .get("autostart")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| HliError::invalid("falta el argumento booleano 'autostart'"))?;
+            Ok(w.mch_set_autostart(&name, autostart)?)
+        }
         "mch.serve" => {
             let name = s(args, "name")?;
-            let (bin, ws) = mch_bin(r, &name)?;
-            w.mch_set_state(&name, "starting", None)?;
-            let h = match supervisor::start(&name, &bin, home, &ws) {
-                Ok(h) => h,
-                Err(e) => {
-                    let _ = w.mch_set_state(&name, "failed", None);
-                    return Err(e);
-                }
-            };
-            let m = r.mch(&name)?;
-            let declared = m["manifest"]["spec"]["operations"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let caps = h.capabilities.lock().unwrap().clone();
-            let cap_ops = caps["operations"].as_array().cloned().unwrap_or_default();
-            for op in &declared {
-                if !cap_ops.iter().any(|c| c["name"] == op["name"]) {
-                    let _ = supervisor::stop(&name);
-                    return Err(HliError::conflict(format!(
-                        "el modulo no declara la operacion {}",
-                        op["name"].as_str().unwrap_or("-")
-                    )));
-                }
-            }
+            let (h, caps) = launch_instance(r, w, &name, home)?;
             let out = w.mch_set_state(&name, "ready", Some(h.pid as i64))?;
             Ok(json!({"instance": out, "pid": h.pid, "capabilities": caps}))
         }

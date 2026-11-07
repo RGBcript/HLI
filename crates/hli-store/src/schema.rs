@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS mch_instances (
   workspace_id TEXT,
   state        TEXT NOT NULL,
   pid          INTEGER,
+  autostart    INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL
 );
 
@@ -214,6 +215,12 @@ pub fn apply(conn: &Connection) -> Result<()> {
         "memories",
         "source_authority",
         "TEXT NOT NULL DEFAULT 'user'",
+    )?;
+    ensure_column(
+        conn,
+        "mch_instances",
+        "autostart",
+        "INTEGER NOT NULL DEFAULT 0",
     )?;
     ensure_column(conn, "memories", "subject", "TEXT")?;
     ensure_column(conn, "memories", "relation", "TEXT")?;

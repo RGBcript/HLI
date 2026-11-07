@@ -236,10 +236,27 @@ fn run(args: &[String]) -> Result<(), String> {
                     "name": name,
                     "module": flag(args, "--module").unwrap_or_else(|| "hli-memory".into()),
                     "domain": flag(args, "--domain").unwrap_or_else(|| "memory".into()),
-                    "workspace_id": flag(args, "--workspace")
+                    "workspace_id": flag(args, "--workspace"),
+                    "autostart": args.iter().any(|a| a == "--autostart")
                 }),
             )?;
             print_value(&v, output)
+        }
+        ("mch", Some("set-autostart")) => {
+            let name = args.get(2).ok_or("falta instance_id")?;
+            let raw = args.get(3).ok_or("falta true|false")?;
+            let autostart = match raw.as_str() {
+                "true" => true,
+                "false" => false,
+                other => return Err(format!("valor inválido para autostart: {other}")),
+            };
+            print_value(
+                &call(
+                    "mch.set_autostart",
+                    json!({"name": name, "autostart": autostart}),
+                )?,
+                output,
+            )
         }
         ("mch", Some("list")) => print_value(&call("mch.list", json!({}))?, output),
         ("mch", Some("inspect")) => {
@@ -619,7 +636,8 @@ fn usage() -> Result<(), String> {
   hli manifest get <manifest_id>
   hli prices list
   hli module install <file.hlimod> | list | inspect <name> | test <name> | remove <name>
-  hli mch create <name> [--module M] [--domain D] [--workspace W] | list | inspect <name>
+  hli mch create <name> [--module M] [--domain D] [--workspace W] [--autostart] | list | inspect <name>
+  hli mch set-autostart <name> true|false
   hli mch serve <name> | stop <name> | remove <name>
   hli mch invoke <name> <operation> --args JSON [--workspace W]
   hli memory commit --workspace <id> --type TYPE --content TEXT [--scope S]

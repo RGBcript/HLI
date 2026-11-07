@@ -346,6 +346,7 @@ dependencies = [
  "hex",
  "hli-agent",
  "hli-core",
+ "hli-module-fixture",
  "hli-provider",
  "hli-store",
  "serde",

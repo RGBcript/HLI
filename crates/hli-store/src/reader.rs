@@ -424,8 +424,8 @@ impl Reader {
     pub fn mchs(&self) -> Result<Vec<serde_json::Value>> {
         self.with(|c| {
             let mut stmt = c.prepare(
-                "SELECT i.name, i.profile, i.workspace_id, i.state, i.pid, i.created_at,
-                        p.module_name, p.domain
+                "SELECT i.name, i.profile, i.workspace_id, i.state, i.pid, i.autostart,
+                        i.created_at, p.module_name, p.domain
                  FROM mch_instances i JOIN mch_profiles p ON p.name = i.profile
                  ORDER BY i.name",
             )?;
@@ -436,9 +436,10 @@ impl Reader {
                     "workspace_id": r.get::<_, Option<String>>(2)?,
                     "state": r.get::<_, String>(3)?,
                     "pid": r.get::<_, Option<i64>>(4)?,
-                    "created_at": r.get::<_, String>(5)?,
-                    "module": r.get::<_, String>(6)?,
-                    "domain": r.get::<_, String>(7)?,
+                    "autostart": r.get::<_, i64>(5)? != 0,
+                    "created_at": r.get::<_, String>(6)?,
+                    "module": r.get::<_, String>(7)?,
+                    "domain": r.get::<_, String>(8)?,
                 }))
             })?;
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -448,8 +449,8 @@ impl Reader {
     pub fn mch(&self, name: &str) -> Result<serde_json::Value> {
         self.with(|c| {
             c.query_row(
-                "SELECT i.name, i.profile, i.workspace_id, i.state, i.pid, i.created_at,
-                        p.module_name, p.domain, p.manifest_json
+                "SELECT i.name, i.profile, i.workspace_id, i.state, i.pid, i.autostart,
+                        i.created_at, p.module_name, p.domain, p.manifest_json
                  FROM mch_instances i JOIN mch_profiles p ON p.name = i.profile
                  WHERE i.name = ?1",
                 [name],
@@ -460,10 +461,11 @@ impl Reader {
                         "workspace_id": r.get::<_, Option<String>>(2)?,
                         "state": r.get::<_, String>(3)?,
                         "pid": r.get::<_, Option<i64>>(4)?,
-                        "created_at": r.get::<_, String>(5)?,
-                        "module": r.get::<_, String>(6)?,
-                        "domain": r.get::<_, String>(7)?,
-                        "manifest": serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(8)?).unwrap_or(serde_json::json!({})),
+                        "autostart": r.get::<_, i64>(5)? != 0,
+                        "created_at": r.get::<_, String>(6)?,
+                        "module": r.get::<_, String>(7)?,
+                        "domain": r.get::<_, String>(8)?,
+                        "manifest": serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(9)?).unwrap_or(serde_json::json!({})),
                     }))
                 },
             )
