@@ -1421,8 +1421,24 @@ fn dispatch(
                     return Err(e);
                 }
             };
+            let m = r.mch(&name)?;
+            let declared = m["manifest"]["spec"]["operations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let caps = h.capabilities.lock().unwrap().clone();
+            let cap_ops = caps["operations"].as_array().cloned().unwrap_or_default();
+            for op in &declared {
+                if !cap_ops.iter().any(|c| c["name"] == op["name"]) {
+                    let _ = supervisor::stop(&name);
+                    return Err(HliError::conflict(format!(
+                        "el modulo no declara la operacion {}",
+                        op["name"].as_str().unwrap_or("-")
+                    )));
+                }
+            }
             let out = w.mch_set_state(&name, "ready", Some(h.pid as i64))?;
-            Ok(json!({"instance": out, "pid": h.pid}))
+            Ok(json!({"instance": out, "pid": h.pid, "capabilities": caps}))
         }
         "mch.stop" => {
             let name = s(args, "name")?;

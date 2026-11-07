@@ -24,6 +24,7 @@ pub struct MchHandle {
     pub stderr_tail: Mutex<String>,
     pub next_id: AtomicU64,
     pub started: Instant,
+    pub capabilities: Mutex<Value>,
 }
 
 pub type Shared = Arc<MchHandle>;
@@ -87,6 +88,7 @@ pub fn start(name: &str, bin: &Path, home: &Path, workspace: &str) -> Result<Sha
         stderr_tail: Mutex::new(String::new()),
         next_id: AtomicU64::new(1),
         started: Instant::now(),
+        capabilities: Mutex::new(Value::Null),
     });
 
     let reader = h.clone();
@@ -134,12 +136,25 @@ pub fn start(name: &str, bin: &Path, home: &Path, workspace: &str) -> Result<Sha
         .unwrap()
         .insert(name.to_string(), h.clone());
 
-    if let Err(e) = request(
-        &h,
-        "initialize",
-        json!({"_meta": {"hli.dev/workspaceId": workspace}}),
-        Duration::from_secs(10),
-    ) {
+    let lifecycle = (|| -> Result<()> {
+        request(
+            &h,
+            "initialize",
+            json!({"_meta": {"hli.dev/workspaceId": workspace}}),
+            Duration::from_secs(10),
+        )?;
+        let caps = request(&h, "capabilities", json!({}), Duration::from_secs(10))?;
+        *h.capabilities.lock().unwrap() = caps;
+        request(
+            &h,
+            "configure",
+            json!({"_meta": {"hli.dev/workspaceId": workspace}}),
+            Duration::from_secs(10),
+        )?;
+        request(&h, "health", json!({}), Duration::from_secs(10))?;
+        Ok(())
+    })();
+    if let Err(e) = lifecycle {
         let _ = stop(name);
         return Err(e);
     }
@@ -206,17 +221,7 @@ pub fn invoke(
 
 pub fn health(name: &str, timeout: Duration) -> Result<Value> {
     let h = get(name).ok_or_else(|| HliError::conflict("MCH no iniciado"))?;
-    let request_id = format!("hl_{}", h.next_id.fetch_add(1, Ordering::SeqCst));
-    request(
-        &h,
-        "invoke",
-        json!({
-            "name": "memory.search",
-            "arguments": {"query": ""},
-            "_meta": {"hli.dev/workspaceId": "", "hli.dev/requestId": request_id}
-        }),
-        timeout,
-    )
+    request(&h, "health", json!({}), timeout)
 }
 
 pub fn stop(name: &str) -> Result<()> {

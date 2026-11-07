@@ -1,6 +1,6 @@
 # HLI — Supervisor MCH persistente
 
-**Estado:** parcial. Proceso persistente y reutilización implementados; health periódico, reinicio automático y autostart pendientes.
+**Estado:** parcial. Proceso persistente, reutilización y lifecycle completo; health periódico, reinicio automático y autostart pendientes.
 
 ## Arquitectura
 
@@ -28,7 +28,7 @@ hli mch stop <instance>       # shutdown, espera 5 s, kill si no sale
 hli mch logs <instance>       # cola de stderr
 ```
 
-`mch serve` devuelve cuando el proceso respondió a `initialize`; no espera un health completo. `mch.invoke` exige `state == ready` y reutiliza el proceso.
+`mch serve` ejecuta `initialize → capabilities → configure → health`; solo entonces marca `ready`. `mch.invoke` exige `state == ready` y reutiliza el proceso.
 
 ## Persistencia
 
@@ -62,3 +62,34 @@ hli mch logs <instance>       # cola de stderr
 4. Lifecycle `capabilities` y `configure` (el Module Protocol actual solo tiene `initialize` e `invoke`).
 5. Módulo de prueba configurable (fallo, cuelgue, JSON inválido, health falso, PID).
 6. Pruebas restantes: degraded, restart limit, invalid JSON, shutdown limpio, kill tras timeout, autostart, invocación activa durante caída, ID desconocido.
+
+
+## Protocolo real del módulo
+
+| Método | Declarado | Implementado (módulo) | Probado | Requerido 0.9 |
+|---|---|---|---|---|
+| initialize | sí | sí | sí | sí |
+| capabilities | sí | sí | sí | sí |
+| configure | sí | sí | sí | sí |
+| invoke | sí | sí | sí | sí |
+| health | sí | sí | sí | sí |
+| shutdown | sí | sí | sí | sí |
+| cancel | sí | sí (`{"ok":true}`) | no | no |
+| checkpoint | sí | sí (`{"ok":true}`) | no | no |
+
+El módulo `hli-memory` implementa `capabilities`, `configure`, `health`, `cancel` y `checkpoint`; la documentación anterior que afirmaba que solo existían `initialize` e `invoke` era incorrecta. No se editó para ocultar la diferencia.
+
+Tras `capabilities`, el daemon valida que todas las operaciones declaradas en el manifest estén presentes; si falta una, cierra el proceso y devuelve `conflict`.
+
+## Estado del gate
+
+| Pieza | Estado |
+|---|---|
+| Núcleo persistente | hecho |
+| Lifecycle completo | hecho |
+| Health periódico | pendiente |
+| Degraded | pendiente |
+| Restart automático | pendiente |
+| Autostart | pendiente |
+| Módulo de prueba | pendiente |
+| Gate completo | incompleto |
