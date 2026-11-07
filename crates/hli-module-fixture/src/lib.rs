@@ -13,12 +13,35 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-fn config() -> Value {
-    let home = std::env::var("HLI_HOME").unwrap_or_default();
-    std::fs::read_to_string(PathBuf::from(home).join("fixture.json"))
+fn read_config(path: PathBuf) -> Option<Value> {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| json!({}))
+}
+
+fn merge(base: Value, over: Value) -> Value {
+    match (base, over) {
+        (Value::Object(mut a), Value::Object(b)) => {
+            for (k, v) in b {
+                a.insert(k, v);
+            }
+            Value::Object(a)
+        }
+        (_, over) => over,
+    }
+}
+
+fn config() -> Value {
+    let home = std::env::var("HLI_HOME").unwrap_or_default();
+    let base = read_config(PathBuf::from(&home).join("fixture.json")).unwrap_or_else(|| json!({}));
+    let instance = std::env::var("HLI_MCH_INSTANCE").unwrap_or_default();
+    if instance.is_empty() {
+        return base;
+    }
+    match read_config(PathBuf::from(home).join(format!("fixture-{instance}.json"))) {
+        Some(specific) => merge(base, specific),
+        None => base,
+    }
 }
 
 fn sleep_ms(cfg: &Value, key: &str) {

@@ -508,6 +508,27 @@ fn print_value(v: &Value, mode: &str) -> Result<(), String> {
 }
 
 fn human_line(v: &Value) -> String {
+    if let Some(inst) = v.get("instance") {
+        if inst.is_object() && inst.get("name").is_some() {
+            let name = inst["name"].as_str().unwrap_or("-");
+            let state = inst["state"].as_str().unwrap_or("-");
+            let proc = &v["process"];
+            let pid = match proc["pid"].as_i64() {
+                Some(p) => p.to_string(),
+                None => "-".into(),
+            };
+            let generation = match proc["generation"].as_u64() {
+                Some(g) => g.to_string(),
+                None => "-".into(),
+            };
+            let restarts = proc["restart_count_in_window"].as_u64().unwrap_or(0);
+            let next = proc["next_restart_at"].as_str().unwrap_or("-");
+            let code = proc["last_error"]["code"].as_str().unwrap_or("-");
+            return format!(
+                "{name}  state={state} pid={pid} generation={generation} restarts_window={restarts} next_restart_at={next} last_error={code}"
+            );
+        }
+    }
     if let Some(b) = v.get("branch") {
         let id = b.get("id").and_then(|x| x.as_str()).unwrap_or("-");
         let seq = b.get("head_sequence").and_then(|x| x.as_i64()).unwrap_or(0);

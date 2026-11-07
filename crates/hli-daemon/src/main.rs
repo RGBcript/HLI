@@ -273,7 +273,7 @@ fn launch_instance(
 ) -> Result<(supervisor::Shared, Value), HliError> {
     let (bin, ws) = mch_bin(r, name)?;
     w.mch_set_state(name, "starting", None)?;
-    let h = match supervisor::start(name, &bin, home, &ws) {
+    let h = match supervisor::start(name, &bin, home, &ws, w) {
         Ok(h) => h,
         Err(e) => {
             let _ = w.mch_set_state(name, "failed", None);
@@ -1453,7 +1453,7 @@ fn dispatch(
                 .unwrap_or("bin/hli-memory.exe");
             let bin = PathBuf::from(m["path"].as_str().unwrap_or("")).join(entry);
             let tmp = format!("__test_{}", m["name"].as_str().unwrap_or("module"));
-            let h = supervisor::start(&tmp, &bin, home, "")?;
+            let h = supervisor::start(&tmp, &bin, home, "", w)?;
             let probe = supervisor::health(&tmp, std::time::Duration::from_secs(5))?;
             let _ = supervisor::stop(&tmp);
             Ok(json!({"module": m["name"], "ok": true, "pid": h.pid, "probe": probe}))
@@ -1530,7 +1530,7 @@ fn dispatch(
             let name = s(args, "name")?;
             let (bin, ws) = mch_bin(r, &name)?;
             w.mch_set_state(&name, "starting", None)?;
-            let h = match supervisor::restart(&name, &bin, home, &ws) {
+            let h = match supervisor::restart(&name, &bin, home, &ws, w) {
                 Ok(h) => h,
                 Err(e) => {
                     let _ = w.mch_set_state(&name, "failed", None);
