@@ -413,9 +413,9 @@ docs/adr/                      0001–0005
 README.md
 ```
 
-- 2 801 líneas de Rust (incluye pruebas).
+- 2 801 líneas de Rust en `fae01d4` (incluye pruebas).
 - Dependencias: `rusqlite 0.37.0` (SQLite embebido), `serde 1.0.229`, `serde_json 1.0.154`, `sha2 0.10.9`, `hex 0.4`.
-- 6 commits: core, store, cli/daemon, docs, fix de snapshot, informe.
+- Historial completo en `git log`; este informe cubre hasta `fae01d4`.
 - Árbol de trabajo limpio.
 
 ---
