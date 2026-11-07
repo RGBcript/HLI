@@ -91,7 +91,7 @@ Tras `capabilities`, el daemon valida que todas las operaciones declaradas en el
 | Degraded | lógica implementada; falta fixture que falle health |
 | Restart automático | lógica implementada (3 fallos, backoff 1/2/4, máximo 3); sin prueba de fallo |
 | Autostart | pendiente |
-| Módulo de prueba | pendiente |
+| Módulo de prueba | creado: `crates/hli-module-fixture`, configurable por `HLI_HOME/fixture.json`; pruebas pendientes |
 | Gate completo | incompleto |
 
 
@@ -109,3 +109,7 @@ Tras `capabilities`, el daemon valida que todas las operaciones declaradas en el
 | `initial_backoff` | 1 s | `HLI_MCH_BACKOFF_MS` |
 
 Cada proceso tiene `process_generation`; cada reinicio la incrementa. `mch status` devuelve estado, PID, generación, fallos de health y último error.
+
+## Fixture de fallos
+
+`crates/hli-module-fixture` implementa el protocolo y modos de fallo configurables por `HLI_HOME/fixture.json`. Informa pid, health_count e invoke_count. No esta integrado aun en pruebas e2e ni en el gate externo.

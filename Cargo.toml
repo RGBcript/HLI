@@ -7,6 +7,7 @@ members = [
     "crates/hli-cli",
     "crates/hli-mcp",
     "crates/hli-module-memory",
+    "crates/hli-module-fixture",
     "crates/hli-provider",
     "crates/hli-tui",
 ]

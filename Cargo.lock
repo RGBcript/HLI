@@ -362,6 +362,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hli-module-fixture"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "hli-module-memory"
 version = "0.1.0"
 dependencies = [
