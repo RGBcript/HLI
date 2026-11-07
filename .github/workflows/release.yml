@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-package:
+    name: Windows package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build package
+        shell: powershell
+        run: ./scripts/package_windows.ps1
+      - name: Verify checksums
+        shell: powershell
+        run: |
+          $pkg = Get-ChildItem dist -Directory | Select-Object -First 1
+          Get-Content (Join-Path $pkg.FullName "checksums.sha256") | ForEach-Object {
+            if (-not $_.Trim()) { return }
+            $parts = $_ -split "  ", 2
+            $file = Join-Path $pkg.FullName ($parts[1] -replace "/", "\")
+            if ((Get-FileHash -Algorithm SHA256 $file).Hash.ToLower() -ne $parts[0]) { throw "checksum: $($parts[1])" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hli-windows
+          path: dist/hli-*-windows-x86_64/**
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/hli-*-windows-x86_64/checksums.sha256
+            dist/hli-*-windows-x86_64/*.hlimod
+            dist/hli-*-windows-x86_64/release-public.json
+          draft: true

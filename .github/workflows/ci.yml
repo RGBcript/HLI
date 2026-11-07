@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows (soporte Beta)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: Version
+        run: cargo run -q -p hli-cli -- --version
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: tests debug
+        run: cargo test --workspace
+      - name: build release
+        run: cargo build --release --workspace
+      - name: tests release
+        run: cargo test --workspace --release
+      - name: audit
+        run: cargo audit
+      - name: deny
+        run: cargo deny check
+      - name: MCP gate
+        run: python scripts/mcp_gate.py
+      - name: Module gate
+        run: python scripts/module_gate.py
+      - name: Supervisor gate
+        run: python scripts/mch_supervisor_gate.py
+      - name: Signing gate
+        run: python scripts/module_signing_gate.py
+      - name: Migration gate
+        run: python scripts/migration_gate.py
+      - name: Package Windows
+        shell: powershell
+        run: ./scripts/package_windows.ps1
+      - name: Install gate
+        shell: powershell
+        run: ./scripts/install_gate.ps1
+
+  linux:
+    name: Linux (experimental)
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: build
+        run: cargo build --workspace
+      - name: tests debug
+        run: cargo test --workspace
+      - name: build release
+        run: cargo build --release --workspace
+      - name: tests release
+        run: cargo test --workspace --release
+      - name: audit
+        run: cargo audit
+      - name: deny
+        run: cargo deny check
+      # Los gates de integración aún asumen Windows (sufijos .exe, PowerShell y
+      # ACL). No se ejecutan en Linux para no falsificar un verde: el soporte
+      # Linux es experimental en la Beta. Ver docs/BETA-REPORT.md.
+      - name: Gates de integración no soportados en Linux
+        run: "echo 'Linux experimental: gates MCP/MCH/firma/migracion pendientes de portar'"
