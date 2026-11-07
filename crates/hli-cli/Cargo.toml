@@ -1,0 +1,12 @@
+[package]
+name = "hli-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hli"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true

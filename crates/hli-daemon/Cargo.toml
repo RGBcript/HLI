@@ -1,0 +1,15 @@
+[package]
+name = "hli-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hli-daemon"
+path = "src/main.rs"
+
+[dependencies]
+hli-core = { path = "../hli-core" }
+hli-store = { path = "../hli-store" }
+serde.workspace = true
+serde_json.workspace = true
