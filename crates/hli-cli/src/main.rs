@@ -237,9 +237,18 @@ fn run(args: &[String]) -> Result<(), String> {
             let kind = need_flag(args, "--type")?;
             let content = need_flag(args, "--content")?;
             let scope = flag(args, "--scope").unwrap_or_else(|| "workspace".into());
+            let supersedes: Vec<String> = args.iter().enumerate()
+                .filter(|(_, a)| *a == "--supersedes")
+                .filter_map(|(i, _)| args.get(i + 1).cloned())
+                .collect();
             let v = call(
                 "memory.commit",
-                json!({"workspace_id": ws, "type": kind, "content": content, "scope": scope}),
+                json!({"workspace_id": ws, "type": kind, "content": content, "scope": scope,
+                       "supersedes": supersedes,
+                       "authority": flag(args, "--authority"),
+                       "subject": flag(args, "--subject"),
+                       "relation": flag(args, "--relation"),
+                       "object": flag(args, "--object")}),
             )?;
             print_value(&v, output)
         }

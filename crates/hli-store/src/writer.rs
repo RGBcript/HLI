@@ -132,6 +132,10 @@ pub enum WriteCmd {
         content: String,
         supersedes: Vec<String>,
         contradicts: Vec<String>,
+        source_authority: Option<String>,
+        subject: Option<String>,
+        relation: Option<String>,
+        object: Option<String>,
         reply: Reply<Memory>,
     },
     UpdateMemory {
@@ -327,6 +331,7 @@ impl Writer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_memory(
         &self,
         workspace_id: &str,
@@ -336,6 +341,10 @@ impl Writer {
         content: &str,
         supersedes: Vec<String>,
         contradicts: Vec<String>,
+        source_authority: Option<String>,
+        subject: Option<String>,
+        relation: Option<String>,
+        object: Option<String>,
     ) -> Result<Memory> {
         self.call(|reply| WriteCmd::CommitMemory {
             workspace_id: workspace_id.to_string(),
@@ -345,6 +354,10 @@ impl Writer {
             content: content.to_string(),
             supersedes,
             contradicts,
+            source_authority,
+            subject,
+            relation,
+            object,
             reply,
         })
     }
@@ -539,10 +552,12 @@ impl State {
                 let _ = reply.send(self.finish_run(&run_id, &state, result, receipt));
             }
             WriteCmd::CommitMemory {
-                workspace_id, scope, scope_id, kind, content, supersedes, contradicts, reply,
+                workspace_id, scope, scope_id, kind, content, supersedes, contradicts,
+                source_authority, subject, relation, object, reply,
             } => {
                 let _ = reply.send(self.commit_memory(
                     &workspace_id, &scope, scope_id, &kind, &content, supersedes, contradicts,
+                    source_authority, subject, relation, object,
                 ));
             }
             WriteCmd::UpdateMemory { id, content, status, valid_until, reply } => {
@@ -880,6 +895,7 @@ impl State {
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn commit_memory(
         &mut self,
         workspace_id: &str,
@@ -889,6 +905,10 @@ impl State {
         content: &str,
         supersedes: Vec<String>,
         contradicts: Vec<String>,
+        source_authority: Option<String>,
+        subject: Option<String>,
+        relation: Option<String>,
+        object: Option<String>,
     ) -> Result<Memory> {
         schema::require_workspace(&self.conn, workspace_id)?;
         const KINDS: [&str; 6] = ["fact", "decision", "constraint", "summary", "reference", "procedure"];
@@ -902,6 +922,7 @@ impl State {
         if content.trim().is_empty() {
             return Err(HliError::invalid("la memoria no puede estar vacía"));
         }
+        let now = now_iso();
         let m = Memory {
             id: new_id("mem"),
             workspace_id: workspace_id.to_string(),
@@ -910,9 +931,15 @@ impl State {
             kind: kind.to_string(),
             status: "active".into(),
             content: content.to_string(),
-            valid_from: now_iso(),
+            observed_at: now.clone(),
+            valid_from: now.clone(),
             valid_until: None,
-            supersedes,
+            superseded_at: None,
+            source_authority: source_authority.unwrap_or_else(|| "user".into()),
+            subject,
+            relation,
+            object,
+            supersedes: supersedes.clone(),
             contradicts,
             sensitivity: "internal".into(),
             authorship: json!({"kind": "user", "id": "cli"}),
@@ -920,18 +947,41 @@ impl State {
             created_at: now_iso(),
         };
         let tx = self.conn.transaction()?;
+        // Validar supersedes antes de insertar: atomicidad o nada.
+        for old in &supersedes {
+            let exists: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = ?1 AND workspace_id = ?2",
+                params![old, workspace_id],
+                |r| r.get(0),
+            )?;
+            if exists == 0 {
+                return Err(HliError::not_found(&format!("memoria a superseder {old}")));
+            }
+        }
         tx.execute(
             "INSERT INTO memories(id, workspace_id, scope, scope_id, type, status, content,
-                                  valid_from, valid_until, supersedes_json, contradicts_json,
+                                  observed_at, valid_from, valid_until, superseded_at,
+                                  source_authority, subject, relation, object,
+                                  supersedes_json, contradicts_json,
                                   sensitivity, authorship_json, source_events, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12, ?13, ?14)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11, ?12, ?13,
+                     ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 m.id, m.workspace_id, m.scope, m.scope_id, m.kind, m.status, m.content,
-                m.valid_from, canonical_json(&json!(m.supersedes)),
-                canonical_json(&json!(m.contradicts)), m.sensitivity,
-                canonical_json(&m.authorship), canonical_json(&json!(m.source_events)), m.created_at
+                m.observed_at, m.valid_from, m.source_authority, m.subject, m.relation, m.object,
+                canonical_json(&json!(m.supersedes)), canonical_json(&json!(m.contradicts)),
+                m.sensitivity, canonical_json(&m.authorship), canonical_json(&json!(m.source_events)),
+                m.created_at
             ],
         )?;
+        for old in &supersedes {
+            tx.execute(
+                "UPDATE memories SET status = 'superseded', superseded_at = ?1, valid_until = ?1
+                 WHERE id = ?2 AND workspace_id = ?3",
+                params![now, old, workspace_id],
+            )?;
+            tx.execute("DELETE FROM memories_fts WHERE mem_id = ?1", [old])?;
+        }
         tx.execute(
             "INSERT INTO memories_fts(mem_id, content, workspace_id) VALUES (?1, ?2, ?3)",
             params![m.id, m.content, m.workspace_id],
@@ -1576,11 +1626,15 @@ impl State {
                 let m: Memory = serde_json::from_str(line)?;
                 tx.execute(
                     "INSERT OR IGNORE INTO memories(id, workspace_id, scope, scope_id, type, status,
-                        content, valid_from, valid_until, supersedes_json, contradicts_json,
+                        content, observed_at, valid_from, valid_until, superseded_at,
+                        source_authority, subject, relation, object, supersedes_json, contradicts_json,
                         sensitivity, authorship_json, source_events, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                             ?16, ?17, ?18, ?19, ?20, ?21)",
                     params![m.id, m.workspace_id, m.scope, m.scope_id, m.kind, m.status, m.content,
-                            m.valid_from, m.valid_until, canonical_json(&json!(m.supersedes)),
+                            m.observed_at, m.valid_from, m.valid_until, m.superseded_at,
+                            m.source_authority, m.subject, m.relation, m.object,
+                            canonical_json(&json!(m.supersedes)),
                             canonical_json(&json!(m.contradicts)), m.sensitivity,
                             canonical_json(&m.authorship), canonical_json(&json!(m.source_events)),
                             m.created_at],
@@ -1831,8 +1885,8 @@ pub(crate) fn load_manifest(conn: &Connection, id: &str) -> Result<Option<Contex
 
 
 pub(crate) const MEMORY_COLS: &str = "id, workspace_id, scope, scope_id, type, status, content,
-    valid_from, valid_until, supersedes_json, contradicts_json, sensitivity, authorship_json,
-    source_events, created_at";
+    observed_at, valid_from, valid_until, superseded_at, source_authority, subject, relation,
+    object, supersedes_json, contradicts_json, sensitivity, authorship_json, source_events, created_at";
 
 pub(crate) fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
     Ok(Memory {
@@ -1843,14 +1897,20 @@ pub(crate) fn row_to_memory(r: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
         kind: r.get(4)?,
         status: r.get(5)?,
         content: r.get(6)?,
-        valid_from: r.get(7)?,
-        valid_until: r.get(8)?,
-        supersedes: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default(),
-        contradicts: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
-        sensitivity: r.get(11)?,
-        authorship: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or(json!({})),
-        source_events: serde_json::from_str(&r.get::<_, String>(13)?).unwrap_or_default(),
-        created_at: r.get(14)?,
+        observed_at: r.get(7)?,
+        valid_from: r.get(8)?,
+        valid_until: r.get(9)?,
+        superseded_at: r.get(10)?,
+        source_authority: r.get(11)?,
+        subject: r.get(12)?,
+        relation: r.get(13)?,
+        object: r.get(14)?,
+        supersedes: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
+        contradicts: serde_json::from_str(&r.get::<_, String>(16)?).unwrap_or_default(),
+        sensitivity: r.get(17)?,
+        authorship: serde_json::from_str(&r.get::<_, String>(18)?).unwrap_or(json!({})),
+        source_events: serde_json::from_str(&r.get::<_, String>(19)?).unwrap_or_default(),
+        created_at: r.get(20)?,
     })
 }
 

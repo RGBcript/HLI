@@ -123,7 +123,13 @@ CREATE TABLE IF NOT EXISTS memories (
   type             TEXT NOT NULL,
   status           TEXT NOT NULL,
   content          TEXT NOT NULL,
+  observed_at      TEXT NOT NULL DEFAULT '',
   valid_from       TEXT NOT NULL,
+  superseded_at    TEXT,
+  source_authority TEXT NOT NULL DEFAULT 'user',
+  subject          TEXT,
+  relation         TEXT,
+  object           TEXT,
   valid_until      TEXT,
   supersedes_json  TEXT NOT NULL DEFAULT '[]',
   contradicts_json TEXT NOT NULL DEFAULT '[]',
@@ -201,6 +207,12 @@ BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 
 pub fn apply(conn: &Connection) -> Result<()> {
     conn.execute_batch(DDL)?;
+    ensure_column(conn, "memories", "observed_at", "TEXT NOT NULL DEFAULT ''")?;
+    ensure_column(conn, "memories", "superseded_at", "TEXT")?;
+    ensure_column(conn, "memories", "source_authority", "TEXT NOT NULL DEFAULT 'user'")?;
+    ensure_column(conn, "memories", "subject", "TEXT")?;
+    ensure_column(conn, "memories", "relation", "TEXT")?;
+    ensure_column(conn, "memories", "object", "TEXT")?;
     let exists: i64 = conn.query_row(
         "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
         [SCHEMA_VERSION],
@@ -211,6 +223,18 @@ pub fn apply(conn: &Connection) -> Result<()> {
             "INSERT INTO schema_migrations(version, applied_at, checksum) VALUES (?1, ?2, ?3)",
             rusqlite::params![SCHEMA_VERSION, now_iso(), "v1"],
         )?;
+    }
+    Ok(())
+}
+
+fn ensure_column(conn: &Connection, table: &str, col: &str, ddl: &str) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+        [col],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {ddl}"))?;
     }
     Ok(())
 }

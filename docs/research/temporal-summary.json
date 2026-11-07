@@ -1,0 +1,36 @@
+{
+  "A_pairs": {
+    "n": 20,
+    "stale_rate": 0.75,
+    "current_recall": 0.75,
+    "ranking": 0,
+    "quality": 11,
+    "tokens": 219.1
+  },
+  "B_pairs": {
+    "n": 20,
+    "stale_rate": 0,
+    "current_recall": 1,
+    "ranking": 1,
+    "quality": 13,
+    "tokens": 218.5
+  },
+  "A_singles": {
+    "n": 10,
+    "stale_rate": 0,
+    "current_recall": 0.8,
+    "ranking": 0.8,
+    "quality": 1,
+    "tokens": 290.1
+  },
+  "B_singles": {
+    "n": 10,
+    "stale_rate": 0,
+    "current_recall": 0.8,
+    "ranking": 0.8,
+    "quality": 1,
+    "tokens": 280.4
+  },
+  "B_state_superseded": 20,
+  "B_state_total": 20
+}

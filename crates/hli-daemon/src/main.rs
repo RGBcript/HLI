@@ -118,6 +118,7 @@ fn handle(stream: TcpStream, writer: Writer, reader: Arc<Reader>, home: PathBuf)
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn make_receipt(
     provider: &str,
     model: &str,
@@ -127,6 +128,11 @@ fn make_receipt(
     usage: &hli_provider::Usage,
     cost: &Value,
     secret_handles: Vec<Value>,
+    used_memory_ids: Vec<String>,
+    used_slice_ids: Vec<String>,
+    used_event_ids: Vec<String>,
+    candidate_memory_ids: Vec<String>,
+    rejected_memory_ids: Vec<String>,
 ) -> hli_core::model::Receipt {
     hli_core::model::Receipt {
         provider: provider.to_string(),
@@ -146,6 +152,16 @@ fn make_receipt(
         sampling: json!({"temperature": 0.0, "seed": 0}),
         result_artifacts: vec![],
         sandbox: json!({"mode": "none", "note": "sin sandbox de SO"}),
+        used_memory_ids: used_memory_ids.clone(),
+        used_slice_ids,
+        used_event_ids,
+        candidate_memory_ids,
+        rejected_memory_ids: rejected_memory_ids.clone(),
+        rejection_reasons: if rejected_memory_ids.is_empty() {
+            json!({})
+        } else {
+            json!({"policy": rejected_memory_ids})
+        },
         usage: serde_json::to_value(usage).unwrap_or(json!({})),
         cost: cost.clone(),
         result_hash: hli_core::canon::hash_canonical(result),
@@ -293,6 +309,10 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                 &s(args, "content")?,
                 supersedes.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
                 contradicts.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                o(args, "source_authority"),
+                o(args, "subject"),
+                o(args, "relation"),
+                o(args, "object"),
             )?;
             Ok(serde_json::to_value(m)?)
         }
@@ -353,6 +373,10 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
             let visible = r.visible_events(&br, run.branch_revision)?;
             let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5).max(1) as usize;
             let memories = r.search_memories(&ws, &prompt, top_k)?;
+            let candidate_memory_ids: Vec<String> = memories
+                .iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect();
             let mut manifest = build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
 
             // La trayectoria visible completa queda como evidencia; el contexto se presupuesta.
@@ -522,9 +546,19 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                 }
             }
 
+            let used_memory_ids: Vec<String> = manifest.memories.iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+            let used_slice_ids: Vec<String> = manifest.artifact_slices.iter()
+                .filter_map(|s| s["slice_id"].as_str().map(str::to_string)).collect();
+            let used_event_ids: Vec<String> = manifest.recent_events.iter()
+                .filter_map(|e| e["event_id"].as_str().map(str::to_string)).collect();
+            let rejected_memory_ids: Vec<String> = candidate_memory_ids.iter()
+                .filter(|id| !used_memory_ids.contains(id)).cloned().collect();
             let receipt = make_receipt(
                 &used_provider, &used_model, &adapter, &manifest, &result,
                 &usage, &cost, secret_handles,
+                used_memory_ids, used_slice_ids, used_event_ids,
+                candidate_memory_ids, rejected_memory_ids,
             );
             let done = w.finish_run(&run.id, state, Some(result), Some(receipt))?;
             Ok(serde_json::to_value(done)?)
@@ -560,7 +594,16 @@ fn dispatch(cmd: &str, args: &Value, w: &Writer, r: &Reader, home: &PathBuf) -> 
                 raw_usage_available: false, usage_source: "estimated".into(),
             };
             let cost = hli_provider::cost_of(None, &usage);
-            let receipt = make_receipt("sim", "sim-1", "0.2.0", &manifest, &result, &usage, &cost, vec![]);
+            let used_memory_ids: Vec<String> = manifest.memories.iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+            let used_slice_ids: Vec<String> = manifest.artifact_slices.iter()
+                .filter_map(|s| s["slice_id"].as_str().map(str::to_string)).collect();
+            let used_event_ids: Vec<String> = manifest.recent_events.iter()
+                .filter_map(|e| e["event_id"].as_str().map(str::to_string)).collect();
+            let receipt = make_receipt(
+                "sim", "sim-1", "0.2.0", &manifest, &result, &usage, &cost, vec![],
+                used_memory_ids, used_slice_ids, used_event_ids, vec![], vec![],
+            );
             let state = if outcome.status == "success" { "completed" } else { "failed" };
             let done = w.finish_run(&run_id, state, Some(result), Some(receipt))?;
             Ok(serde_json::to_value(done)?)
