@@ -35,7 +35,12 @@ impl Store {
         schema::apply(&conn)?;
         drop(conn);
 
-        Ok(Self { home, db_path, artifacts_dir, snapshots_dir })
+        Ok(Self {
+            home,
+            db_path,
+            artifacts_dir,
+            snapshots_dir,
+        })
     }
 
     /// Arranca el actor de escritura y devuelve también un lector independiente.

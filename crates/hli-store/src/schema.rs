@@ -209,7 +209,12 @@ pub fn apply(conn: &Connection) -> Result<()> {
     conn.execute_batch(DDL)?;
     ensure_column(conn, "memories", "observed_at", "TEXT NOT NULL DEFAULT ''")?;
     ensure_column(conn, "memories", "superseded_at", "TEXT")?;
-    ensure_column(conn, "memories", "source_authority", "TEXT NOT NULL DEFAULT 'user'")?;
+    ensure_column(
+        conn,
+        "memories",
+        "source_authority",
+        "TEXT NOT NULL DEFAULT 'user'",
+    )?;
     ensure_column(conn, "memories", "subject", "TEXT")?;
     ensure_column(conn, "memories", "relation", "TEXT")?;
     ensure_column(conn, "memories", "object", "TEXT")?;
@@ -240,7 +245,9 @@ fn ensure_column(conn: &Connection, table: &str, col: &str, ddl: &str) -> Result
 }
 
 pub fn require_workspace(conn: &Connection, id: &str) -> Result<()> {
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM workspaces WHERE id = ?1", [id], |r| r.get(0))?;
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM workspaces WHERE id = ?1", [id], |r| {
+        r.get(0)
+    })?;
     if n == 0 {
         return Err(HliError::not_found(&format!("workspace {id}")));
     }

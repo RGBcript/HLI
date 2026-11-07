@@ -27,6 +27,27 @@ pub fn container_bytes(files: &[ArchiveFile]) -> Vec<u8> {
     out
 }
 
+pub fn safe_rel_path(path: &str) -> bool {
+    if path.is_empty() || path.contains("..") {
+        return false;
+    }
+    if path
+        .as_bytes()
+        .first()
+        .map(|b| *b == 47 || *b == 92)
+        .unwrap_or(true)
+    {
+        return false;
+    }
+    if path.len() >= 2 && path.as_bytes()[1] == b':' {
+        return false;
+    }
+    if path.contains("//") || path.contains("\\\\") {
+        return false;
+    }
+    true
+}
+
 pub fn read_container(bytes: &[u8]) -> Result<Vec<ArchiveFile>> {
     if !bytes.starts_with(MAGIC) {
         return Err(HliError::invalid("contenedor hliar: firma incorrecta"));
@@ -53,12 +74,20 @@ pub fn read_container(bytes: &[u8]) -> Result<Vec<ArchiveFile>> {
             .next()
             .ok_or_else(|| HliError::invalid("contenedor hliar: ruta ausente"))?
             .to_string();
+        if !safe_rel_path(&path) {
+            return Err(HliError::invalid(format!(
+                "ruta insegura en contenedor: {path}"
+            )));
+        }
         let start = i + nl + 1;
         let end = start + len;
         if end > bytes.len() {
             return Err(HliError::invalid("contenedor hliar: contenido truncado"));
         }
-        files.push(ArchiveFile { path, bytes: bytes[start..end].to_vec() });
+        files.push(ArchiveFile {
+            path,
+            bytes: bytes[start..end].to_vec(),
+        });
         i = end;
         if i < bytes.len() && bytes[i] == b'\n' {
             i += 1;
@@ -102,8 +131,14 @@ mod tests {
     #[test]
     fn roundtrip_container() {
         let files = vec![
-            ArchiveFile { path: "a.txt".into(), bytes: b"hola".to_vec() },
-            ArchiveFile { path: "b/c.json".into(), bytes: b"{}".to_vec() },
+            ArchiveFile {
+                path: "a.txt".into(),
+                bytes: b"hola".to_vec(),
+            },
+            ArchiveFile {
+                path: "b/c.json".into(),
+                bytes: b"{}".to_vec(),
+            },
         ];
         let raw = container_bytes(&files);
         let back = read_container(&raw).unwrap();
@@ -115,5 +150,47 @@ mod tests {
     #[test]
     fn rejects_bad_magic() {
         assert!(read_container(b"nope").is_err());
+    }
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    fn bs() -> char {
+        char::from(92u8)
+    }
+
+    #[test]
+    fn rejects_dot_dot_path() {
+        assert!(!safe_rel_path("../evil"));
+        assert!(!safe_rel_path("a/../../b"));
+        assert!(!safe_rel_path(&format!("..{}evil", bs())));
+    }
+
+    #[test]
+    fn rejects_absolute_path_outside_workspace() {
+        assert!(!safe_rel_path("/etc/passwd"));
+    }
+
+    #[test]
+    fn rejects_windows_drive_escape() {
+        assert!(!safe_rel_path("C:/evil"));
+        assert!(!safe_rel_path(&format!("C:{}evil", bs())));
+    }
+
+    #[test]
+    fn rejects_unc_path_escape() {
+        assert!(!safe_rel_path(&format!("{0}{0}server{0}share{0}x", bs())));
+    }
+
+    #[test]
+    fn rejects_hlimod_traversal() {
+        let files = vec![ArchiveFile {
+            path: "../evil".into(),
+            bytes: b"x".to_vec(),
+        }];
+        let raw = container_bytes(&files);
+        assert!(read_container(&raw).is_err());
     }
 }

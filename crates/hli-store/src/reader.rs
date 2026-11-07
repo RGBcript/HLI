@@ -3,13 +3,9 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use serde_json::Value;
-use hli_core::{
-    canon::zero_hash,
-    model::*,
-    HliError, Result,
-};
+use hli_core::{canon::zero_hash, model::*, HliError, Result};
 use rusqlite::{Connection, OptionalExtension};
+use serde_json::Value;
 
 use crate::writer::{row_to_branch, row_to_event};
 
@@ -23,11 +19,17 @@ impl Reader {
         let conn = Connection::open(db)?;
         conn.pragma_update(None, "query_only", true)?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
-        Ok(Self { conn: Mutex::new(conn), artifacts_dir })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            artifacts_dir,
+        })
     }
 
     fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let c = self.conn.lock().map_err(|_| HliError::internal("reader lock"))?;
+        let c = self
+            .conn
+            .lock()
+            .map_err(|_| HliError::internal("reader lock"))?;
         f(&c)
     }
 
@@ -44,7 +46,8 @@ impl Reader {
                     root_path: r.get(2)?,
                     created_at: r.get(3)?,
                     archived_at: r.get(4)?,
-                    config: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or(serde_json::json!({})),
+                    config: serde_json::from_str(&r.get::<_, String>(5)?)
+                        .unwrap_or(serde_json::json!({})),
                 })
             })?;
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -194,7 +197,10 @@ impl Reader {
     pub fn event(&self, id: &str) -> Result<Event> {
         self.with(|c| {
             c.query_row(
-                &format!("SELECT {} FROM events WHERE event_id = ?1", crate::writer::EVENT_COLS),
+                &format!(
+                    "SELECT {} FROM events WHERE event_id = ?1",
+                    crate::writer::EVENT_COLS
+                ),
                 [id],
                 row_to_event,
             )
@@ -271,7 +277,10 @@ impl Reader {
     pub fn memory(&self, id: &str) -> Result<Memory> {
         self.with(|c| {
             c.query_row(
-                &format!("SELECT {} FROM memories WHERE id = ?1", crate::writer::MEMORY_COLS),
+                &format!(
+                    "SELECT {} FROM memories WHERE id = ?1",
+                    crate::writer::MEMORY_COLS
+                ),
                 [id],
                 crate::writer::row_to_memory,
             )
@@ -291,7 +300,12 @@ impl Reader {
         })
     }
 
-    pub fn search_memories(&self, workspace_id: &str, query: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+    pub fn search_memories(
+        &self,
+        workspace_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
         self.with(|c| {
             let terms: Vec<String> = query
                 .to_lowercase()
@@ -303,7 +317,11 @@ impl Reader {
             if terms.is_empty() {
                 return Ok(vec![]);
             }
-            let match_expr = terms.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(" OR ");
+            let match_expr = terms
+                .iter()
+                .map(|t| format!("\"{t}\""))
+                .collect::<Vec<_>>()
+                .join(" OR ");
             let mut stmt = c.prepare(
                 "SELECT m.id, m.type, m.status, m.scope, m.content, bm25(memories_fts) AS score
                  FROM memories_fts f JOIN memories m ON m.id = f.mem_id
@@ -312,16 +330,19 @@ impl Reader {
                  ORDER BY score LIMIT ?4",
             )?;
             let now = hli_core::time::now_iso();
-            let rows = stmt.query_map(rusqlite::params![match_expr, workspace_id, now, limit as i64], |r| {
-                Ok(serde_json::json!({
-                    "id": r.get::<_, String>(0)?,
-                    "type": r.get::<_, String>(1)?,
-                    "status": r.get::<_, String>(2)?,
-                    "scope": r.get::<_, String>(3)?,
-                    "content": r.get::<_, String>(4)?,
-                    "score": r.get::<_, f64>(5)?.abs()
-                }))
-            })?;
+            let rows = stmt.query_map(
+                rusqlite::params![match_expr, workspace_id, now, limit as i64],
+                |r| {
+                    Ok(serde_json::json!({
+                        "id": r.get::<_, String>(0)?,
+                        "type": r.get::<_, String>(1)?,
+                        "status": r.get::<_, String>(2)?,
+                        "scope": r.get::<_, String>(3)?,
+                        "content": r.get::<_, String>(4)?,
+                        "score": r.get::<_, f64>(5)?.abs()
+                    }))
+                },
+            )?;
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
     }
@@ -349,9 +370,13 @@ impl Reader {
 
     pub fn workspace_of_thread(&self, thread_id: &str) -> Result<String> {
         self.with(|c| {
-            c.query_row("SELECT workspace_id FROM threads WHERE id = ?1", [thread_id], |r| r.get(0))
-                .optional()?
-                .ok_or_else(|| HliError::not_found(&format!("thread {thread_id}")))
+            c.query_row(
+                "SELECT workspace_id FROM threads WHERE id = ?1",
+                [thread_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("thread {thread_id}")))
         })
     }
 
@@ -470,7 +495,8 @@ impl Reader {
                  FROM artifact_slices WHERE artifact_id = ?1 ORDER BY created_at",
             )?;
             let rows = stmt.query_map([artifact_id], |r| {
-                let selector: Value = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(serde_json::json!({}));
+                let selector: Value =
+                    serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(serde_json::json!({}));
                 let slice = ArtifactSlice {
                     slice_id: r.get(0)?,
                     artifact_id: r.get(1)?,
@@ -494,7 +520,8 @@ impl Reader {
                  FROM artifact_slices WHERE id = ?1",
                 [id],
                 |r| {
-                    let selector: Value = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(serde_json::json!({}));
+                    let selector: Value = serde_json::from_str(&r.get::<_, String>(2)?)
+                        .unwrap_or(serde_json::json!({}));
                     Ok((
                         ArtifactSlice {
                             slice_id: r.get(0)?,
