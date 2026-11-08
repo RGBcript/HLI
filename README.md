@@ -45,6 +45,22 @@ Guía completa de 15 minutos: [QUICKSTART.md](QUICKSTART.md).
 `shell.execute` está denegado por diseño. No se anuncia aislamiento completo del
 sistema operativo.
 
+## Documentación de estado
+
+Los cinco documentos oficiales del proyecto. Si solo vas a leer algo, lee el
+primero; si vas a operar o desarrollar, lee el que corresponda.
+
+- [HLI-STATE-OF-THE-PROJECT.md](HLI-STATE-OF-THE-PROJECT.md) — fotografía oficial:
+  componentes, pruebas, gates, límites, roadmap y mapa del sistema.
+- [HLI-ARCHITECTURE-HANDBOOK.md](HLI-ARCHITECTURE-HANDBOOK.md) — entidades,
+  responsabilidades, invariantes y relaciones.
+- [HLI-OPERATIONS.md](HLI-OPERATIONS.md) — instalación, diagnóstico, backups,
+  migraciones, recovery, export/import, firmas, providers y MCH.
+- [HLI-DEVELOPMENT.md](HLI-DEVELOPMENT.md) — crates, pruebas, gates, CI,
+  convenciones, ADRs, versionado y release.
+- [HLI-BETA-REVIEW.md](HLI-BETA-REVIEW.md) — revisión honesta: implementado,
+  parcial, pendiente, no probado, riesgos y deuda técnica.
+
 ## Documentación
 
 - [QUICKSTART.md](QUICKSTART.md)
