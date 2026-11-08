@@ -72,22 +72,24 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     if args.is_empty() {
         if std::io::stdout().is_terminal() {
-            let tui = std::env::current_exe()
-                .map_err(|e| e.to_string())?
-                .with_file_name(if cfg!(windows) {
-                    "hli-tui.exe"
-                } else {
-                    "hli-tui"
-                });
-            std::process::Command::new(tui)
-                .env("HLI_HOME", home())
-                .status()
-                .map_err(|e| format!("no se pudo abrir la TUI: {e}"))?;
-            return Ok(());
+            return launch_tui("agent", &[]);
         }
         return usage();
     }
     let output = output_mode(args);
+
+    if args[0] == "inspect" {
+        return launch_tui("inspect", &[]);
+    }
+    if args[0] == "resume" {
+        return launch_tui("agent", &[]);
+    }
+    if args[0] == "run" && args.get(1).is_some_and(|a| !is_run_subcommand(a)) {
+        return run_task(&args[1..], output);
+    }
+    if args[0] == "." || std::path::Path::new(&args[0]).is_dir() {
+        return launch_tui("agent", &["--root", &args[0]]);
+    }
     match (args[0].as_str(), args.get(1).map(String::as_str)) {
         ("daemon", Some("start")) => daemon_start(),
         ("daemon", Some("stop")) => daemon_stop(),
@@ -870,6 +872,99 @@ fn daemon_status() -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+fn launch_tui(mode: &str, extra: &[&str]) -> Result<(), String> {
+    let tui = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .with_file_name(if cfg!(windows) {
+            "hli-tui.exe"
+        } else {
+            "hli-tui"
+        });
+    let status = Command::new(tui)
+        .arg(mode)
+        .args(extra)
+        .env("HLI_HOME", home())
+        .status()
+        .map_err(|e| format!("no se pudo abrir la TUI: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("la TUI terminó con {}", status))
+    }
+}
+
+fn is_run_subcommand(arg: &str) -> bool {
+    matches!(
+        arg,
+        "start" | "get" | "list" | "approve" | "cancel" | "status" | "wait"
+    )
+}
+
+fn norm_path(p: &str) -> String {
+    p.replace('\\', "/").trim_end_matches('/').to_lowercase()
+}
+
+fn linked_workspace() -> Result<Option<Value>, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let want = norm_path(&cwd.to_string_lossy());
+    let list = call("workspace.list", json!({}))?;
+    Ok(list.as_array().and_then(|a| {
+        a.iter()
+            .find(|w| w["root_path"].as_str().map(norm_path).as_deref() == Some(want.as_str()))
+            .cloned()
+    }))
+}
+
+fn run_task(args: &[String], output: &str) -> Result<(), String> {
+    if args.iter().any(|a| a == "--output")
+        && args
+            .windows(2)
+            .any(|w| w[0] == "--output" && w[1] == "jsonl")
+    {
+        return Err("--output jsonl todavía no está soportado".into());
+    }
+    let task = args.first().cloned().unwrap_or_default();
+    if task.trim().is_empty() {
+        return Err("falta la tarea".into());
+    }
+    let Some(ws) = linked_workspace()? else {
+        return Err("no hay workspace vinculado a este directorio; ejecuta `hli`".into());
+    };
+    let ws_id = ws["id"].as_str().unwrap_or("").to_string();
+    let threads = call("thread.list", json!({ "workspace_id": ws_id }))?;
+    let thread_id = match threads.as_array().and_then(|a| a.last()) {
+        Some(t) => t["id"].as_str().unwrap_or("").to_string(),
+        None => call(
+            "thread.create",
+            json!({ "workspace_id": ws_id, "title": "session" }),
+        )?["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+    };
+    let branches = call("branch.list", json!({ "thread_id": thread_id }))?;
+    let branch_id = match branches.as_array().and_then(|a| a.last()) {
+        Some(b) => b["id"].as_str().unwrap_or("").to_string(),
+        None => call(
+            "branch.create",
+            json!({ "thread_id": thread_id, "name": "main" }),
+        )?["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+    };
+    let v = call(
+        "run.start",
+        json!({
+            "workspace_id": ws_id,
+            "thread_id": thread_id,
+            "branch_id": branch_id,
+            "prompt": task,
+        }),
+    )?;
+    print_value(&v, output)
 }
 
 fn usage() -> Result<(), String> {
