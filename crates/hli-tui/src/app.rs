@@ -167,6 +167,9 @@ pub struct AgentState {
     pub model: String,
     pub run_state: String,
     pub last_run: Option<String>,
+    pub last_seq: i64,
+    pub receipt_shown: bool,
+    pub poll_at: Instant,
 }
 
 impl Default for AgentState {
@@ -190,6 +193,9 @@ impl Default for AgentState {
             model: "sim-1".into(),
             run_state: "idle".into(),
             last_run: None,
+            last_seq: 0,
+            receipt_shown: false,
+            poll_at: Instant::now(),
         }
     }
 }
@@ -451,6 +457,9 @@ impl App {
         }
         if self.last_lists.elapsed() >= Duration::from_secs(4) {
             self.refresh_lists();
+        }
+        if self.mode == TuiMode::Agent {
+            self.poll_agent();
         }
         if self
             .feedback
@@ -805,6 +814,40 @@ fn dir_name(p: &std::path::Path) -> String {
         .unwrap_or_else(|| "workspace".into())
 }
 
+pub fn is_terminal(state: &str) -> bool {
+    matches!(
+        state,
+        "completed" | "failed" | "cancelled" | "timed_out" | "interrupted"
+    )
+}
+
+pub fn is_active(state: &str) -> bool {
+    matches!(
+        state,
+        "queued" | "running" | "cancelling" | "waiting_approval" | "paused"
+    )
+}
+
+fn event_line(e: &Value) -> Option<String> {
+    let kind = e["type"].as_str()?;
+    if !(kind.starts_with("tool.")
+        || kind.starts_with("run.")
+        || kind.starts_with("model.")
+        || kind.starts_with("context."))
+    {
+        return None;
+    }
+    let detail = e["payload"]["tool"]
+        .as_str()
+        .or_else(|| e["payload"]["model"].as_str())
+        .unwrap_or("");
+    Some(if detail.is_empty() {
+        kind.to_string()
+    } else {
+        format!("{kind} · {detail}")
+    })
+}
+
 impl App {
     pub fn begin_agent(&mut self, root: Option<PathBuf>) {
         self.mode = TuiMode::Agent;
@@ -1096,31 +1139,44 @@ impl App {
             "thread_id": th,
             "branch_id": br,
             "prompt": text,
+            "async": true,
         });
         if !self.agent.provider.is_empty() {
             args["provider"] = json!(self.agent.provider);
             args["model"] = json!(self.agent.model);
         }
+        if self.agent.provider == "sim"
+            && let Ok(ms) = std::env::var("HLI_SIM_DELAY_MS")
+            && let Ok(ms) = ms.parse::<u64>()
+        {
+            args["sim_delay_ms"] = json!(ms);
+        }
         self.agent.busy = true;
-        self.agent.run_state = "running".into();
+        self.agent.run_state = "starting".into();
         match client::call("run.start", args) {
             Ok(run) => {
                 let id = run["id"].as_str().unwrap_or("-").to_string();
-                let state = run["state"].as_str().unwrap_or("-").to_string();
-                let provider = run["receipt"]["provider"].as_str().unwrap_or("-");
-                let model = run["receipt"]["model"].as_str().unwrap_or("-");
-                let tin = run["receipt"]["usage"]["input_tokens"]
-                    .as_i64()
-                    .unwrap_or(0);
-                let tout = run["receipt"]["usage"]["output_tokens"]
-                    .as_i64()
-                    .unwrap_or(0);
+                let state = run["state"].as_str().unwrap_or("queued").to_string();
+                let provider = run["receipt"]["provider"]
+                    .as_str()
+                    .unwrap_or(&self.agent.provider)
+                    .to_string();
+                let model = run["receipt"]["model"]
+                    .as_str()
+                    .unwrap_or(&self.agent.model)
+                    .to_string();
                 self.agent.last_run = Some(id.clone());
+                self.agent.last_seq = 0;
+                self.agent.receipt_shown = false;
                 self.agent.run_state = state.clone();
+                self.agent.poll_at = Instant::now();
                 self.agent.push(
                     AgentKind::Hli,
-                    format!("Run {id} · {state} · {provider}/{model} · {tin} in / {tout} out"),
+                    format!("Run {id} · {state} · {provider}/{model}"),
                 );
+                if is_terminal(&state) {
+                    self.apply_run_status(&json!({ "run": run }));
+                }
             }
             Err(e) => {
                 self.agent.run_state = "failed".into();
@@ -1131,6 +1187,113 @@ impl App {
         self.agent.status = self.agent_status_line();
         self.refresh_lists();
         self.refresh_runs();
+    }
+
+    pub fn apply_run_status(&mut self, v: &Value) {
+        let run = v.get("run").unwrap_or(v);
+        let state = run["state"].as_str().unwrap_or("").to_string();
+        if state.is_empty() {
+            return;
+        }
+        let changed = state != self.agent.run_state;
+        self.agent.run_state = state.clone();
+        if changed {
+            self.agent.push(AgentKind::Info, format!("run {state}"));
+        }
+        if is_terminal(&state) && !self.agent.receipt_shown {
+            self.agent.receipt_shown = true;
+            let r = &run["receipt"];
+            let provider = r["provider"].as_str().unwrap_or("-");
+            let model = r["model"].as_str().unwrap_or("-");
+            let tin = r["usage"]["input_tokens"].as_i64().unwrap_or(0);
+            let tout = r["usage"]["output_tokens"].as_i64().unwrap_or(0);
+            let cost = r["cost"]["total"].as_f64().unwrap_or(0.0);
+            self.agent.push(
+                AgentKind::Hli,
+                format!("{state} · {provider}/{model} · {tin} in / {tout} out · ${cost:.6}"),
+            );
+        }
+        self.agent.status = self.agent_status_line();
+    }
+
+    /// Añade al transcript los eventos nuevos del run actual. Devuelve cuántos.
+    pub fn ingest_events(&mut self, events: &[Value]) -> usize {
+        let Some(run) = self.agent.last_run.clone() else {
+            return 0;
+        };
+        let mut added = 0;
+        let mut max_seq = self.agent.last_seq;
+        for e in events {
+            if e["run_id"].as_str() != Some(run.as_str()) {
+                continue;
+            }
+            let seq = e["sequence"].as_i64().unwrap_or(0);
+            if seq <= self.agent.last_seq {
+                continue;
+            }
+            if let Some(line) = event_line(e)
+                && added < 4
+            {
+                self.agent.push(AgentKind::Tool, line);
+                added += 1;
+            }
+            max_seq = max_seq.max(seq);
+        }
+        self.agent.last_seq = max_seq;
+        added
+    }
+
+    fn poll_agent(&mut self) {
+        let Some(id) = self.agent.last_run.clone() else {
+            return;
+        };
+        if is_terminal(&self.agent.run_state) {
+            return;
+        }
+        if self.agent.poll_at.elapsed() < Duration::from_millis(350) {
+            return;
+        }
+        self.agent.poll_at = Instant::now();
+        if let Ok(v) = client::call("run.status", json!({ "run_id": id })) {
+            self.apply_run_status(&v);
+        }
+        let ws = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["id"].as_str())
+            .map(str::to_string);
+        let br = self
+            .agent
+            .branch
+            .as_ref()
+            .and_then(|b| b["id"].as_str())
+            .map(str::to_string);
+        if let Some(ws) = ws {
+            let mut args = json!({ "workspace_id": ws });
+            if let Some(br) = br {
+                args["branch_id"] = json!(br);
+            }
+            if let Ok(list) = client::call("event.list", args)
+                && let Some(arr) = list.as_array()
+            {
+                self.ingest_events(arr);
+            }
+        }
+    }
+
+    pub fn mark_cancelling(&mut self) {
+        if !is_terminal(&self.agent.run_state) && self.agent.last_run.is_some() {
+            self.agent.run_state = "cancelling".into();
+            self.agent.push(AgentKind::Info, "cancel requested");
+        }
+    }
+
+    pub fn request_cancel(&mut self) {
+        if let Some(id) = self.agent.last_run.clone() {
+            self.mark_cancelling();
+            let _ = client::call("run.cancel", json!({ "run_id": id }));
+        }
     }
 
     pub fn toggle_mode(&mut self) {
@@ -1183,6 +1346,7 @@ impl App {
                 self.tab = 5;
             }
             "clear" => self.agent.lines.clear(),
+            "cancel" => self.request_cancel(),
             "exit" => return true,
             "new" => {
                 let ws = self
@@ -1258,11 +1422,8 @@ impl App {
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         match k.code {
             KeyCode::Char('c') if ctrl => {
-                if self.agent.run_state == "running"
-                    && let Some(id) = self.agent.last_run.clone()
-                {
-                    let _ = client::call("run.cancel", json!({ "run_id": id }));
-                    self.agent.push(AgentKind::Info, "cancel requested");
+                if is_active(&self.agent.run_state) && self.agent.last_run.is_some() {
+                    self.request_cancel();
                 } else if !self.agent.composer.is_empty() {
                     self.agent.composer.clear();
                 } else {

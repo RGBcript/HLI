@@ -594,3 +594,70 @@ fn at_reference_resolves_stable_id() {
     }
     assert_eq!(app.agent.composer, "@art_091");
 }
+
+// --- Slice 2: ejecución observada -------------------------------------------
+
+#[test]
+fn async_run_starts_in_non_terminal_state() {
+    let mut app = agent_app();
+    app.apply_run_status(&serde_json::json!({"run": {"id": "run_1", "state": "queued"}}));
+    assert_eq!(app.agent.run_state, "queued");
+    assert!(app.agent.last_run.is_none());
+}
+
+#[test]
+fn tick_ingests_only_new_events() {
+    let mut app = agent_app();
+    app.agent.last_run = Some("run_1".into());
+    app.agent.last_seq = 5;
+    let events = serde_json::json!([
+        {"run_id": "run_1", "sequence": 3, "type": "model.requested"},
+        {"run_id": "run_1", "sequence": 6, "type": "model.requested"},
+        {"run_id": "run_1", "sequence": 7, "type": "run.completed"},
+        {"run_id": "run_2", "sequence": 9, "type": "model.requested"}
+    ]);
+    let added = app.ingest_events(events.as_array().unwrap());
+    assert_eq!(added, 2);
+    assert_eq!(app.agent.last_seq, 7);
+    assert_eq!(app.ingest_events(events.as_array().unwrap()), 0);
+}
+
+#[test]
+fn terminal_run_shows_receipt() {
+    let mut app = agent_app();
+    app.apply_run_status(&serde_json::json!({"run": {
+        "id": "run_1", "state": "completed",
+        "receipt": {"provider": "sim", "model": "sim-1",
+                    "usage": {"input_tokens": 12, "output_tokens": 4},
+                    "cost": {"total": 0.0}}
+    }}));
+    assert_eq!(app.agent.run_state, "completed");
+    let last = &app.agent.lines.last().unwrap().text;
+    assert!(last.contains("completed"), "{last}");
+    assert!(last.contains("12 in / 4 out"), "{last}");
+    assert!(app.agent.receipt_shown);
+}
+
+#[test]
+fn cancel_marks_cancelling_only_when_active() {
+    let mut app = agent_app();
+    app.agent.last_run = Some("run_1".into());
+    app.agent.run_state = "running".into();
+    app.mark_cancelling();
+    assert_eq!(app.agent.run_state, "cancelling");
+    app.agent.run_state = "completed".into();
+    app.mark_cancelling();
+    assert_eq!(app.agent.run_state, "completed");
+}
+
+#[test]
+fn event_lines_skip_unrelated_events() {
+    let mut app = agent_app();
+    app.agent.last_run = Some("run_9".into());
+    let events = serde_json::json!([
+        {"run_id": "run_1", "sequence": 10, "type": "model.requested"},
+        {"run_id": "run_9", "sequence": 11, "type": "workspace.created"}
+    ]);
+    assert_eq!(app.ingest_events(events.as_array().unwrap()), 0);
+    assert_eq!(app.agent.last_seq, 11);
+}
