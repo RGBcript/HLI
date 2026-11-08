@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 
-ROOT = r"C:\Users\GUERRA\Documents\TEC\HLI"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOD = os.path.join(ROOT, "modules", "hli-memory")
 BIN = os.path.join(ROOT, "target", "debug", "hli-memory.exe")
 

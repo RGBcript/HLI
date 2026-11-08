@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 
-ROOT = r"C:\Users\GUERRA\Documents\TEC\HLI"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEBUG = os.path.join(ROOT, "target", "debug")
 HLI = os.path.join(DEBUG, "hli.exe")
 DAEMON = os.path.join(DEBUG, "hli-daemon.exe")

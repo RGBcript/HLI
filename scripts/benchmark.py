@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 
-ROOT = r"C:\Users\GUERRA\Documents\TEC\HLI"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HLI = os.path.join(ROOT, "target", "debug", "hli.exe")
 DAEMON = os.path.join(ROOT, "target", "debug", "hli-daemon.exe")
 OLLAMA = "http://127.0.0.1:11434/api/chat"
