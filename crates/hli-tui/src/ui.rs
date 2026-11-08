@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use serde_json::Value;
 
-use crate::app::{App, FocusArea, LayoutMode, layout_mode};
+use crate::app::{App, FeedbackKind, FocusArea, LayoutMode, layout_mode};
 
 pub const TABS: [&str; 6] = ["Run", "Events", "Context", "Memory", "Artifacts", "MCH"];
 
@@ -271,24 +271,29 @@ fn hint_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn command(f: &mut Frame, area: Rect, app: &App) {
+    let theme = Theme::for_app(app);
     let mut lines = vec![Line::from(vec![
         Span::styled("> ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(app.input.clone()),
     ])];
-    let text = if app.input.is_empty() {
-        "suggestion: :workspace create demo".to_string()
+    let line = if let Some(fb) = app.visible_feedback() {
+        let (prefix, color) = match fb.kind {
+            FeedbackKind::Success => (app.symbol("✓ ", "OK "), theme.success),
+            FeedbackKind::Error => (app.symbol("× ", "X "), theme.error),
+            FeedbackKind::Info => ("i ".to_string(), theme.artifact),
+        };
+        let style = if theme.mono {
+            Style::default()
+        } else {
+            Style::default().fg(color)
+        };
+        Line::from(Span::styled(format!(" {prefix}{}", fb.message), style))
+    } else if app.input.is_empty() {
+        Line::from(" suggestion: :workspace create demo")
     } else {
-        app.status.clone()
+        Line::from("")
     };
-    let color = if app.status_ok {
-        Color::Reset
-    } else {
-        Color::Red
-    };
-    lines.push(Line::from(Span::styled(
-        format!(" {text}"),
-        Style::default().fg(color),
-    )));
+    lines.push(line);
     f.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
         area,

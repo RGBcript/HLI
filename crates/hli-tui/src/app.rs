@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::{Value, json};
 
 use crate::client;
@@ -67,6 +68,48 @@ pub fn layout_mode(width: u16, height: u16) -> LayoutMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedbackKind {
+    Success,
+    Error,
+    Info,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommandFeedback {
+    pub kind: FeedbackKind,
+    pub message: String,
+    pub created_at: Instant,
+}
+
+impl CommandFeedback {
+    pub fn new(kind: FeedbackKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            created_at: Instant::now(),
+        }
+    }
+}
+
+fn summarize_output(ok: bool, text: &str) -> String {
+    if ok && let Ok(v) = serde_json::from_str::<Value>(text.trim()) {
+        for key in ["id", "name", "state"] {
+            if let Some(s) = v.get(key).and_then(Value::as_str) {
+                return format!("ok · {s}");
+            }
+        }
+        if let Some(arr) = v.as_array() {
+            return format!("ok · {}", arr.len());
+        }
+    }
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or(if ok { "ok" } else { "command failed" })
+        .to_string()
+}
+
 pub struct App {
     pub home: PathBuf,
     pub no_color: bool,
@@ -86,6 +129,8 @@ pub struct App {
     pub input: String,
     pub status: String,
     pub status_ok: bool,
+    pub feedback: Option<CommandFeedback>,
+    pub feedback_ttl: Duration,
     pub help: bool,
     pub filter: Option<String>,
     pub history: Vec<String>,
@@ -129,6 +174,8 @@ impl App {
             input: String::new(),
             status: "ready · ? help · : command · q quit".into(),
             status_ok: true,
+            feedback: None,
+            feedback_ttl: Duration::from_secs(5),
             help: false,
             filter: None,
             history: vec![],
@@ -196,6 +243,8 @@ impl App {
             input: String::new(),
             status: "demo".into(),
             status_ok: true,
+            feedback: None,
+            feedback_ttl: Duration::from_secs(5),
             help: false,
             filter: None,
             history: vec![],
@@ -291,6 +340,13 @@ impl App {
         if self.last_lists.elapsed() >= Duration::from_secs(4) {
             self.refresh_lists();
         }
+        if self
+            .feedback
+            .as_ref()
+            .is_some_and(|f| f.created_at.elapsed() >= self.feedback_ttl)
+        {
+            self.feedback = None;
+        }
     }
 
     pub fn cycle_focus(&mut self) {
@@ -323,11 +379,38 @@ impl App {
     }
     pub fn start_command(&mut self) {
         self.focus = FocusArea::CommandBar;
+        self.clear_feedback();
     }
     pub fn cancel_command(&mut self) {
         self.input.clear();
         self.history_index = None;
         self.focus = FocusArea::Navigation;
+        self.clear_feedback();
+    }
+
+    pub fn set_feedback(&mut self, kind: FeedbackKind, message: impl Into<String>) {
+        self.feedback = Some(CommandFeedback::new(kind, message));
+    }
+
+    pub fn clear_feedback(&mut self) {
+        self.feedback = None;
+    }
+
+    /// Feedback vigente: existe y no ha superado el TTL.
+    pub fn visible_feedback(&self) -> Option<&CommandFeedback> {
+        self.feedback
+            .as_ref()
+            .filter(|f| f.created_at.elapsed() < self.feedback_ttl)
+    }
+
+    /// Deriva el feedback de la salida de un comando.
+    pub fn apply_feedback(&mut self, ok: bool, text: &str) {
+        let kind = if ok {
+            FeedbackKind::Success
+        } else {
+            FeedbackKind::Error
+        };
+        self.set_feedback(kind, summarize_output(ok, text));
     }
 
     pub fn history_up(&mut self) {
@@ -392,23 +475,129 @@ impl App {
             .output();
         match out {
             Ok(o) => {
-                self.status_ok = o.status.success();
-                let text = if o.status.success() {
+                let ok = o.status.success();
+                let text = if ok {
                     String::from_utf8_lossy(&o.stdout).to_string()
                 } else {
                     String::from_utf8_lossy(&o.stderr).to_string()
                 };
-                self.status = text.lines().next().unwrap_or("ok").to_string();
-                self.refresh_lists();
-                self.refresh_runs();
+                self.finish_command(ok, &text);
             }
             Err(e) => {
-                self.status_ok = false;
-                self.status = format!("error: {e}");
+                self.finish_command(false, &format!("error: {e}"));
             }
         }
+    }
+
+    /// Estado posterior a la ejecución de un comando: conserva el resultado en
+    /// `feedback`, limpia la entrada y devuelve el foco a la navegación.
+    pub fn finish_command(&mut self, ok: bool, text: &str) {
+        self.status_ok = ok;
+        self.status = text.lines().next().unwrap_or("ok").to_string();
+        self.apply_feedback(ok, text);
         self.input.clear();
         self.focus = FocusArea::Navigation;
+        self.refresh_lists();
+        self.refresh_runs();
+    }
+
+    /// Procesa un evento de teclado. Devuelve `true` si la TUI debe cerrarse.
+    ///
+    /// Solo se atienden `Press` y `Repeat`: los eventos `Release` que Windows
+    /// entrega junto a cada pulsación no deben ejecutar la acción dos veces.
+    #[allow(clippy::collapsible_match)]
+    pub fn handle_key(&mut self, k: KeyEvent) -> bool {
+        if !matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return false;
+        }
+        let in_command = self.focus == FocusArea::CommandBar;
+        match k.code {
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return true,
+            KeyCode::Char('q') => {
+                if self.help {
+                    self.close_help();
+                } else if in_command {
+                    self.input.push('q');
+                    self.clear_feedback();
+                } else {
+                    return true;
+                }
+            }
+            KeyCode::Char('?') => {
+                self.help = !self.help;
+            }
+            KeyCode::Esc => {
+                if self.help {
+                    self.close_help();
+                } else if in_command {
+                    self.cancel_command();
+                } else {
+                    self.filter = None;
+                }
+                self.clear_feedback();
+            }
+            KeyCode::Tab => {
+                if !in_command {
+                    self.cycle_focus();
+                }
+            }
+            KeyCode::BackTab => {
+                if !in_command {
+                    self.cycle_focus_back();
+                }
+            }
+            KeyCode::Char(':') => {
+                self.start_command();
+            }
+            KeyCode::Char('/') => {
+                self.input = "/".into();
+                self.start_command();
+            }
+            KeyCode::Char(c @ '1'..='6') if !in_command => {
+                self.tab = (c as usize) - ('1' as usize);
+                self.focus = FocusArea::DetailTabs;
+            }
+            KeyCode::Enter => {
+                if in_command {
+                    self.run_command();
+                } else {
+                    self.focus = FocusArea::Inspector;
+                }
+            }
+            KeyCode::Backspace => {
+                if in_command {
+                    self.input.pop();
+                }
+            }
+            KeyCode::Up => match self.focus {
+                FocusArea::Navigation => self.nav_index = self.nav_index.saturating_sub(1),
+                FocusArea::Collection => {
+                    self.collection_index = self.collection_index.saturating_sub(1)
+                }
+                FocusArea::CommandBar => self.history_up(),
+                _ => self.scroll_up(),
+            },
+            KeyCode::Down => match self.focus {
+                FocusArea::Navigation => self.nav_index += 1,
+                FocusArea::Collection => {
+                    if self.collection_index + 1 < self.runs.len() {
+                        self.collection_index += 1;
+                    }
+                }
+                FocusArea::CommandBar => self.history_down(),
+                _ => self.scroll_down(self.events.len()),
+            },
+            KeyCode::Left => self.prev_tab(),
+            KeyCode::Right => self.next_tab(),
+            KeyCode::Char(c) => {
+                if in_command {
+                    self.input.push(c);
+                    self.clear_feedback();
+                }
+            }
+            _ => {}
+        }
+        false
     }
 
     pub fn selected_index(&self) -> usize {

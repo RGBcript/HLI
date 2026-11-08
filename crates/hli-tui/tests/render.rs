@@ -1,8 +1,20 @@
+use std::time::{Duration, Instant};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use hli_tui::app::{App, FocusArea, LayoutMode, layout_mode, split_command};
+use hli_tui::app::{App, FeedbackKind, FocusArea, LayoutMode, layout_mode, split_command};
 use hli_tui::ui;
+
+fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+    KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
+}
+
+fn tap(app: &mut App, code: KeyCode) {
+    app.handle_key(key(code, KeyEventKind::Press));
+    app.handle_key(key(code, KeyEventKind::Release));
+}
 
 fn render(app: &App, w: u16, h: u16) -> String {
     let backend = TestBackend::new(w, h);
@@ -278,4 +290,143 @@ fn terminal_is_restored_after_panic() {
     hli_tui::install_panic_hook();
     let _ = std::panic::catch_unwind(|| panic!("test de restauracion"));
     assert!(hli_tui::panic_restored());
+}
+
+// --- K1: eventos de teclado -------------------------------------------------
+
+#[test]
+fn key_press_is_processed_once() {
+    let mut app = App::demo();
+    app.start_command();
+    app.handle_key(key(KeyCode::Char('a'), KeyEventKind::Press));
+    assert_eq!(app.input, "a");
+}
+
+#[test]
+fn key_release_is_ignored() {
+    let mut app = App::demo();
+    app.start_command();
+    app.handle_key(key(KeyCode::Char('a'), KeyEventKind::Press));
+    app.handle_key(key(KeyCode::Char('a'), KeyEventKind::Release));
+    assert_eq!(app.input, "a");
+}
+
+#[test]
+fn key_repeat_is_processed() {
+    let mut app = App::demo();
+    app.start_command();
+    app.handle_key(key(KeyCode::Char('b'), KeyEventKind::Repeat));
+    assert_eq!(app.input, "b");
+}
+
+#[test]
+fn press_and_release_do_not_duplicate_input() {
+    let mut app = App::demo();
+    app.start_command();
+    tap(&mut app, KeyCode::Char('a'));
+    tap(&mut app, KeyCode::Char('b'));
+    assert_eq!(app.input, "ab");
+}
+
+#[test]
+fn question_mark_does_not_open_and_close_help() {
+    let mut app = App::demo();
+    tap(&mut app, KeyCode::Char('?'));
+    assert!(app.help);
+    assert!(render(&app, 120, 40).contains("HLI help"));
+}
+
+#[test]
+fn tab_advances_exactly_one_focus_area() {
+    let mut app = App::demo();
+    assert_eq!(app.focus, FocusArea::Navigation);
+    tap(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, FocusArea::Collection);
+}
+
+#[test]
+fn command_text_is_not_duplicated() {
+    let mut app = App::demo();
+    app.start_command();
+    for c in ['a', 'b', 'c'] {
+        tap(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(app.input, "abc");
+}
+
+// --- K2: feedback de la barra de comandos ----------------------------------
+
+#[test]
+fn command_success_feedback_is_visible() {
+    let mut app = App::demo();
+    app.finish_command(true, "Memory committed: mem_018");
+    let text = render(&app, 120, 40);
+    assert!(text.contains("Memory committed: mem_018"));
+    assert!(text.contains('✓'));
+}
+
+#[test]
+fn command_error_feedback_is_visible() {
+    let mut app = App::demo();
+    app.finish_command(false, "workspace not found");
+    let text = render(&app, 120, 40);
+    assert!(text.contains("workspace not found"));
+    assert!(text.contains('×'));
+}
+
+#[test]
+fn empty_input_does_not_hide_feedback() {
+    let mut app = App::demo();
+    app.finish_command(true, "Workspace created: ws_1");
+    assert!(app.input.is_empty());
+    let text = render(&app, 120, 40);
+    assert!(text.contains("Workspace created: ws_1"));
+    assert!(!text.contains("suggestion:"));
+}
+
+#[test]
+fn typing_clears_previous_feedback() {
+    let mut app = App::demo();
+    app.finish_command(true, "ok");
+    assert!(app.feedback.is_some());
+    app.start_command();
+    app.handle_key(key(KeyCode::Char('x'), KeyEventKind::Press));
+    assert!(app.feedback.is_none());
+}
+
+#[test]
+fn escape_clears_feedback() {
+    let mut app = App::demo();
+    app.finish_command(true, "ok");
+    tap(&mut app, KeyCode::Esc);
+    assert!(app.feedback.is_none());
+}
+
+#[test]
+fn feedback_expires_after_timeout() {
+    let mut app = App::demo();
+    app.finish_command(true, "ok");
+    app.feedback.as_mut().unwrap().created_at = Instant::now() - Duration::from_secs(6);
+    assert!(app.visible_feedback().is_none());
+    assert!(render(&app, 120, 40).contains("suggestion:"));
+}
+
+#[test]
+fn new_feedback_replaces_previous_feedback() {
+    let mut app = App::demo();
+    app.finish_command(true, "primero");
+    app.finish_command(false, "segundo");
+    let fb = app.visible_feedback().unwrap();
+    assert_eq!(fb.message, "segundo");
+    assert_eq!(fb.kind, FeedbackKind::Error);
+}
+
+#[test]
+fn command_execution_clears_input_but_keeps_feedback() {
+    let mut app = App::demo();
+    app.start_command();
+    app.input = "memory list".into();
+    app.finish_command(true, "mem_1");
+    assert!(app.input.is_empty());
+    assert!(app.visible_feedback().is_some());
 }
