@@ -45,6 +45,20 @@ Guía completa de 15 minutos: [QUICKSTART.md](QUICKSTART.md).
 `shell.execute` está denegado por diseño. No se anuncia aislamiento completo del
 sistema operativo.
 
+## Agent Mode
+
+`hli` sin argumentos abre **Agent Mode**: vincula el directorio actual a un
+workspace, toma una tarea en lenguaje natural y crea el thread, la rama y el run
+sin pedir nada más. `hli inspect` (o `Ctrl+O`) abre el dashboard de observabilidad
+anterior, que se conserva como **Inspector**.
+
+- Guía: [docs/AGENT-MODE.md](docs/AGENT-MODE.md)
+- Flujo: [docs/DELEGATION-WORKFLOW.md](docs/DELEGATION-WORKFLOW.md)
+- Gate manual: [docs/AGENT-TUI-MANUAL-GATE.md](docs/AGENT-TUI-MANUAL-GATE.md)
+
+Automatización y control directo siguen disponibles por CLI (`hli run "<tarea>"`,
+`hli <recurso> <acción>`); MCP y MCH no cambian.
+
 ## Documentación de estado
 
 Los cinco documentos oficiales del proyecto. Si solo vas a leer algo, lee el
