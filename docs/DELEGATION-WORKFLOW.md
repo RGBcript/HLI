@@ -62,12 +62,16 @@ Lo que ocurrió por debajo, sin que el usuario lo pidiera:
 ## Automatización
 
 ```powershell
-hli run "revisa el estado" --output json
+hli run "revisa el estado" --output json      # objeto completo
+hli run "revisa el estado" --output jsonl     # una línea JSON
+hli run "revisa el estado" --async            # devuelve run_id y sale
 ```
 
 Requiere un workspace vinculado al directorio actual. Sin él, falla con un
-mensaje que remite a `hli`. `--async` y `--output jsonl` todavía no están
-soportados.
+mensaje que remite a `hli`.
+
+La ejecución observada usa el mismo camino: `run.start` con `async: true`,
+polling de `run.status` y actividad por `event.list`.
 
 ## Lo que este flujo no hace
 

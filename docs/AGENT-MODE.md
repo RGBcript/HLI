@@ -90,14 +90,26 @@ humano quedan pendientes; no se inventa identidad.
 - La fuente de verdad sigue siendo el daemon: la TUI no abre SQLite ni escribe
   el Event Store.
 
+## Ejecución observada
+
+- `run.start` se envía con `async: true`: el compositor queda libre mientras el
+  run corre.
+- Polling cada 350 ms de `run.status` y `event.list`.
+- Actividad: eventos `run.*`, `model.*`, `context.*` y `tool.*` del run actual,
+  sin repetir secuencias.
+- Al llegar a un estado terminal se muestra el receipt: provider/model, tokens y
+  coste.
+- `Ctrl+C` cancela de verdad (`run.cancel`): `queued → cancelled`,
+  `running → cancelling → cancelled`.
+- `HLI_SIM_DELAY_MS` retrasa el proveedor `sim` (ayuda de prueba, no de
+  producción) para poder observar la ejecución.
+
 ## Límites de este slice
 
-- El run es síncrono: la interfaz espera la respuesta del daemon (con `sim` es
-  inmediato; con un provider real bloquea hasta terminar).
-- Sin streaming de actividad ni plan/aprobación por herramienta.
+- La actividad es por polling, no streaming push del daemon.
+- Sin plan aprobable ni UI de permisos; la política vigente no cambia.
 - Sin UI de permisos: la política vigente no cambia y `shell.execute` sigue
   denegado.
 - Sin `Ctrl+R`, `Ctrl+E`, `/details` ni expansión de actividad.
-- Sin `--output jsonl` ni visibilidad de runs asíncronos.
 - El título del thread es el prompt truncado; se puede renombrar por CLI en una
   iteración posterior.

@@ -53,6 +53,21 @@ cd demo-project
 
 ---
 
+## 1b. Ejecución observada
+
+Con `$env:HLI_SIM_DELAY_MS = "2500"` antes de abrir `hli`:
+
+| # | Acción | Qué debe verse |
+|---|---|---|
+| 20 | Enviar una tarea | `run running` en el transcript y en la barra; la actividad aparece sin bloquear el compositor |
+| 21 | Esperar | `completed · sim/sim-1 · N in / M out · $0.000000` |
+| 22 | Otra tarea y `Ctrl+C` | `run cancelling` y después `cancelled`; nunca `completed` |
+
+Sin retardo, `HLI_SIM_DELAY_MS` no se define y el run puede completarse antes del
+primer poll: es correcto.
+
+---
+
 ## 2. Criterio de aceptación
 
 - No hay pánico ni corrupción de pantalla.
@@ -74,7 +89,7 @@ Commit evaluado:
 Dimensiones probadas:
 Fecha:
 Paso 0 (teclado):       OK / REGRESIÓN
-Pasos ejecutados:       19 / 19
+Pasos ejecutados:       22 / 22
 Resultado:              PENDIENTE / PASA / FALLA
 Observaciones:
 Firma:
