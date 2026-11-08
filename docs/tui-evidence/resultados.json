@@ -1,0 +1,120 @@
+{
+  "eventos": {
+    "tab_un_panel": true,
+    "ayuda_abierta": true,
+    "ayuda_cerrada": true,
+    "abc_exacto": true,
+    "release_ignorado": true,
+    "repeat_una_vez": true,
+    "abc_linea": [
+      "> abc"
+    ],
+    "repeat_linea": [
+      "> a"
+    ]
+  },
+  "recorrido": {
+    "focus_inicial": "Navigation",
+    "focos": [
+      "Runs",
+      "Run run_d2330d4abf40ec9a",
+      "Run",
+      "(sin borde doble)"
+    ],
+    "pestañas": true,
+    "exito_visible": true,
+    "exito_no_sugerencia": true,
+    "error_visible": true,
+    "esc_limpia": true,
+    "feedback_exito": [
+      ">",
+      "✓ ok · mem_d6b133d6ec2213ca"
+    ],
+    "feedback_error": [
+      ">",
+      "× hli: not_found: workspace noexiste no existe"
+    ],
+    "exit": {
+      "name": "__exit__",
+      "exit": 0,
+      "cursor": {
+        "visible": true,
+        "size": 25,
+        "x": 0,
+        "y": 0
+      }
+    },
+    "cursor_inicio": {
+      "visible": true,
+      "size": 25,
+      "x": 119,
+      "y": 29
+    }
+  },
+  "layouts": {
+    "120x30 Full": {
+      "exit": 0,
+      "texto": [
+        "┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐",
+        "│HLI │ workspace: gate │ thread: session │ branch: main │ provider: sim/sim-1 │ daemon: up                             │",
+        "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+      ]
+    },
+    "99x30 Medium": {
+      "exit": 0,
+      "texto": [
+        "┌─────────────────────────────────────────────────────────────────────────────────────────────────┐",
+        "│HLI │ workspace: gate │ thread: session │ branch: main │ provider: sim/sim-1 │ daemon: up        │",
+        "└─────────────────────────────────────────────────────────────────────────────────────────────────┘"
+      ]
+    },
+    "70x20 Compact": {
+      "exit": 0,
+      "texto": [
+        "┌────────────────────────────────────────────────────────────────────┐",
+        "│HLI │ workspace: gate │ thread: session │ branch: main │ provider: …│",
+        "└────────────────────────────────────────────────────────────────────┘"
+      ]
+    },
+    "59x20 Reduced": {
+      "exit": 0,
+      "texto": [
+        "┌─────────────────────────────────────────────────────────┐",
+        "│HLI │ workspace: gate │ thread: session │ branch: main │…│",
+        "└─────────────────────────────────────────────────────────┘"
+      ]
+    },
+    "39x9 TooSmall": {
+      "exit": 0,
+      "texto": [
+        "┌─────────────────────────────────────┐",
+        "│Terminal too small                   │",
+        "│Required: 40x10                      │"
+      ]
+    }
+  },
+  "layout_checks": {
+    "full": true,
+    "medium": true,
+    "compact": true,
+    "reduced": true,
+    "too_small": true
+  },
+  "no_color": {
+    "sin_sgr_color": true,
+    "foco": true,
+    "exit": 0
+  },
+  "ascii": {
+    "sin_bullet": true,
+    "asterisco": true,
+    "exit": 0
+  },
+  "control": {
+    "alt_enter": 1,
+    "alt_leave": 1,
+    "cursor_hide": 12,
+    "cursor_show": 1,
+    "exit": 0
+  }
+}
