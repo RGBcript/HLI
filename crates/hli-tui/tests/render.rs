@@ -4,11 +4,17 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use hli_tui::app::{App, FeedbackKind, FocusArea, LayoutMode, layout_mode, split_command};
+use hli_tui::app::{
+    AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, TuiMode, layout_mode, split_command,
+};
 use hli_tui::ui;
 
 fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
     KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
+}
+
+fn key_with(code: KeyCode, kind: KeyEventKind, mods: KeyModifiers) -> KeyEvent {
+    KeyEvent::new_with_kind(code, mods, kind)
 }
 
 fn tap(app: &mut App, code: KeyCode) {
@@ -429,4 +435,162 @@ fn command_execution_clears_input_but_keeps_feedback() {
     app.finish_command(true, "mem_1");
     assert!(app.input.is_empty());
     assert!(app.visible_feedback().is_some());
+}
+
+// --- Agent Mode -------------------------------------------------------------
+
+fn agent_app() -> App {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.workspace = Some(serde_json::json!({"id": "ws_1", "name": "demo"}));
+    app.agent.thread = Some(serde_json::json!({"id": "thr_1", "title": "session"}));
+    app.agent.branch = Some(serde_json::json!({"id": "br_1", "name": "main"}));
+    app
+}
+
+#[test]
+fn hli_without_args_opens_agent_mode() {
+    assert_eq!(TuiMode::from_arg(None), TuiMode::Agent);
+}
+
+#[test]
+fn inspect_command_opens_inspector_mode() {
+    assert_eq!(TuiMode::from_arg(Some("inspect")), TuiMode::Inspector);
+}
+
+#[test]
+fn agent_mode_initial_focus_is_composer() {
+    let app = agent_app();
+    let text = render(&app, 120, 30);
+    assert!(text.contains("compose"));
+    assert!(text.contains("> "));
+}
+
+#[test]
+fn agent_mode_does_not_show_admin_panels() {
+    let app = agent_app();
+    let text = render(&app, 120, 30);
+    for panel in ["┌ Runs ", "▸ Navigation", "┌ Context ", "┌ MCH "] {
+        assert!(
+            !text.contains(panel),
+            "panel de administración visible: {panel}"
+        );
+    }
+    assert!(text.contains("transcript"));
+}
+
+#[test]
+fn new_workspace_requires_single_confirmation() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.composer = "analiza el repo".into();
+    app.submit_prompt();
+    assert!(matches!(app.agent.offer, Offer::CreateWorkspace { .. }));
+    assert_eq!(app.agent.pending.as_deref(), Some("analiza el repo"));
+    assert!(app.agent.last_run.is_none());
+}
+
+#[test]
+fn prompt_creates_thread_and_run_implicitly() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.workspace = Some(serde_json::json!({"id": "ws_1"}));
+    let plan = app.plan_prompt();
+    assert!(plan.create_thread);
+    assert!(plan.create_branch);
+}
+
+#[test]
+fn followup_reuses_current_thread() {
+    let app = agent_app();
+    let plan = app.plan_prompt();
+    assert!(!plan.create_thread);
+    assert!(!plan.create_branch);
+}
+
+#[test]
+fn ctrl_o_switches_modes_without_losing_state() {
+    let mut app = agent_app();
+    app.agent.composer = "hola".into();
+    app.agent.push(AgentKind::User, "hola");
+    app.handle_key(key_with(
+        KeyCode::Char('o'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Inspector);
+    app.handle_key(key_with(
+        KeyCode::Char('o'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Agent);
+    assert_eq!(app.agent.composer, "hola");
+    assert_eq!(app.agent.lines.len(), 1);
+}
+
+#[test]
+fn escape_returns_from_inspector() {
+    let mut app = agent_app();
+    app.mode = TuiMode::Inspector;
+    app.focus = FocusArea::Navigation;
+    tap(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, TuiMode::Agent);
+}
+
+#[test]
+fn key_release_is_ignored_in_both_modes() {
+    let mut app = agent_app();
+    app.handle_key(key_with(
+        KeyCode::Char('a'),
+        KeyEventKind::Release,
+        KeyModifiers::NONE,
+    ));
+    assert!(app.agent.composer.is_empty());
+    app.mode = TuiMode::Inspector;
+    app.start_command();
+    app.handle_key(key_with(
+        KeyCode::Char('a'),
+        KeyEventKind::Release,
+        KeyModifiers::NONE,
+    ));
+    assert!(app.input.is_empty());
+}
+
+#[test]
+fn small_terminal_does_not_panic() {
+    let app = agent_app();
+    let text = render(&app, 39, 9);
+    assert!(text.contains("Terminal too small"));
+}
+
+#[test]
+fn slash_command_reuses_existing_contract() {
+    let mut app = agent_app();
+    app.run_slash("/inspect");
+    assert_eq!(app.mode, TuiMode::Inspector);
+    app.mode = TuiMode::Agent;
+    app.run_slash("/help");
+    assert!(app.help);
+    app.help = false;
+    app.run_slash("/unknown-command");
+    assert!(
+        app.agent
+            .lines
+            .last()
+            .is_some_and(|l| l.text.contains("no disponible"))
+    );
+}
+
+#[test]
+fn at_reference_resolves_stable_id() {
+    let mut app = agent_app();
+    for c in ["@", "a", "r", "t", "_", "0", "9", "1"] {
+        app.handle_key(key_with(
+            KeyCode::Char(c.chars().next().unwrap()),
+            KeyEventKind::Press,
+            KeyModifiers::NONE,
+        ));
+    }
+    assert_eq!(app.agent.composer, "@art_091");
 }

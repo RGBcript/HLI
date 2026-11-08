@@ -5,7 +5,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use serde_json::Value;
 
-use crate::app::{App, FeedbackKind, FocusArea, LayoutMode, layout_mode};
+use crate::app::{
+    AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, TuiMode, layout_mode,
+};
 
 pub const TABS: [&str; 6] = ["Run", "Events", "Context", "Memory", "Artifacts", "MCH"];
 
@@ -78,6 +80,13 @@ fn block(title: &str, focused: bool, t: &Theme) -> Block<'static> {
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
+    if app.mode == TuiMode::Agent {
+        draw_agent(f, app);
+        if app.help {
+            draw_help(f, area, app);
+        }
+        return;
+    }
     match layout_mode(area.width, area.height) {
         LayoutMode::TooSmall => draw_too_small(f, area),
         LayoutMode::Reduced => draw_reduced(f, area, app),
@@ -621,6 +630,158 @@ fn mch_lines(app: &App) -> Vec<Line<'static>> {
         )));
     }
     v
+}
+
+// ---------------------------------------------------------------------------
+// Agent Mode
+// ---------------------------------------------------------------------------
+
+fn draw_agent(f: &mut Frame, app: &App) {
+    let area = f.area();
+    if area.width < 40 || area.height < 10 {
+        draw_too_small(f, area);
+        return;
+    }
+    let heights = if app.agent.offer != Offer::None { 5 } else { 3 };
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(heights),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    let t = Theme::for_app(app);
+    let ws = app
+        .agent
+        .workspace
+        .as_ref()
+        .and_then(|w| w["name"].as_str())
+        .unwrap_or("no-workspace");
+    let th = app
+        .agent
+        .thread
+        .as_ref()
+        .and_then(|w| w["title"].as_str())
+        .unwrap_or("no-thread");
+    let br = app
+        .agent
+        .branch
+        .as_ref()
+        .and_then(|w| w["name"].as_str())
+        .unwrap_or("no-branch");
+    let head = format!(
+        "HLI │ {ws}/{th}/{br} │ {}/{} │ {}",
+        app.agent.provider, app.agent.model, app.agent.run_state
+    );
+    f.render_widget(
+        Paragraph::new(head).block(Block::default().borders(Borders::ALL).title(" HLI ")),
+        parts[0],
+    );
+
+    let inner_h = parts[1].height.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for l in &app.agent.lines {
+        let (tag, color) = match l.kind {
+            AgentKind::User => ("You", t.primary),
+            AgentKind::Hli => ("HLI", t.memory),
+            AgentKind::Tool => ("·", t.success),
+            AgentKind::Error => ("×", t.error),
+            AgentKind::Info => ("·", t.artifact),
+        };
+        let style = if t.mono {
+            Style::default()
+        } else {
+            Style::default().fg(color)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{tag} "),
+            style.add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(format!("  {}", l.text)));
+        lines.push(Line::from(""));
+    }
+    if lines.len() > inner_h {
+        lines = lines.split_off(lines.len() - inner_h);
+    }
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" transcript "))
+            .wrap(Wrap { trim: false }),
+        parts[1],
+    );
+
+    match app.agent.offer.clone() {
+        Offer::None => {
+            let block = Block::default().borders(Borders::ALL).title(" compose ");
+            let mut text: Vec<Line> = Vec::new();
+            for (i, l) in app.agent.composer.split('\n').enumerate() {
+                let prefix = if i == 0 { "> " } else { "  " };
+                text.push(Line::from(format!("{prefix}{l}")));
+            }
+            if text.is_empty() {
+                text.push(Line::from("> "));
+            }
+            f.render_widget(Paragraph::new(text).block(block), parts[2]);
+        }
+        Offer::CreateWorkspace { name } => {
+            let text = vec![
+                Line::from("No HLI workspace is linked to this directory."),
+                Line::from(format!("[Enter] Create workspace \"{name}\"")),
+                Line::from("[Esc]   Cancel"),
+            ];
+            f.render_widget(
+                Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" link ")),
+                parts[2],
+            );
+        }
+        Offer::CreateBranch { name } => {
+            let text = vec![
+                Line::from(format!("Create branch \"{name}\" from current revision?")),
+                Line::from("[Enter] Create   [Esc] Cancel"),
+            ];
+            f.render_widget(
+                Paragraph::new(text)
+                    .block(Block::default().borders(Borders::ALL).title(" branch ")),
+                parts[2],
+            );
+        }
+    }
+
+    f.render_widget(Paragraph::new(format!(" {}", app.agent.status)), parts[3]);
+
+    if app.agent.palette {
+        draw_palette(f, area, app);
+    }
+}
+
+fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
+    let w = area.width.min(50);
+    let h = area.height.min(12);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let items = app.palette_items();
+    let mut lines = Vec::new();
+    for (i, cmd) in items.iter().enumerate() {
+        let mark = if i == 0 { "▸ " } else { "  " };
+        lines.push(Line::from(format!("{mark}/{cmd}")));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from("  (sin coincidencias)"));
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" commands ")),
+        rect,
+    );
 }
 
 fn draw_help(f: &mut Frame, area: Rect, _app: &App) {
