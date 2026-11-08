@@ -918,13 +918,7 @@ fn linked_workspace() -> Result<Option<Value>, String> {
 }
 
 fn run_task(args: &[String], output: &str) -> Result<(), String> {
-    if args.iter().any(|a| a == "--output")
-        && args
-            .windows(2)
-            .any(|w| w[0] == "--output" && w[1] == "jsonl")
-    {
-        return Err("--output jsonl todavía no está soportado".into());
-    }
+    let is_async = args.iter().any(|a| a == "--async");
     let task = args.first().cloned().unwrap_or_default();
     if task.trim().is_empty() {
         return Err("falta la tarea".into());
@@ -962,6 +956,7 @@ fn run_task(args: &[String], output: &str) -> Result<(), String> {
             "thread_id": thread_id,
             "branch_id": branch_id,
             "prompt": task,
+            "async": is_async,
         }),
     )?;
     print_value(&v, output)
@@ -970,6 +965,11 @@ fn run_task(args: &[String], output: &str) -> Result<(), String> {
 fn usage() -> Result<(), String> {
     eprintln!(
         "hli {}
+  hli                      Agent Mode sobre el directorio actual
+  hli . | hli <ruta>       Agent Mode vinculado a esa ruta
+  hli inspect              Inspector Mode
+  hli resume               reanudar el último thread del directorio
+  hli run \"<tarea>\"      ejecución directa [--async] [--output jsonl]
   hli daemon start|stop|status
   hli workspace create <name> [--root PATH] | list | get <id>
   hli thread create <title> --workspace <id> | list --workspace <id>
