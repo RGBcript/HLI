@@ -198,6 +198,9 @@ pub struct AgentState {
     pub history: Vec<String>,
     pub history_index: Option<usize>,
     pub palette: bool,
+    /// `/clear` exige dos invocaciones seguidas: borrar el transcript no debe
+    /// depender de una tecla mal pulsada.
+    pub clear_armed: Option<Instant>,
     pub palette_index: usize,
     pub agent_tab: AgentTab,
     pub ws_sel: usize,
@@ -814,6 +817,7 @@ impl Default for AgentState {
             history: Vec::new(),
             history_index: None,
             palette: false,
+            clear_armed: None,
             palette_index: 0,
             agent_tab: AgentTab::default(),
             ws_sel: 0,
@@ -4845,8 +4849,24 @@ impl App {
                 self.tab = 5;
             }
             "clear" => {
-                self.agent.lines.clear();
-                self.agent.activity_sel = None;
+                let armed = self
+                    .agent
+                    .clear_armed
+                    .map(|t| t.elapsed() < Duration::from_secs(5))
+                    .unwrap_or(false);
+                if armed {
+                    self.agent.lines.clear();
+                    self.agent.activity_sel = None;
+                    self.agent.clear_armed = None;
+                    self.agent
+                        .push(AgentKind::Info, "transcript limpiado".to_string());
+                } else {
+                    self.agent.clear_armed = Some(Instant::now());
+                    self.agent.push(
+                        AgentKind::Info,
+                        "escribe /clear otra vez en 5 s para borrar el transcript".to_string(),
+                    );
+                }
             }
             "details" => self.toggle_all_details(),
             "cancel" => self.request_cancel(),

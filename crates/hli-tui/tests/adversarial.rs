@@ -250,6 +250,32 @@ fn thousand_activity_lines_keep_the_viewport_consistent() {
 }
 
 #[test]
+fn clear_requires_two_invocations() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent
+        .push(hli_tui::app::AgentKind::Info, "uno".to_string());
+    app.agent
+        .push(hli_tui::app::AgentKind::Info, "dos".to_string());
+    app.run_slash("/clear");
+    assert!(app.agent.lines.len() >= 2, "borró a la primera");
+    app.run_slash("/clear");
+    assert_eq!(app.agent.lines.len(), 1, "no borró tras confirmar");
+}
+
+#[test]
+fn clear_arm_expires_after_five_seconds() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent
+        .push(hli_tui::app::AgentKind::Info, "uno".to_string());
+    app.agent.clear_armed = Some(std::time::Instant::now() - std::time::Duration::from_secs(6));
+    app.run_slash("/clear");
+    assert!(!app.agent.lines.is_empty());
+    assert!(app.agent.clear_armed.is_some(), "rearmó en vez de expirar");
+}
+
+#[test]
 fn transcript_is_pruned_but_keeps_the_latest() {
     let mut app = App::demo();
     app.mode = TuiMode::Agent;
