@@ -17,7 +17,19 @@ TARGET = os.path.join(ROOT, "target", "debug")
 HLI = os.path.join(TARGET, "hli.exe")
 DAEMON = os.path.join(TARGET, "hli-daemon.exe")
 MCP = os.path.join(TARGET, "hli-mcp.exe")
-MODULE = os.path.join(TARGET, "hli-memory.exe")
+def _binary(name: str, package: str) -> str:
+    base = os.path.join(TARGET, name)
+    for candidate in (base + ".exe", base):
+        if os.path.exists(candidate):
+            return candidate
+    subprocess.run(["cargo", "build", "-p", package], cwd=ROOT, check=True)
+    for candidate in (base + ".exe", base):
+        if os.path.exists(candidate):
+            return candidate
+    raise SystemExit(f"no se encontró el binario {name}")
+
+
+MODULE = _binary("hli-memory", "hli-module-memory")
 
 
 def sha(b):
