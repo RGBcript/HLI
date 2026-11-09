@@ -182,6 +182,18 @@ fn make_receipt(
         used_memory_ids: used_memory_ids.clone(),
         used_slice_ids,
         used_event_ids,
+        used_explicit_reference_ids: manifest
+            .explicit_references
+            .iter()
+            .filter(|r| r.included)
+            .map(|r| r.stable_id.clone())
+            .collect(),
+        rejected_explicit_reference_ids: manifest
+            .explicit_references
+            .iter()
+            .filter(|r| !r.included)
+            .map(|r| r.stable_id.clone())
+            .collect(),
         candidate_memory_ids,
         rejected_memory_ids: rejected_memory_ids.clone(),
         rejection_reasons: if rejected_memory_ids.is_empty() {
@@ -740,25 +752,7 @@ fn dispatch(
                 secret_handles.push(json!({"id": handle, "version": version}));
             }
 
-            let run = w.create_run(&ws, &th, &br, &prompt)?;
             let ws_obj = r.workspace(&ws)?;
-            let instructions = ws_obj
-                .config
-                .get("instructions")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let visible = r.visible_events(&br, run.branch_revision)?;
-            let top_k = args
-                .get("top_k")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5)
-                .max(1) as usize;
-            let memories = r.search_memories(&ws, &prompt, top_k)?;
-            let candidate_memory_ids: Vec<String> = memories
-                .iter()
-                .filter_map(|m| m["id"].as_str().map(str::to_string))
-                .collect();
             let explicit_in: Vec<hli_core::model::ExplicitReference> = args
                 .get("explicit_references")
                 .filter(|v| !v.is_null())
@@ -776,6 +770,24 @@ fn dispatch(
                 &explicit_in,
                 budget_chars,
             )?;
+            let run = w.create_run(&ws, &th, &br, &prompt)?;
+            let instructions = ws_obj
+                .config
+                .get("instructions")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let visible = r.visible_events(&br, run.branch_revision)?;
+            let top_k = args
+                .get("top_k")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5)
+                .max(1) as usize;
+            let memories = r.search_memories(&ws, &prompt, top_k)?;
+            let candidate_memory_ids: Vec<String> = memories
+                .iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect();
             let mut manifest = build_manifest(
                 &run,
                 &visible,
@@ -1780,12 +1792,13 @@ fn materialize_references(
                         status, rf.stable_id
                     )));
                 }
-                if let Some(until) = m["valid_until"].as_str()
-                    && until < hli_core::time::now_iso().as_str()
+                let now = iso_secs(&hli_core::time::now_iso()).unwrap_or(0);
+                if let Err(reason) =
+                    reference_time_state(m["valid_from"].as_str(), m["valid_until"].as_str(), now)
                 {
                     return Err(HliError::conflict(format!(
-                        "reference_expired: {}",
-                        rf.stable_id
+                        "reference_{}: {}",
+                        reason, rf.stable_id
                     )));
                 }
                 let content: String = m["content"]
@@ -1893,6 +1906,94 @@ fn materialize_references(
         out.push(e);
     }
     Ok(out)
+}
+
+fn iso_secs(s: &str) -> Option<i64> {
+    if s.len() < 19 {
+        return None;
+    }
+    let y: i64 = s.get(0..4)?.parse().ok()?;
+    let mo: i64 = s.get(5..7)?.parse().ok()?;
+    let d: i64 = s.get(8..10)?.parse().ok()?;
+    let h: i64 = s.get(11..13)?.parse().ok()?;
+    let mi: i64 = s.get(14..16)?.parse().ok()?;
+    let se: i64 = s.get(17..19)?.parse().ok()?;
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + h * 3600 + mi * 60 + se)
+}
+
+/// Comprueba los límites temporales de una memoria con timestamps parseados.
+fn reference_time_state(
+    valid_from: Option<&str>,
+    valid_until: Option<&str>,
+    now: i64,
+) -> std::result::Result<(), &'static str> {
+    if let Some(v) = valid_from {
+        let t = iso_secs(v).ok_or("invalid_timestamp")?;
+        if t > now {
+            return Err("not_yet_valid");
+        }
+    }
+    if let Some(v) = valid_until {
+        let t = iso_secs(v).ok_or("invalid_timestamp")?;
+        if t < now {
+            return Err("expired");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod reference_time_tests {
+    use super::*;
+
+    #[test]
+    fn parses_iso_timestamp() {
+        assert!(iso_secs("2026-11-08T10:00:00Z").is_some());
+    }
+
+    #[test]
+    fn rejects_malformed_timestamp() {
+        assert!(iso_secs("not-a-date").is_none());
+        assert_eq!(
+            reference_time_state(Some("xx"), None, 0),
+            Err("invalid_timestamp")
+        );
+    }
+
+    #[test]
+    fn future_memory_is_not_yet_valid() {
+        assert_eq!(
+            reference_time_state(Some("2030-01-01T00:00:00Z"), None, 1_700_000_000),
+            Err("not_yet_valid")
+        );
+    }
+
+    #[test]
+    fn expired_memory_is_rejected() {
+        assert_eq!(
+            reference_time_state(None, Some("2020-01-01T00:00:00Z"), 1_700_000_000),
+            Err("expired")
+        );
+    }
+
+    #[test]
+    fn active_window_is_valid() {
+        assert_eq!(
+            reference_time_state(
+                Some("2020-01-01T00:00:00Z"),
+                Some("2030-01-01T00:00:00Z"),
+                1_700_000_000
+            ),
+            Ok(())
+        );
+    }
 }
 
 #[cfg(test)]

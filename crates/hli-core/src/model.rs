@@ -184,6 +184,10 @@ pub struct Receipt {
     pub used_memory_ids: Vec<String>,
     pub used_slice_ids: Vec<String>,
     pub used_event_ids: Vec<String>,
+    #[serde(default)]
+    pub used_explicit_reference_ids: Vec<String>,
+    #[serde(default)]
+    pub rejected_explicit_reference_ids: Vec<String>,
     pub candidate_memory_ids: Vec<String>,
     pub rejected_memory_ids: Vec<String>,
     pub rejection_reasons: Value,
