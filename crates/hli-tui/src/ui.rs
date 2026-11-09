@@ -106,7 +106,6 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 }
 
-
 /// Transcript Mode: revisión y búsqueda de la conversación a pantalla casi
 /// completa. No administra runs ni contexto (eso es el Inspector).
 fn draw_transcript(f: &mut Frame, app: &App) {
@@ -125,8 +124,7 @@ fn draw_transcript(f: &mut Frame, app: &App) {
         app.transcript_lines(app.transcript_width).len()
     );
     f.render_widget(
-        Paragraph::new(head)
-            .block(Block::default().borders(Borders::ALL).title(" transcript ")),
+        Paragraph::new(head).block(Block::default().borders(Borders::ALL).title(" transcript ")),
         parts[0],
     );
 
@@ -161,13 +159,20 @@ fn draw_transcript(f: &mut Frame, app: &App) {
     }
     f.render_widget(
         Paragraph::new(body)
-            .block(Block::default().borders(Borders::ALL).title(" conversation "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" conversation "),
+            )
             .wrap(Wrap { trim: false }),
         parts[1],
     );
 
     let footer = if app.transcript.search_open {
-        format!("Buscar: {}_   [Enter] aceptar   [Esc] cancelar", app.transcript.query)
+        format!(
+            "Buscar: {}_   [Enter] aceptar   [Esc] cancelar",
+            app.transcript.query
+        )
     } else if !app.transcript.matches.is_empty() {
         format!(
             " {} coincidencias · n/N · j/k · PgUp/PgDn · g/G · {{ }} prompt · / buscar · q volver",
@@ -1039,7 +1044,11 @@ fn draw_agent(f: &mut Frame, app: &App) {
         }
     }
 
-    let unseen = app.agent.viewport.unseen_activity_count.max(app.agent.new_activity);
+    let unseen = app
+        .agent
+        .viewport
+        .unseen_activity_count
+        .max(app.agent.new_activity);
     let status = if unseen > 0 {
         format!(
             " {} · ↓ {unseen} new activity · Ctrl+End para volver al final",
