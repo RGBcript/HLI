@@ -1324,6 +1324,10 @@ fn run_task(args: &[String], output: &str) -> Result<(), String> {
                 .windows(2)
                 .find(|w| w[0] == "--timeout-secs")
                 .and_then(|w| w[1].parse::<u64>().ok()),
+            "max_tokens": args
+                .windows(2)
+                .find(|w| w[0] == "--max-tokens")
+                .and_then(|w| w[1].parse::<i64>().ok()),
         }),
     )?;
     if follow {

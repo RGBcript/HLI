@@ -1380,7 +1380,8 @@ pub fn replan(
         prev_snap
             .as_ref()
             .map(|s| s.sampling.max_tokens)
-            .unwrap_or(256),
+            // 256 tokens no alcanzan ni para un archivo de código corto.
+            .unwrap_or(8192),
         prev_snap.as_ref().map(|s| s.budget_tokens).unwrap_or(2048),
         &secret_handles,
         prev_snap
