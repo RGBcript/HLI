@@ -630,7 +630,7 @@ fn tick_ingests_only_new_events() {
         {"run_id": "run_2", "sequence": 9, "type": "model.requested"}
     ]);
     let added = app.ingest_events(events.as_array().unwrap());
-    assert_eq!(added, 2);
+    assert_eq!(added, 1);
     assert_eq!(app.agent.last_seq, 7);
     assert_eq!(app.ingest_events(events.as_array().unwrap()), 0);
 }
@@ -646,7 +646,7 @@ fn terminal_run_shows_receipt() {
     }}));
     assert_eq!(app.agent.run_state, "completed");
     let last = &app.agent.lines.last().unwrap().text;
-    assert!(last.contains("completed"), "{last}");
+    assert!(last.contains("Completed"), "{last}");
     assert!(last.contains("12 in / 4 out"), "{last}");
     assert!(app.agent.receipt_shown);
 }
@@ -709,8 +709,8 @@ fn transcript_projection_preserves_event_order() {
         .map(|l| l.text.as_str())
         .collect();
     let pos = |needle: &str| tool.iter().position(|t| t.contains(needle)).unwrap();
-    assert!(pos("Plan created") < pos("tool.requested"));
-    assert!(pos("tool.requested") < pos("tool.completed"));
+    assert!(pos("Plan") < pos("Running"));
+    assert!(pos("Running") < pos("Done"));
 }
 
 #[test]
@@ -738,7 +738,7 @@ fn polling_does_not_duplicate_transcript_entries() {
     let before = app.agent.lines.len();
     app.ingest_events(events.as_array().unwrap());
     app.ingest_events(events.as_array().unwrap());
-    assert_eq!(app.agent.lines.len(), before + 1);
+    assert_eq!(app.agent.lines.len(), before);
 }
 
 #[test]
@@ -761,8 +761,8 @@ fn cancelled_run_is_rendered_as_cancelled() {
         "2026-11-08T10:00:00Z",
     );
     let text = terminal_summary(&run);
-    assert!(text.starts_with("cancelled"), "{text}");
-    assert!(!text.contains("completed"), "{text}");
+    assert!(text.starts_with("Cancelled"), "{text}");
+    assert!(!text.contains("Completed"), "{text}");
 }
 
 #[test]
@@ -770,9 +770,9 @@ fn failed_run_is_rendered_as_failed() {
     let mut run = run_json("run_1", "thr_1", "hola", "failed", "2026-11-08T10:00:00Z");
     run["result"] = serde_json::json!({"error": "provider timeout"});
     let text = terminal_summary(&run);
-    assert!(text.starts_with("failed"), "{text}");
-    assert!(text.contains("Error: provider timeout"), "{text}");
-    assert!(!text.contains("completed"), "{text}");
+    assert!(text.starts_with("Failed"), "{text}");
+    assert!(text.contains("provider timeout"), "{text}");
+    assert!(!text.contains("Completed"), "{text}");
 }
 
 #[test]
@@ -785,9 +785,9 @@ fn completed_run_shows_artifacts() {
         "2026-11-08T10:00:00Z",
     );
     let text = terminal_summary(&run);
-    assert!(text.contains("Artifacts: art_091"), "{text}");
-    assert!(text.contains("Receipt: sha256:abcdef01"), "{text}");
-    assert!(text.contains("Tokens: 10 in / 2 out"), "{text}");
+    assert!(text.contains("Completed"), "{text}");
+    assert!(text.contains("10 in / 2 out"), "{text}");
+    assert!(!text.contains("sha256"), "{text}");
 }
 
 #[test]
@@ -1085,7 +1085,7 @@ fn tool_activity_is_collapsed_by_default() {
         "2026-11-08T10:00:00Z",
     )];
     let events = serde_json::json!([
-        {"run_id": "run_1", "sequence": 1, "type": "model.responded", "payload": {}}
+        {"run_id": "run_1", "sequence": 1, "type": "tool.completed", "payload": {"tool": "filesystem.read"}}
     ]);
     let lines = project_thread(&runs, events.as_array().unwrap());
     let tool = lines.iter().find(|l| l.kind == AgentKind::Tool).unwrap();
@@ -1684,11 +1684,11 @@ fn transcript_projects_plan_events_in_order() {
     let lines = project_thread(&runs, &events);
     let texts: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
     let idx = |needle: &str| texts.iter().position(|t| t.contains(needle));
-    let created = idx("Plan created").expect("plan.created");
-    let waiting = idx("Waiting for approval").expect("waiting");
-    let approved = idx("Approval granted").expect("approved");
-    let started = idx("Execution started").expect("execution");
-    let completed = idx("Plan completed").expect("completed");
+    let created = idx("Plan").expect("plan.created");
+    let waiting = idx("Permission required").expect("waiting");
+    let approved = idx("Plan approved").expect("approved");
+    let started = idx("Running").expect("execution");
+    let completed = texts.iter().rposition(|t| t == "Plan").expect("completed");
     assert!(created < waiting && waiting < approved && approved < started && started < completed);
 }
 
@@ -1703,10 +1703,7 @@ fn polling_does_not_duplicate_plan_events() {
     let a = project_thread(&runs, &events);
     let b = project_thread(&runs, &events);
     assert_eq!(a.len(), b.len());
-    assert_eq!(
-        a.iter().filter(|l| l.text.contains("Plan created")).count(),
-        1
-    );
+    assert_eq!(a.iter().filter(|l| l.text == "Plan").count(), 1);
 }
 
 #[test]
@@ -1910,8 +1907,8 @@ fn transcript_orders_run_events_by_sequence() {
     let kinds: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
     // El transcript ya no muestra `run.queued` ni `run.planning`: solo hitos.
     let pos = |needle: &str| kinds.iter().position(|t| t.contains(needle)).unwrap();
-    assert!(pos("Plan created") < pos("tool.completed"));
-    assert!(pos("tool.completed") < pos("run.completed"));
+    assert!(pos("Plan") < pos("Done ·"));
+    assert!(pos("Done ·") < pos("Completed"));
     assert!(!kinds.iter().any(|t| t.contains("run.queued")));
     assert!(!kinds.iter().any(|t| t.contains("run.planning")));
 }
@@ -1920,10 +1917,10 @@ fn transcript_orders_run_events_by_sequence() {
 fn terminal_summary_follows_terminal_event() {
     let lines = project_thread(&[run_with_terminal()], &k4_events());
     let last = lines.last().unwrap();
-    assert!(last.text.contains("completed"), "último: {}", last.text);
+    assert!(last.text.contains("Completed"), "último: {}", last.text);
     let terminal = lines
         .iter()
-        .position(|l| l.text == "run.completed")
+        .position(|l| l.text == "Completed")
         .expect("evento terminal");
     assert_eq!(
         terminal + 1,
@@ -1936,14 +1933,8 @@ fn terminal_summary_follows_terminal_event() {
 fn plan_is_rendered_before_execution_events() {
     let lines = project_thread(&[run_with_terminal()], &k4_events());
     let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
-    let plan = texts
-        .iter()
-        .position(|t| t.contains("Plan created"))
-        .unwrap();
-    let exec = texts
-        .iter()
-        .position(|t| t.contains("tool.completed"))
-        .unwrap();
+    let plan = texts.iter().position(|t| t.contains("Plan")).unwrap();
+    let exec = texts.iter().position(|t| t.contains("Done")).unwrap();
     assert!(plan < exec);
 }
 

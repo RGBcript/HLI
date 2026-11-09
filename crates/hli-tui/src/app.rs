@@ -1677,48 +1677,30 @@ fn duration_secs(run: &Value) -> Option<f64> {
 /// receipt y artifacts. No usa la palabra "completed" si el estado no lo es.
 pub fn terminal_summary(run: &Value) -> String {
     let state = run["state"].as_str().unwrap_or("?");
-    let mut lines = vec![match duration_secs(run) {
-        Some(d) => format!("{state} in {d:.1} s"),
-        None => state.to_string(),
-    }];
+    let human = match state {
+        "completed" => "Completed",
+        "failed" => "Failed",
+        "cancelled" => "Cancelled",
+        "timed_out" => "Timed out",
+        "interrupted" => "Interrupted",
+        other => other,
+    };
+    let mut text = match duration_secs(run) {
+        Some(d) => format!("{human} in {d:.1} s"),
+        None => human.to_string(),
+    };
     let r = &run["receipt"];
     if r.is_object() {
-        lines.push(format!(
-            "Provider: {}/{}",
-            r["provider"].as_str().unwrap_or("-"),
-            r["model"].as_str().unwrap_or("-")
-        ));
         let tin = r["usage"]["input_tokens"].as_i64().unwrap_or(0);
         let tout = r["usage"]["output_tokens"].as_i64().unwrap_or(0);
-        lines.push(format!("Tokens: {tin} in / {tout} out"));
-        let total = r["cost"]["total"].as_f64().unwrap_or(0.0);
-        lines.push(if total > 0.0 {
-            format!("Cost: ${total:.6}")
-        } else {
-            "Cost: unpriced".to_string()
-        });
-        let hash = r["result_hash"].as_str().unwrap_or("-");
-        let short: String = hash.chars().take(16).collect();
-        lines.push(format!(
-            "Receipt: {short} · manifest {}",
-            r["context_manifest"].as_str().unwrap_or("-")
-        ));
-        let arts: Vec<String> = r["result_artifacts"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !arts.is_empty() {
-            lines.push(format!("Artifacts: {}", arts.join(", ")));
+        if tin > 0 || tout > 0 {
+            text.push_str(&format!(" · {tin} in / {tout} out"));
         }
     }
     if let Some(err) = run["result"]["error"].as_str() {
-        lines.push(format!("Error: {err}"));
+        text.push_str(&format!(" · {err}"));
     }
-    lines.join("\n")
+    text
 }
 
 /// Quita secuencias de control (ESC/ANSI, NUL, BEL) y conserva saltos y tabs.
@@ -2871,76 +2853,77 @@ fn event_detail(e: &Value) -> Option<ActivityDetail> {
 
 pub fn event_line(e: &Value) -> Option<String> {
     let kind = e["type"].as_str()?;
-    if !(kind.starts_with("tool.")
-        || kind.starts_with("run.")
-        || kind.starts_with("model.")
-        || kind.starts_with("context.")
-        || kind.starts_with("plan."))
-    {
+    // Agent Mode habla en bloques humanos. Los identificadores, hashes,
+    // secuencias y payloads crudos viven en el detalle (Ctrl+E) y en el Inspector.
+    if matches!(
+        kind,
+        "run.queued"
+            | "run.planning"
+            | "run.running"
+            | "model.requested"
+            | "model.responded"
+            | "context.manifest.created"
+    ) {
         return None;
     }
     let p = &e["payload"];
-    let detail = p["tool"]
+    let tool = p["tool"]
         .as_str()
-        .or_else(|| p["model"].as_str())
+        .or_else(|| p["operation"].as_str())
         .unwrap_or("");
-    // Proyección legible del plan, en orden de Event Store.
-    let line = match kind {
-        "plan.created" => Some(format!(
-            "Plan created · revision {} · {}",
-            p["revision"].as_i64().unwrap_or(1),
-            p["origin"].as_str().unwrap_or("-").replace('_', "-")
-        )),
-        "run.waiting_approval" => Some(format!(
-            "Waiting for approval · effects: {}",
-            p["requested_effects"]
-                .as_array()
-                .map(|a| a
-                    .iter()
-                    .filter_map(|x| x.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "))
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "declared".into())
-        )),
-        "plan.approved" => Some(format!(
-            "Approval granted · {} · {}",
-            p["scope"].as_str().unwrap_or("-"),
-            p["approved_by"].as_str().unwrap_or("-")
-        )),
-        "plan.rejected" => Some(format!(
-            "Approval rejected · {}",
-            p["reason"].as_str().unwrap_or("-")
-        )),
-        "plan.invalidated" => Some(format!(
-            "Plan invalidated · {}",
-            p["reasons"]
-                .as_array()
-                .map(|a| a
-                    .iter()
-                    .filter_map(|x| x.as_str())
-                    .collect::<Vec<_>>()
-                    .join("; "))
-                .unwrap_or_default()
-        )),
-        "plan.revised" => Some(format!(
-            "Plan revised · revision {} · supersedes {}",
-            p["revision"].as_i64().unwrap_or(0),
-            p["supersedes_plan_id"].as_str().unwrap_or("-")
-        )),
-        "plan.execution_started" => Some("Execution started".to_string()),
-        "plan.completed" => Some("Plan completed".to_string()),
-        "plan.failed" => Some("Plan failed".to_string()),
+    let target = p["target"].as_str().unwrap_or("");
+    let effects = p["requested_effects"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "declared".into());
+    match kind {
+        "plan.created" => Some("Plan".to_string()),
+        "plan.revised" => Some("Plan updated".to_string()),
+        "plan.invalidated" => Some("Plan needs review".to_string()),
+        "run.waiting_approval" => Some(format!("Permission required · {effects}")),
+        "plan.approved" => Some("Plan approved".to_string()),
+        "plan.rejected" => Some("Plan rejected".to_string()),
+        "plan.execution_started" => Some("Running".to_string()),
+        "tool.requested" => Some(if tool.is_empty() {
+            "Running".to_string()
+        } else {
+            format!("Running {tool}")
+        }),
+        "tool.completed" => Some(if target.is_empty() {
+            format!("Done · {tool}")
+        } else {
+            format!("Modified {target}")
+        }),
+        "tool.failed" => Some(format!("Failed · {tool}")),
+        "tool.denied" => Some(format!("Denied · {tool}")),
+        "tool.execution_resumed" => Some("Running".to_string()),
+        "tool.permission_requested" | "permission.requested" => {
+            Some(format!("Permission required · {tool}"))
+        }
+        "tool.permission_approved" | "permission.approved" => {
+            Some("Permission granted".to_string())
+        }
+        "permission.denied" => Some("Permission denied".to_string()),
+        "run.completed" => Some("Completed".to_string()),
+        "run.failed" => Some("Failed".to_string()),
+        "run.cancelled" => Some("Cancelled".to_string()),
+        "run.interrupted" => Some("Interrupted".to_string()),
+        "run.timed_out" => Some("Timed out".to_string()),
+        _ if kind.starts_with("plan.") => Some("Plan".to_string()),
+        _ if kind.starts_with("tool.") => Some(if tool.is_empty() {
+            "Running".to_string()
+        } else {
+            format!("· {tool}")
+        }),
         _ => None,
     };
-    if let Some(line) = line {
-        return Some(line);
-    }
-    Some(if detail.is_empty() {
-        kind.to_string()
-    } else {
-        format!("{kind} · {detail}")
-    })
+    line
 }
 
 impl App {
