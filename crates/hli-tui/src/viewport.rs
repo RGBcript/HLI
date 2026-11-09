@@ -10,6 +10,21 @@ pub const MIN_WIDTH: usize = 20;
 
 /// Cuenta las líneas que ocupa un texto al envolverse en `width` columnas.
 /// Es determinista y no depende del terminal: mismas entradas, mismo total.
+/// Filas que ocupa un detalle expandido con el mismo ancho que el render.
+pub fn detail_rows(input: &str, output: &str, artifacts: bool, error: bool, width: usize) -> usize {
+    let inner = width.saturating_sub(4).max(8);
+    let mut n = 5; // type, status, started, duration, causation
+    n += wrapped_lines(input, inner);
+    n += wrapped_lines(output, inner);
+    if artifacts {
+        n += 1;
+    }
+    if error {
+        n += 1;
+    }
+    n
+}
+
 pub fn wrapped_lines(text: &str, width: usize) -> usize {
     let width = width.max(MIN_WIDTH);
     text.split('\n')

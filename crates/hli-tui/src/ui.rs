@@ -960,16 +960,10 @@ fn draw_agent(f: &mut Frame, app: &App) {
         draw_too_small(f, area);
         return;
     }
-    let heights = if app.agent.offer != Offer::None { 6 } else { 4 };
-    let parts = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(3),
-            Constraint::Length(heights),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    // Una sola fuente de verdad para las alturas: el mismo cálculo lo usa
+    // `App::observe_terminal` para el viewport y el hit map.
+    let regions = crate::layout::agent_regions(area, app.agent.offer != Offer::None);
+    let parts = [regions.header, regions.body, regions.composer];
 
     let t = Theme::for_app(app);
     let ws = app
@@ -1044,13 +1038,6 @@ fn draw_agent(f: &mut Frame, app: &App) {
             Paragraph::new(Line::from(hint))
                 .block(Block::default().borders(Borders::TOP).title(" atajos ")),
             parts[2],
-        );
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                app.agent_status_line(),
-                Style::default().fg(t.artifact),
-            ))),
-            parts[3],
         );
         return;
     }
@@ -1195,25 +1182,30 @@ fn draw_agent(f: &mut Frame, app: &App) {
         }
     }
 
+    // Línea única, sin placeholders: solo si hay actividad nueva o un aviso.
     let unseen = app
         .agent
         .viewport
         .unseen_activity_count
         .max(app.agent.new_activity);
     let status = if unseen > 0 {
-        format!(
-            " {} · ↓ {unseen} new activity · Ctrl+End para volver al final",
-            app.agent.status
-        )
-    } else if !app.agent.busy && !crate::app::is_active(&app.agent.run_state) {
-        format!(
-            " {} · ? atajos · Ctrl+O transcript · Ctrl+I inspector · Ctrl+E detalles · rueda/PgUp",
-            app.agent.status
-        )
+        if area.width >= 60 {
+            format!("↓ {unseen} new activity · Ctrl+End para volver al final")
+        } else {
+            format!("↓ {unseen} new")
+        }
     } else {
-        format!(" {}", app.agent.status)
+        app.agent.status.clone()
     };
-    f.render_widget(Paragraph::new(status), parts[3]);
+    if !status.trim().is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {status}"),
+                Style::default().fg(t.primary),
+            ))),
+            regions.status,
+        );
+    }
 
     if app.agent.palette {
         draw_palette(f, area, app);

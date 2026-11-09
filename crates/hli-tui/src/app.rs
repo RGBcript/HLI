@@ -810,7 +810,7 @@ impl Default for AgentState {
             offer: Offer::None,
             pending: None,
             busy: false,
-            status: "ready · ? help · / commands · ^O inspector".into(),
+            status: String::new(),
             provider: "sim".into(),
             model: "sim-1".into(),
             run_state: "idle".into(),
@@ -979,7 +979,7 @@ impl App {
             inspector_plan: None,
             inspector_perm: None,
             input: String::new(),
-            status: "ready · ? help · : command · q quit".into(),
+            status: String::new(),
             status_ok: true,
             feedback: None,
             feedback_ttl: Duration::from_secs(5),
@@ -1066,7 +1066,7 @@ impl App {
                 "recent_events": [{"event_id": "evt_4", "type": "context.manifest.created"}]
             })),
             input: String::new(),
-            status: "demo".into(),
+            status: String::new(),
             status_ok: true,
             feedback: None,
             feedback_ttl: Duration::from_secs(5),
@@ -1896,7 +1896,6 @@ impl App {
         }
         self.agent.resume_open = false;
         self.mode = TuiMode::Agent;
-        self.agent.status = self.agent_status_line();
     }
 
     /// Referencias estructuradas que se envían al daemon (identidad estable,
@@ -2871,7 +2870,6 @@ impl App {
                 );
             }
         }
-        self.agent.status = self.agent_status_line();
     }
 
     /// Indicador de trabajo: spinner animado con cuentagotas ASCII si el
@@ -2910,7 +2908,7 @@ impl App {
             .and_then(|b| b["name"].as_str())
             .unwrap_or("no-branch");
         let base = format!(
-            "{ws}/{th}/{br} │ {}/{} │ {} │ ctx - │ tools 0 │ unpriced",
+            "{ws}/{th}/{br} · {}/{} · {}",
             self.agent.provider,
             self.agent.model,
             self.agent.run_state.replace('_', " ")
@@ -3403,21 +3401,33 @@ impl App {
     /// Área aproximada del transcript: cabecera (3), compositor (3) y estado (1)
     /// quedan fuera del área desplazable.
     pub fn observe_terminal(&mut self, width: u16, height: u16) {
-        let inner_w = width.saturating_sub(2).max(20) as usize;
-        let height = height.saturating_sub(9).max(1) as usize;
+        let area = ratatui::layout::Rect::new(0, 0, width, height);
+        let regions = crate::layout::agent_regions(area, self.agent.offer != Offer::None);
+        // El cuerpo no lleva bordes laterales; se reserva una columna para la
+        // scrollbar cuando aparece.
+        let inner_w = width.saturating_sub(1).max(20) as usize;
+        let height = crate::layout::body_inner_height(regions.body).max(1);
         self.transcript_width = inner_w;
         self.transcript_height = height;
         self.terminal_width = width as usize;
-        self.transcript_top = 4;
+        self.transcript_top = crate::layout::body_content_top(regions.body);
         let mut rows: Vec<(usize, usize)> = Vec::new();
         let mut y = 0usize;
+        // El tag ocupa 4 columnas: el texto no dispone del ancho completo.
+        let text_w = inner_w.saturating_sub(4).max(8);
         for (idx, line) in self.agent.lines.iter().enumerate() {
             rows.push((y, idx));
-            y += wrapped_lines(&line.text, inner_w);
+            y += wrapped_lines(&line.text, text_w);
             if line.expanded
                 && let Some(d) = &line.detail
             {
-                y += 6 + wrapped_lines(&d.output, inner_w);
+                y += crate::viewport::detail_rows(
+                    &d.input,
+                    &d.output,
+                    !d.artifacts.is_empty(),
+                    d.error.is_some(),
+                    inner_w,
+                );
             }
         }
         self.hit_rows = rows;
@@ -3428,14 +3438,20 @@ impl App {
 
     /// Líneas renderizadas (con wrapping) del transcript actual.
     pub fn rendered_line_count(&self, width: usize) -> usize {
+        let text_w = width.saturating_sub(4).max(8);
         let mut total = 0;
         for line in &self.agent.lines {
-            total += wrapped_lines(&line.text, width);
+            total += wrapped_lines(&line.text, text_w);
             if line.expanded
                 && let Some(d) = &line.detail
             {
-                total += 6;
-                total += wrapped_lines(&d.output, width);
+                total += crate::viewport::detail_rows(
+                    &d.input,
+                    &d.output,
+                    !d.artifacts.is_empty(),
+                    d.error.is_some(),
+                    width,
+                );
             }
         }
         total.max(1)
@@ -3751,7 +3767,6 @@ impl App {
             }
         }
         self.agent.busy = false;
-        self.agent.status = self.agent_status_line();
         self.refresh_lists();
         self.refresh_runs();
         accepted
@@ -3784,7 +3799,6 @@ impl App {
                 terminal_summary(run),
             );
         }
-        self.agent.status = self.agent_status_line();
     }
 
     /// Añade al transcript los eventos nuevos del run actual. Devuelve cuántos.
@@ -3891,7 +3905,6 @@ impl App {
                 );
                 self.agent.perm = None;
                 self.agent.run_state = "running".into();
-                self.agent.status = self.agent_status_line();
                 self.refresh_plan_views();
             }
             Err(e) => {
@@ -3912,7 +3925,6 @@ impl App {
                     .push(AgentKind::Info, format!("permission denied · {}", req.tool));
                 self.agent.perm = None;
                 self.agent.run_state = "failed".into();
-                self.agent.status = self.agent_status_line();
                 self.refresh_plan_views();
             }
             Err(e) => {
@@ -3932,7 +3944,6 @@ impl App {
                     .push(AgentKind::Info, "permission cancelled".to_string());
                 self.agent.perm = None;
                 self.agent.run_state = "cancelled".into();
-                self.agent.status = self.agent_status_line();
                 self.refresh_plan_views();
             }
             Err(e) => {
@@ -3960,7 +3971,6 @@ impl App {
                 );
                 self.agent.plan = None;
                 self.agent.run_state = "running".into();
-                self.agent.status = self.agent_status_line();
                 self.refresh_plan_views();
             }
             Err(e) => {
@@ -3988,7 +3998,6 @@ impl App {
                     .push(AgentKind::Info, format!("approval rejected · {reason}"));
                 self.agent.plan = None;
                 self.agent.run_state = "cancelled".into();
-                self.agent.status = self.agent_status_line();
                 self.refresh_plan_views();
             }
             Err(e) => {

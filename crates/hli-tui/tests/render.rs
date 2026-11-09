@@ -2852,6 +2852,43 @@ fn apply_model_sets_provider_and_model() {
     assert_eq!(app.agent.model, "llama3.1:8b");
 }
 
+// --- Contrato de layout modular -------------------------------------------
+
+#[test]
+fn layout_regions_are_contiguous_and_cover_the_area() {
+    use hli_tui::layout::agent_regions;
+    let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+    let r = agent_regions(area, false);
+    assert_eq!(r.header.y, 0);
+    assert_eq!(r.header.height, 3);
+    assert_eq!(r.body.y, r.header.bottom());
+    assert_eq!(r.composer.y, r.body.bottom());
+    assert_eq!(r.status.y, r.composer.bottom());
+    assert_eq!(r.status.bottom(), area.bottom());
+}
+
+#[test]
+fn observed_viewport_matches_the_drawn_body() {
+    use hli_tui::layout::{agent_regions, body_inner_height};
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.observe_terminal(120, 30);
+    let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+    let regions = agent_regions(area, app.agent.offer != Offer::None);
+    assert_eq!(app.transcript_height, body_inner_height(regions.body));
+    assert_eq!(app.transcript_top as u16, regions.body.y + 1);
+}
+
+#[test]
+fn footer_has_no_invented_placeholders() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    let text = render(&app, 120, 30);
+    assert!(!text.contains("ctx -"), "{text}");
+    assert!(!text.contains("tools 0"), "{text}");
+    assert!(!text.contains("unpriced"), "{text}");
+}
+
 #[test]
 fn missing_file_requires_cancel_only() {
     let root = tmp_dir("preflight-missing");
