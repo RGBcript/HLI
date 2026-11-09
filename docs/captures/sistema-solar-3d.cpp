@@ -28,8 +28,8 @@ int main() {
     <script type="importmap">
         {
             "imports": {
-                "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js",
-                "three/addons/": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/jsm/"
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
     </script>
