@@ -27,8 +27,13 @@ result = {
     "run": False,
     "branch": False,
     "payload_hash": False,
+    "workspace_isolation": False,
+    "thread_isolation": False,
+    "temporal_validity": False,
+    "order_preserved": False,
     "changed_detected": False,
     "refresh": False,
+    "historical_compatibility": False,
     "invalid_rejected": False,
     "binary_safe": False,
     "receipt": False,
@@ -138,6 +143,56 @@ try:
     used = run1["receipt"].get("used_explicit_reference_ids", [])
     result["receipt"] = mem in used and "a.txt" in used
 
+    # aislamiento por workspace y thread
+    ws2 = jrun(home, ["workspace", "create", "other", "--root", str(project)], project)["id"]
+    th2 = jrun(home, ["thread", "create", "other", "--workspace", ws2], project)["id"]
+    br2 = jrun(home, ["branch", "create", "other-branch", "--thread", th2], project)["id"]
+    mem2 = jrun(home, ["memory", "commit", "--workspace", ws2, "--type", "fact",
+                       "--content", "de otro workspace", "--scope", "workspace"], project)["id"]
+    art2 = jrun(home, ["artifact", "put", str(project / "nota.txt"), "--workspace", ws2], project)
+    run_other = jrun(home, ["run", "start", "--workspace", ws2, "--thread", th2,
+                            "--branch", br2, "--prompt", "otro", "--provider", "sim"], project)
+
+    def ref_fails(name: str, refs: list[dict]) -> bool:
+        path = write_refs(project / f"{name}.json", refs)
+        p = run(home, ["run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+                       "--prompt", name, "--provider", "sim",
+                       "--explicit-references-file", str(path)], project, expect_fail=True)
+        return p.returncode != 0 and "reference_" in (p.stderr + p.stdout)
+
+    result["workspace_isolation"] = (
+        ref_fails("iso-mem", [{"reference_type": "memory", "stable_id": mem2}])
+        and ref_fails("iso-art", [{"reference_type": "artifact", "stable_id": art2["id"]}])
+        and ref_fails("iso-run", [{"reference_type": "run", "stable_id": run_other["id"]}])
+    )
+    result["thread_isolation"] = ref_fails(
+        "iso-thread", [{"reference_type": "branch", "stable_id": "other-branch"}]
+    )
+
+    # orden conservado en manifiesto y receipt
+    refs_order = write_refs(project / "refs-order.json", [
+        {"reference_type": "memory", "stable_id": mem, "selection_reason": "user_selected"},
+        {"reference_type": "file", "stable_id": "a.txt", "content_hash": sha(project / "a.txt"),
+         "selection_reason": "user_selected"},
+    ])
+    run_order = jrun(home, ["run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+                            "--prompt", "orden", "--provider", "sim",
+                            "--explicit-references-file", str(refs_order)], project)
+    mo = jrun(home, ["manifest", "get", run_order["receipt"]["context_manifest"]], project)
+    mo = mo.get("manifest", mo)
+    order_ids = [e["stable_id"] for e in mo.get("explicit_references", [])]
+    used_order = run_order["receipt"].get("used_explicit_reference_ids", [])
+    result["order_preserved"] = order_ids == [mem, "a.txt"] and used_order == order_ids
+
+    # v1.1 con lista vacía: compatible con manifiestos sin referencias
+    run_plain = jrun(home, ["run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+                            "--prompt", "sin referencias", "--provider", "sim"], project)
+    mp = jrun(home, ["manifest", "get", run_plain["receipt"]["context_manifest"]], project)
+    mp = mp.get("manifest", mp)
+    result["historical_compatibility"] = (
+        mp.get("explicit_references") == [] and bool(mp.get("payload_hash"))
+    )
+
     (project / "a.txt").write_text("contenido cambiado\n", encoding="utf-8")
     p = run(home, run_args, project, expect_fail=True)
     result["changed_detected"] = p.returncode != 0 and "reference_changed" in (p.stderr + p.stdout)
@@ -172,6 +227,10 @@ try:
         and "reference_" in (p_missing.stderr + p_sup.stderr + p_rev.stderr)
     )
 
+    result["temporal_validity"] = p_sup.returncode != 0 and "reference_superseded" in (
+        p_sup.stderr + p_sup.stdout
+    )
+
     run(home, ["daemon", "stop"], expect_fail=True)
     run(home, ["daemon", "start"])
     again = jrun(home, ["manifest", "get", ctx], project)
@@ -197,9 +256,10 @@ try:
 
     result["ok"] = all(
         result[k]
-        for k in ("file", "artifact", "memory", "run", "branch", "payload_hash",
+        for k in ("file", "artifact", "memory", "run", "branch", "workspace_isolation",
+                  "thread_isolation", "temporal_validity", "payload_hash", "order_preserved",
                   "changed_detected", "refresh", "invalid_rejected", "binary_safe",
-                  "receipt", "restart", "export_import")
+                  "receipt", "restart", "export_import", "historical_compatibility")
     )
 except Exception as exc:  # noqa: BLE001
     result["error"] = str(exc)
