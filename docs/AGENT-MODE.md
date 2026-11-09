@@ -66,11 +66,16 @@ Los eventos `Release` se ignoran; `Repeat` se conserva (K1).
 
 ## Slash commands
 
-Implementados: `/help`, `/status`, `/inspect`, `/context`, `/memory`,
-`/artifacts`, `/mch`, `/new`, `/branch`, `/clear`, `/exit`.
+Disponibles: `/help`, `/status`, `/inspect`, `/context`, `/memory`,
+`/artifacts`, `/mch`, `/branch [new <nombre>|<nombre>]`, `/new`, `/resume`,
+`/details`, `/cancel`, `/model [nombre]`, `/provider [nombre]`, `/export [ruta]`,
+`/clear`, `/exit`.
 
-Pendientes en este slice: `/model`, `/provider`, `/permissions`, `/diff`,
-`/resume`, `/export` (responden «no disponible en este slice»).
+`/provider` lista nombre, tipo y modelo (nunca secretos) y, al cambiar, fija el
+default y registra un evento `provider.handoff`. `/model` fija el modelo
+solicitado para el próximo run; no hay catálogo expuesto, así que no se inventan
+modelos. `/export` usa el contrato `export` del daemon. `/branch new` crea una
+alternativa desde la revisión actual.
 
 La paleta filtra por prefijo mientras escribes. No hay un segundo parser: cada
 comando mapea a una operación existente del daemon o del Inspector.
@@ -127,6 +132,20 @@ mismo dato produce el mismo transcript: el polling, el cambio a Inspector y el
 - Escribir filtra; `Ctrl+R` otra vez avanza coincidencias; `Enter` copia al
   compositor **sin enviar**; `Esc` cierra sin tocar el compositor.
 
+## Actividad y scroll
+
+- La actividad se muestra **contraída**: `· model.responded`. `Ctrl+E` expande o
+  contrae la última actividad; `/details` alterna todas.
+- La vista expandida incluye tipo, estado, inicio, duración, entrada, salida,
+  `causation_id`, `correlation_id`, artifacts y error estructurado.
+- El estado de expansión sobrevive al polling, al cambio Agent ↔ Inspector y al
+  cambio de pestaña; no se persiste al cerrar.
+- Scroll: `PageUp`/`PageDown` (12 líneas), `Ctrl+Up`/`Ctrl+Down` (3 líneas),
+  `Home` al inicio, `End` vuelve al final y reactiva el seguimiento.
+- Si llega actividad mientras revisas historial, la vista no se mueve y la barra
+  de estado indica `N new activity · End para seguirlas`.
+- El compositor y la barra de estado quedan siempre visibles.
+
 ## Resultado terminal
 
 Al terminar un run se muestra un bloque con estado real, duración, provider,
@@ -164,7 +183,10 @@ cuando existe.
 - Sin plan aprobable ni UI de permisos; la política vigente no cambia.
 - Sin UI de permisos: la política vigente no cambia y `shell.execute` sigue
   denegado.
-- Sin `Ctrl+E` ni `/details`: los detalles expandibles siguen pendientes.
-- `/provider`, `/model`, `/export` y el resto de la paleta avanzada: pendientes.
+- Las referencias `@` todavía viajan como texto del prompt: su materialización
+  en `ContextManifest` (`explicit_references`) es el bloque siguiente.
+- `/permissions` y `/diff` no existen en la paleta: requieren información que aún
+  no está disponible.
+- JSONL `--follow` no está implementado; `--output jsonl` es salida terminal.
 - El título del thread es el prompt truncado; se puede renombrar por CLI en una
   iteración posterior.

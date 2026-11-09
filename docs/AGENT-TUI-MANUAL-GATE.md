@@ -92,6 +92,25 @@ primer poll: es correcto.
 
 ---
 
+## 1e. Actividad, scroll y comandos (Slice 3b, interacción)
+
+| # | Acción | Qué debe verse |
+|---|---|---|
+| 33 | `Ctrl+E` sobre actividad | Se expanden tipo, estado, duración, entrada/salida y error |
+| 34 | `Ctrl+E` otra vez | Vuelve a contraerse |
+| 35 | `/details` | Todas las actividades cambian de estado |
+| 36 | `PageUp` / `PageDown` | El transcript se desplaza sin mover compositor ni barra |
+| 37 | Actividad nueva con la vista arriba | No se mueve; aparece `N new activity` |
+| 38 | `End` | Vuelve al final y desaparece el indicador |
+| 39 | `/provider` | Lista nombre, tipo y modelo; sin secretos |
+| 40 | `/provider <nombre>` | Cambia el provider y registra `provider.handoff` |
+| 41 | `/model <nombre>` | Fija el modelo del próximo run |
+| 42 | `/export` | Produce un `.hliar` y muestra la ruta |
+| 43 | `/branch` y `/branch new` | Lista ramas y crea una alternativa |
+| 44 | `/cancel` con un run activo | Pasa a `cancelling` y luego terminal |
+
+---
+
 ## 2. Criterio de aceptación
 
 - No hay pánico ni corrupción de pantalla.
@@ -113,7 +132,7 @@ Commit evaluado:
 Dimensiones probadas:
 Fecha:
 Paso 0 (teclado):       OK / REGRESIÓN
-Pasos ejecutados:       32 / 32
+Pasos ejecutados:       44 / 44
 Resultado:              PENDIENTE / PASA / FALLA
 Observaciones:
 Firma:
