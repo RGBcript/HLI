@@ -17,7 +17,7 @@ Set-Location $Root
 $Result = [ordered]@{
     gate = "hli-agent-mode"; ok = $false
     binaries = $false; daemon = $false; link = $false
-    implicit_thread = $false; run = $false; manual_pending = $true
+    implicit_thread = $false; durable = $false; run = $false; manual_pending = $true
 }
 $HomeDir = Join-Path $env:TEMP ("hli-agent-gate-" + [guid]::NewGuid().ToString("N"))
 $Project = Join-Path $env:TEMP ("hli-agent-project-" + [guid]::NewGuid().ToString("N"))
@@ -59,12 +59,17 @@ try {
             $threads = & $Hli thread list --workspace $ws.id --output json | ConvertFrom-Json
             @($threads).Count -ge 1
         }
+        $runs = @(& $Hli run list --workspace $ws.id --output json | ConvertFrom-Json)
+        $Result.durable = Step "durable" {
+            $runs.Count -ge 1 -and $null -ne $runs[-1].receipt -and
+                -not [string]::IsNullOrEmpty($runs[-1].result.text)
+        }
     } finally {
         Pop-Location
     }
 
     $Result.ok = $Result.binaries -and $Result.daemon -and $Result.link -and
-        $Result.run -and $Result.implicit_thread
+        $Result.run -and $Result.implicit_thread -and $Result.durable
 } catch {
     $Result.error = $_.Exception.Message
 } finally {
