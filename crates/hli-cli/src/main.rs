@@ -78,6 +78,15 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let output = output_mode(args);
 
+    if matches!(args[0].as_str(), "--classic" | "--no-fullscreen") {
+        let rest: Vec<String> = args[1..].to_vec();
+        let mut extra = vec!["--classic"];
+        if let Some(root) = rest.first().filter(|p| std::path::Path::new(p).is_dir()) {
+            extra.push("--root");
+            extra.push(root);
+        }
+        return launch_tui("agent", &extra);
+    }
     if args[0] == "inspect" {
         return launch_tui("inspect", &[]);
     }

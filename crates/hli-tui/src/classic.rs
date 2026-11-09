@@ -32,8 +32,7 @@ pub fn run(root: Option<PathBuf>) -> io::Result<()> {
     app.begin_agent(root);
     if app.agent.workspace.is_none() {
         out("Sin workspace vinculado a este directorio. Creando uno…");
-        app.accept_offer();
-        if app.agent.workspace.is_none() {
+        if !bootstrap(&mut app) {
             out("No se pudo crear el workspace; ¿está el daemon en marcha?");
             return Ok(());
         }
@@ -54,6 +53,52 @@ pub fn run(root: Option<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
+/// Crea workspace, thread y branch si faltan, como haría Agent Mode al enviar
+/// el primer prompt.
+fn bootstrap(app: &mut App) -> bool {
+    if app.agent.workspace.is_none() {
+        let root = app
+            .agent
+            .root
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace");
+        let Ok(ws) = client::call(
+            "workspace.create",
+            json!({"name": name, "root": root.to_string_lossy()}),
+        ) else {
+            return false;
+        };
+        app.agent.workspace = Some(ws);
+    }
+    let ws = app.agent.workspace.as_ref().unwrap()["id"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    if app.agent.thread.is_none() {
+        let Ok(th) = client::call("thread.create", json!({"workspace_id": ws, "title": "CLI"}))
+        else {
+            return false;
+        };
+        app.agent.thread = Some(th);
+    }
+    if app.agent.branch.is_none() {
+        let th = app.agent.thread.as_ref().unwrap()["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let Ok(br) = client::call("branch.create", json!({"thread_id": th, "name": "main"})) else {
+            return false;
+        };
+        app.agent.branch = Some(br);
+    }
+    true
+}
+
 fn ids(app: &App) -> Option<(String, String, String)> {
     Some((
         app.agent
@@ -68,6 +113,10 @@ fn ids(app: &App) -> Option<(String, String, String)> {
 }
 
 fn execute(app: &mut App, prompt: &str) {
+    if !bootstrap(app) {
+        out("No se pudo preparar workspace/thread/branch.");
+        return;
+    }
     let Some((ws, th, br)) = ids(app) else {
         out("Sin workspace, thread o branch activos.");
         return;
