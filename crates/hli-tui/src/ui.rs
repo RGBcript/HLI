@@ -573,6 +573,72 @@ fn run_lines(app: &App) -> Vec<Line<'static>> {
             "[y] approve once  [a] run  [w] workspace  [n] reject  [r] replan",
         ));
     }
+    if let Some(p) = &app.inspector_perm {
+        v.push(Line::from(""));
+        v.push(Line::from("Tool permission"));
+        v.push(Line::from(format!(
+            "Request ID             {}",
+            p.request_id
+        )));
+        v.push(Line::from(format!("Run ID                 {}", p.run_id)));
+        v.push(Line::from(format!(
+            "Plan y revisión        {} · {}",
+            p.plan_id, p.plan_revision
+        )));
+        v.push(Line::from(format!("Tool                   {}", p.tool)));
+        v.push(Line::from(format!(
+            "Operation              {}",
+            p.operation
+        )));
+        v.push(Line::from(format!("Effect                 {}", p.effect)));
+        v.push(Line::from(format!(
+            "Target                 {}",
+            p.target.clone().unwrap_or_else(|| "-".into())
+        )));
+        v.push(Line::from(format!(
+            "Arguments hash         {}",
+            p.arguments_hash
+        )));
+        v.push(Line::from(format!(
+            "Arguments summary      {}",
+            p.arguments_summary
+        )));
+        v.push(Line::from(format!("Status                 {}", p.status)));
+        v.push(Line::from(format!(
+            "Effective policy       {}",
+            if p.effective_policy.is_empty() {
+                "ask (sin grant aplicable)"
+            } else {
+                &p.effective_policy
+            }
+        )));
+        v.push(Line::from(format!(
+            "Decision               {}",
+            p.decision.clone().unwrap_or_else(|| "-".into())
+        )));
+        v.push(Line::from(format!(
+            "Decision scope         {}",
+            p.decision_scope.clone().unwrap_or_else(|| "-".into())
+        )));
+        v.push(Line::from(format!(
+            "Actor                  {}",
+            p.actor.clone().unwrap_or_else(|| "-".into())
+        )));
+        v.push(Line::from(format!(
+            "Created at             {}",
+            p.created_at
+        )));
+        v.push(Line::from(format!(
+            "Decided at             {}",
+            p.decided_at.clone().unwrap_or_else(|| "-".into())
+        )));
+        if p.pending() {
+            v.push(Line::from(""));
+            v.push(Line::from(
+                "[y] allow once  [a] run  [w] workspace  [n] deny  [v] details",
+            ));
+        }
+    }
     v
 }
 
@@ -904,11 +970,32 @@ fn draw_agent(f: &mut Frame, app: &App) {
     }
     if app.agent.reject_open {
         draw_reject_reason(f, area, app);
+    } else if let Some(perm) = &app.agent.perm
+        && perm.pending()
+    {
+        draw_permission(f, area, perm);
     } else if let Some(plan) = &app.agent.plan
         && plan.waiting()
     {
         draw_plan(f, area, plan);
     }
+}
+
+fn draw_permission(f: &mut Frame, area: Rect, perm: &crate::app::PermissionView) {
+    let height = (perm.overlay_lines().len() as u16 + 2).min(area.height.saturating_sub(2));
+    let rect = overlay_rect(area, 92, height);
+    f.render_widget(Clear, rect);
+    let lines: Vec<Line> = perm.overlay_lines().into_iter().map(Line::from).collect();
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" tool permission "),
+            )
+            .wrap(Wrap { trim: false }),
+        rect,
+    );
 }
 
 fn draw_plan(f: &mut Frame, area: Rect, plan: &crate::app::PlanView) {

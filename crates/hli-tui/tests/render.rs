@@ -6,10 +6,10 @@ use ratatui::backend::TestBackend;
 use serde_json::json;
 
 use hli_tui::app::{
-    ActivityDetail, AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, PlanStepView,
-    PlanView, RefItem, RefKind, Reference, TuiMode, available_commands, classify_artifact_hash,
-    classify_branch_revision, classify_memory, format_providers, layout_mode, project_thread,
-    reference_token, split_command, terminal_summary,
+    ActivityDetail, AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, PermissionView,
+    PlanStepView, PlanView, RefItem, RefKind, Reference, TuiMode, available_commands,
+    classify_artifact_hash, classify_branch_revision, classify_memory, format_providers,
+    layout_mode, project_thread, reference_token, split_command, terminal_summary,
 };
 use hli_tui::ui;
 
@@ -1781,6 +1781,99 @@ fn inspector_view_details_toggles() {
     app.inspector_plan = Some(demo_plan());
     tap(&mut app, KeyCode::Char('v'));
     assert!(app.inspector_plan.as_ref().unwrap().details);
+}
+
+fn demo_perm() -> PermissionView {
+    PermissionView {
+        request_id: "perm_1".into(),
+        run_id: "run_1".into(),
+        plan_id: "plan_1".into(),
+        plan_revision: 2,
+        tool: "filesystem.write".into(),
+        operation: "filesystem.write".into(),
+        effect: "write".into(),
+        target: Some("crates/hli-store/src/lib.rs".into()),
+        arguments_hash: "sha256:args".into(),
+        arguments_summary: "crates/hli-store/src/lib.rs · 12 bytes".into(),
+        reason: "invocación declarada en el plan aprobado".into(),
+        status: "pending".into(),
+        decision: None,
+        decision_scope: None,
+        actor: None,
+        created_at: "2026-11-09T00:00:00Z".into(),
+        decided_at: None,
+        effective_policy: "ask".into(),
+        grants: vec![],
+        details: false,
+    }
+}
+
+fn agent_with_permission(perm: PermissionView) -> App {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.perm = Some(perm);
+    app.agent.run_state = "waiting_approval".into();
+    app
+}
+
+#[test]
+fn permission_overlay_is_visible() {
+    let text = render(&agent_with_permission(demo_perm()), 120, 45);
+    assert!(text.contains("Permission required"), "{text}");
+    assert!(text.contains("filesystem.write"), "{text}");
+    assert!(text.contains("crates/hli-store/src/lib.rs"), "{text}");
+    assert!(text.contains("Allow once"), "{text}");
+}
+
+#[test]
+fn permission_overlay_blocks_prompt_submission() {
+    let mut app = agent_with_permission(demo_perm());
+    for c in "hola".chars() {
+        tap(&mut app, KeyCode::Char(c));
+    }
+    tap(&mut app, KeyCode::Enter);
+    assert!(app.agent.composer.is_empty());
+    assert!(!app.agent.lines.iter().any(|l| l.kind == AgentKind::User));
+}
+
+#[test]
+fn permission_details_hide_secret_values() {
+    let mut perm = demo_perm();
+    perm.details = true;
+    perm.arguments_summary = "token=<redacted>".into();
+    let text = render(&agent_with_permission(perm), 140, 50);
+    assert!(text.contains("arguments_hash"), "{text}");
+    assert!(text.contains("<redacted>"), "{text}");
+    assert!(!text.contains("sk-"), "{text}");
+}
+
+#[test]
+fn mode_switch_preserves_permission_overlay() {
+    let mut app = agent_with_permission(demo_perm());
+    app.handle_key(key_with(
+        KeyCode::Char('o'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Inspector);
+    app.handle_key(key_with(
+        KeyCode::Char('o'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Agent);
+    assert!(app.agent.perm.is_some());
+    assert!(render(&app, 120, 45).contains("Permission required"));
+}
+
+#[test]
+fn inspector_displays_permission_request() {
+    let mut app = App::demo();
+    app.inspector_perm = Some(demo_perm());
+    let text = render(&app, 150, 80);
+    assert!(text.contains("Tool permission"), "{text}");
+    assert!(text.contains("Arguments hash"), "{text}");
+    assert!(text.contains("perm_1"), "{text}");
 }
 
 #[test]

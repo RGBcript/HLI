@@ -207,6 +207,7 @@ pub struct AgentState {
     pub ref_start: usize,
     pub preflight: Option<Preflight>,
     pub plan: Option<PlanView>,
+    pub perm: Option<PermissionView>,
     pub reject_open: bool,
     pub reject_reason: String,
 }
@@ -606,6 +607,137 @@ impl PlanView {
     }
 }
 
+/// Vista read-only de una solicitud de permiso por invocación.
+#[derive(Clone, Debug, Default)]
+pub struct PermissionView {
+    pub request_id: String,
+    pub run_id: String,
+    pub plan_id: String,
+    pub plan_revision: i64,
+    pub tool: String,
+    pub operation: String,
+    pub effect: String,
+    pub target: Option<String>,
+    pub arguments_hash: String,
+    pub arguments_summary: String,
+    pub reason: String,
+    pub status: String,
+    pub decision: Option<String>,
+    pub decision_scope: Option<String>,
+    pub actor: Option<String>,
+    pub created_at: String,
+    pub decided_at: Option<String>,
+    pub effective_policy: String,
+    pub grants: Vec<String>,
+    pub details: bool,
+}
+
+impl PermissionView {
+    pub fn from_value(v: &Value) -> Option<Self> {
+        let req = v.get("request").unwrap_or(v);
+        if req.is_null() || req.get("request_id").is_none() {
+            return None;
+        }
+        Some(Self {
+            request_id: req["request_id"].as_str().unwrap_or("").to_string(),
+            run_id: req["run_id"].as_str().unwrap_or("").to_string(),
+            plan_id: req["plan_id"].as_str().unwrap_or("").to_string(),
+            plan_revision: req["plan_revision"].as_i64().unwrap_or(0),
+            tool: req["tool_name"].as_str().unwrap_or("-").to_string(),
+            operation: req["operation"].as_str().unwrap_or("-").to_string(),
+            effect: req["effect"].as_str().unwrap_or("unknown").to_string(),
+            target: req["target"].as_str().map(str::to_string),
+            arguments_hash: req["arguments_hash"].as_str().unwrap_or("-").to_string(),
+            arguments_summary: req["arguments_summary"].as_str().unwrap_or("-").to_string(),
+            reason: req["reason"].as_str().unwrap_or("").to_string(),
+            status: req["status"].as_str().unwrap_or("-").to_string(),
+            decision: req["decision"].as_str().map(str::to_string),
+            decision_scope: req["decision_scope"].as_str().map(str::to_string),
+            actor: req["decided_by"].as_str().map(str::to_string),
+            created_at: req["created_at"].as_str().unwrap_or("-").to_string(),
+            decided_at: req["decided_at"].as_str().map(str::to_string),
+            effective_policy: String::new(),
+            grants: vec![],
+            details: false,
+        })
+    }
+
+    pub fn pending(&self) -> bool {
+        self.status == "pending"
+    }
+
+    pub fn overlay_lines(&self) -> Vec<String> {
+        let mut out = vec![
+            "Permission required".to_string(),
+            String::new(),
+            format!("Request: {}", self.request_id),
+            format!("Tool: {}", self.tool),
+            format!("Operation: {}", self.operation),
+            format!(
+                "Target: {}",
+                self.target.clone().unwrap_or_else(|| "(sin target)".into())
+            ),
+            format!("Effect: {}", self.effect),
+            format!("Reason: {}", self.reason),
+            format!("Plan: {} revision {}", self.plan_id, self.plan_revision),
+        ];
+        if self.details {
+            out.push(String::new());
+            out.extend(self.detail_lines());
+        }
+        out.push(String::new());
+        out.push(
+            "[y] Allow once   [a] This run   [w] This workspace   [n] Deny   [v] Details   [Esc] Cancel"
+                .to_string(),
+        );
+        out
+    }
+
+    pub fn detail_lines(&self) -> Vec<String> {
+        let mut out = vec![
+            format!("arguments_hash:   {}", self.arguments_hash),
+            format!("arguments:        {}", self.arguments_summary),
+            format!(
+                "target:           {}",
+                self.target.clone().unwrap_or_else(|| "-".into())
+            ),
+            format!(
+                "effective policy: {}",
+                if self.effective_policy.is_empty() {
+                    "ask (sin grant aplicable)"
+                } else {
+                    &self.effective_policy
+                }
+            ),
+            format!(
+                "existing grants:  {}",
+                if self.grants.is_empty() {
+                    "-".to_string()
+                } else {
+                    self.grants.join(", ")
+                }
+            ),
+            format!("plan effect:      {}", self.effect),
+            format!("causation:        {}", self.request_id),
+            format!("correlation:      {}", self.run_id),
+            format!("status:           {}", self.status),
+            format!("created:          {}", self.created_at),
+        ];
+        if let Some(d) = &self.decision {
+            out.push(format!("decision:         {d}"));
+        }
+        if let Some(s) = &self.decision_scope {
+            out.push(format!("decision scope:   {s}"));
+        }
+        if let Some(a) = &self.actor {
+            out.push(format!("actor:            {a}"));
+        }
+        if let Some(t) = &self.decided_at {
+            out.push(format!("decided at:       {t}"));
+        }
+        out
+    }
+}
 #[derive(Clone, Debug)]
 pub struct ResumeItem {
     pub workspace_id: String,
@@ -662,6 +794,7 @@ impl Default for AgentState {
             ref_start: 0,
             preflight: None,
             plan: None,
+            perm: None,
             reject_open: false,
             reject_reason: String::new(),
         }
@@ -729,6 +862,7 @@ pub struct App {
     pub manifest: Option<Value>,
     /// Plan durable del run seleccionado (Inspector, sólo lectura).
     pub inspector_plan: Option<PlanView>,
+    pub inspector_perm: Option<PermissionView>,
     pub input: String,
     pub status: String,
     pub status_ok: bool,
@@ -777,6 +911,7 @@ impl App {
             selected_run: None,
             manifest: None,
             inspector_plan: None,
+            inspector_perm: None,
             input: String::new(),
             status: "ready · ? help · : command · q quit".into(),
             status_ok: true,
@@ -826,6 +961,7 @@ impl App {
             ],
             runs: vec![run.clone()],
             inspector_plan: None,
+            inspector_perm: None,
             events: vec![
                 json!({"sequence": 4, "type": "context.manifest.created", "actor": {"kind":"agent"}, "created_at": "2026-11-07T10:00:00Z"}),
                 json!({"sequence": 5, "type": "model.requested", "actor": {"kind":"agent"}, "created_at": "2026-11-07T10:00:01Z"}),
@@ -912,6 +1048,7 @@ impl App {
             self.selected_run = None;
             self.manifest = None;
             self.inspector_plan = None;
+            self.inspector_perm = None;
             self.selected_run_id = None;
             self.collection_index = 0;
             self.last_runs = Instant::now();
@@ -934,6 +1071,10 @@ impl App {
             self.inspector_plan = client::call("run.plan", json!({"run_id": id}))
                 .ok()
                 .and_then(|v| PlanView::from_value(&v));
+            self.inspector_perm = client::call("permission.list", json!({"run_id": id}))
+                .ok()
+                .and_then(|v| v.as_array().and_then(|a| a.last()).cloned())
+                .and_then(|v| PermissionView::from_value(&v));
         }
         self.last_runs = Instant::now();
     }
@@ -1136,6 +1277,41 @@ impl App {
         let in_command = self.focus == FocusArea::CommandBar;
         // Acciones del Inspector sobre el plan seleccionado: reutilizan las
         // mismas operaciones del daemon que el overlay de Agent Mode.
+        if !in_command
+            && let Some(perm) = self.inspector_perm.clone()
+            && perm.pending()
+        {
+            match k.code {
+                KeyCode::Char('y') => {
+                    self.agent.perm = Some(perm);
+                    self.approve_permission("once");
+                    self.refresh_runs();
+                }
+                KeyCode::Char('a') => {
+                    self.agent.perm = Some(perm);
+                    self.approve_permission("run");
+                    self.refresh_runs();
+                }
+                KeyCode::Char('w') => {
+                    self.agent.perm = Some(perm);
+                    self.approve_permission("workspace");
+                    self.refresh_runs();
+                }
+                KeyCode::Char('n') => {
+                    self.agent.perm = Some(perm);
+                    self.deny_permission();
+                    self.refresh_runs();
+                }
+                KeyCode::Char('v') => {
+                    if let Some(mut p) = self.inspector_perm.clone() {
+                        p.details = !p.details;
+                        self.inspector_perm = Some(p);
+                    }
+                }
+                _ => {}
+            }
+            return false;
+        }
         if !in_command
             && let Some(plan) = self.inspector_plan.clone()
             && plan.waiting()
@@ -2974,6 +3150,94 @@ impl App {
         self.load_plan();
     }
 
+    /// Recarga la solicitud de permiso pendiente del run activo.
+    pub fn load_permission(&mut self) {
+        let Some(id) = self.agent.last_run.clone() else {
+            self.agent.perm = None;
+            return;
+        };
+        if let Ok(v) = client::call(
+            "permission.list",
+            json!({"run_id": id, "status": "pending"}),
+        ) {
+            let details = self.agent.perm.as_ref().map(|p| p.details).unwrap_or(false);
+            let mut perm = v
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(PermissionView::from_value);
+            if let Some(p) = perm.as_mut() {
+                p.details = details;
+            }
+            self.agent.perm = perm;
+        }
+    }
+
+    pub fn approve_permission(&mut self, scope: &str) {
+        let Some(req) = self.agent.perm.clone() else {
+            return;
+        };
+        match client::call(
+            "permission.approve",
+            json!({"request_id": req.request_id, "scope": scope}),
+        ) {
+            Ok(_) => {
+                self.agent.push(
+                    AgentKind::Info,
+                    format!("permission allowed · {scope} · {}", req.tool),
+                );
+                self.agent.perm = None;
+                self.agent.run_state = "running".into();
+                self.agent.status = self.agent_status_line();
+                self.refresh_plan_views();
+            }
+            Err(e) => {
+                self.agent
+                    .push(AgentKind::Error, format!("permission: {e}"));
+                self.load_permission();
+            }
+        }
+    }
+
+    pub fn deny_permission(&mut self) {
+        let Some(req) = self.agent.perm.clone() else {
+            return;
+        };
+        match client::call("permission.deny", json!({"request_id": req.request_id})) {
+            Ok(_) => {
+                self.agent
+                    .push(AgentKind::Info, format!("permission denied · {}", req.tool));
+                self.agent.perm = None;
+                self.agent.run_state = "failed".into();
+                self.agent.status = self.agent_status_line();
+                self.refresh_plan_views();
+            }
+            Err(e) => {
+                self.agent.push(AgentKind::Error, format!("deny: {e}"));
+                self.load_permission();
+            }
+        }
+    }
+
+    pub fn cancel_permission(&mut self) {
+        let Some(req) = self.agent.perm.clone() else {
+            return;
+        };
+        match client::call("permission.cancel", json!({"request_id": req.request_id})) {
+            Ok(_) => {
+                self.agent
+                    .push(AgentKind::Info, "permission cancelled".to_string());
+                self.agent.perm = None;
+                self.agent.run_state = "cancelled".into();
+                self.agent.status = self.agent_status_line();
+                self.refresh_plan_views();
+            }
+            Err(e) => {
+                self.agent.push(AgentKind::Error, format!("cancel: {e}"));
+                self.load_permission();
+            }
+        }
+    }
+
     pub fn approve_plan(&mut self, scope: &str) {
         let Some(plan) = self.selected_plan() else {
             return;
@@ -3102,6 +3366,9 @@ impl App {
             "planning" | "waiting_approval"
         ) {
             self.load_plan();
+        }
+        if self.agent.run_state == "waiting_approval" {
+            self.load_permission();
         }
     }
 
@@ -3419,6 +3686,26 @@ impl App {
                     self.agent.reject_reason.pop();
                 }
                 KeyCode::Char(c) => self.agent.reject_reason.push(c),
+                _ => {}
+            }
+            return false;
+        }
+        if let Some(perm) = self.agent.perm.clone()
+            && perm.pending()
+        {
+            match k.code {
+                KeyCode::Char('o') if ctrl => self.toggle_mode(),
+                KeyCode::Char('y') => self.approve_permission("once"),
+                KeyCode::Char('a') => self.approve_permission("run"),
+                KeyCode::Char('w') => self.approve_permission("workspace"),
+                KeyCode::Char('n') => self.deny_permission(),
+                KeyCode::Char('v') => {
+                    if let Some(mut p) = self.agent.perm.clone() {
+                        p.details = !p.details;
+                        self.agent.perm = Some(p);
+                    }
+                }
+                KeyCode::Esc => self.cancel_permission(),
                 _ => {}
             }
             return false;
