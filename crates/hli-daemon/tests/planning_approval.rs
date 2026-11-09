@@ -35,6 +35,20 @@ fn approve_pending(c: &Ctx, run_id: &str, scope: &str) {
     }
 }
 
+/// `run.wait` puede devolver el `waiting_approval` transitorio del plan antes
+/// de que el run cambie a la aprobación de herramienta. Espera el kind real.
+fn wait_for_approval_kind(c: &Ctx, run_id: &str, kind: &str) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..40 {
+        last = c.ok("run.wait", json!({"run_id": run_id, "timeout_secs": 5}))["run"].clone();
+        if last["approval_kind"].as_str() == Some(kind) {
+            return last;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    last
+}
+
 fn start_run(c: &Ctx, ws: &str, th: &str, br: &str, prompt: &str, provider: Option<&str>) -> Value {
     let mut args = json!({
         "workspace_id": ws, "thread_id": th, "branch_id": br,
@@ -115,7 +129,7 @@ fn approve_executes_frozen_snapshot_and_records_receipt() {
     assert_eq!(approved["approval_events"].as_array().unwrap().len(), 1);
 
     // El plan aprobado autoriza los efectos, no la invocación concreta.
-    let waiting = c.ok("run.wait", json!({"run_id": run_id, "timeout_secs": 5}))["run"].clone();
+    let waiting = wait_for_approval_kind(&c, &run_id, "tool");
     assert_eq!(waiting["state"], "waiting_approval");
     assert_eq!(waiting["approval_kind"], "tool");
     approve_pending(&c, &run_id, "once");
