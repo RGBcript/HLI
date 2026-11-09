@@ -1,4 +1,5 @@
 #include <fstream>
+#include <iostream>
 #include <string>
 
 int main() {
@@ -7,6 +8,7 @@ int main() {
 <html lang="es">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Sistema Solar 3D - Three.js</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; font-family: Arial, sans-serif; background: #000; color: white; }
@@ -179,10 +181,12 @@ int main() {
     )";
 
     std::ofstream file("sistema_solar_3d.html");
-    if (file.is_open()) {
-        file << html_content;
-        file.close();
+    if (!file.is_open()) {
+        std::cerr << "no se pudo abrir el archivo de salida" << std::endl;
+        return 1;
     }
+    file << html_content;
+    file.close();
 
     return 0;
 }
