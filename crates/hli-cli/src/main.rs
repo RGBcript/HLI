@@ -568,6 +568,22 @@ fn run(args: &[String]) -> Result<(), String> {
             print_value(&call("provider.remove", json!({"name": name}))?, output)
         }
         ("run", Some("start")) => {
+            let explicit = if let Some(path) = flag(args, "--explicit-references-file") {
+                let raw = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("no se pudo leer {path}: {e}"))?;
+                Some(
+                    serde_json::from_str::<Value>(&raw)
+                        .map_err(|e| format!("--explicit-references-file inválido: {e}"))?,
+                )
+            } else {
+                match flag(args, "--explicit-references") {
+                    Some(raw) => Some(
+                        serde_json::from_str::<Value>(&raw)
+                            .map_err(|e| format!("--explicit-references inválido: {e}"))?,
+                    ),
+                    None => None,
+                }
+            };
             let ws = need_flag(args, "--workspace")?;
             let th = need_flag(args, "--thread")?;
             let br = need_flag(args, "--branch")?;
@@ -588,6 +604,7 @@ fn run(args: &[String]) -> Result<(), String> {
                     "top_k": flag(args, "--top-k").and_then(|v| v.parse::<u64>().ok()),
                     "temperature": flag(args, "--temperature").and_then(|v| v.parse::<f64>().ok()),
                     "max_tokens": flag(args, "--max-tokens").and_then(|v| v.parse::<i64>().ok()),
+                    "explicit_references": explicit,
                     "async": args.contains(&"--async".to_string()),
                     "sim_delay_ms": flag(args, "--sim-delay-ms").and_then(|v| v.parse::<u64>().ok()),
                     "timeout_secs": flag(args, "--timeout-secs").and_then(|v| v.parse::<u64>().ok())

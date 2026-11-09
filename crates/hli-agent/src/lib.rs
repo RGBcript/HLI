@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use hli_core::{HliError, Result, canon::hash_canonical, ids::new_id, model::*, time::now_iso};
 use serde_json::{Value, json};
 
-pub const POLICY_VERSION: &str = "context/v1";
+pub const POLICY_VERSION: &str = "context/v1.1-explicit-references";
 pub const DEFAULT_BUDGET_TOKENS: i64 = 8_192;
 const MAX_EVENT_CHARS: usize = 400;
 
@@ -60,7 +60,8 @@ pub fn build_payload(manifest: &ContextManifest, slices: &[(ArtifactSlice, Vec<u
         "memories": manifest.memories,
         "recent_events": manifest.recent_events,
         "summaries": manifest.summaries,
-        "artifact_slices": slice_values
+        "artifact_slices": slice_values,
+        "explicit_references": manifest.explicit_references
     })
 }
 
@@ -74,6 +75,22 @@ pub fn render_payload(manifest: &ContextManifest, slices: &[(ArtifactSlice, Vec<
     for e in &manifest.recent_events {
         if let Some(c) = e.get("snippet").and_then(|v| v.as_str()) {
             out.push_str(&format!("- evento: {c}\n"));
+        }
+    }
+    for r in &manifest.explicit_references {
+        if !r.included {
+            continue;
+        }
+        if let Some(text) = &r.materialized_text {
+            out.push_str(&format!(
+                "- referencia {}:{} ({}):\n{}\n",
+                r.reference_type, r.stable_id, r.validation_state, text
+            ));
+        } else {
+            out.push_str(&format!(
+                "- referencia {}:{} ({}): {}",
+                r.reference_type, r.stable_id, r.validation_state, r.detail
+            ));
         }
     }
     for (s, content) in slices {
@@ -175,6 +192,7 @@ impl Provider for SimProvider {
 }
 
 /// Construye el manifiesto con los eventos del thread hasta la revisión del run.
+#[allow(clippy::too_many_arguments)]
 pub fn build_manifest(
     run: &Run,
     visible_events: &[Event],
@@ -182,6 +200,7 @@ pub fn build_manifest(
     prompt: &str,
     memories: &[Value],
     budget_tokens: i64,
+    explicit: Vec<ExplicitReferenceEntry>,
 ) -> ContextManifest {
     let mut eligible: Vec<&Event> = visible_events.iter().collect();
     eligible.sort_by_key(|e| e.sequence);
@@ -227,6 +246,7 @@ pub fn build_manifest(
         summaries: vec![],
         artifact_slices: vec![],
         excluded,
+        explicit_references: explicit,
         payload_hash: String::new(),
         estimated_tokens: 0,
         content_hash: String::new(),
@@ -402,8 +422,8 @@ mod tests {
             ev(1, "workspace.created", json!({"name": "d"})),
             ev(2, "thread.created", json!({"title": "t"})),
         ];
-        let a = build_manifest(&run(2), &events, vec![], "hola", &[], 1024);
-        let b = build_manifest(&run(2), &events, vec![], "hola", &[], 1024);
+        let a = build_manifest(&run(2), &events, vec![], "hola", &[], 1024, vec![]);
+        let b = build_manifest(&run(2), &events, vec![], "hola", &[], 1024, vec![]);
         assert_eq!(a.recent_events.len(), 2);
         assert_eq!(a.estimated_tokens, b.estimated_tokens);
         assert!(!a.content_hash.is_empty());
@@ -415,7 +435,7 @@ mod tests {
         // La exclusión por rama y por revisión vive en Reader::visible_events;
         // aquí se comprueba que el manifiesto incluye exactamente lo que recibe.
         let events = vec![ev(1, "a", json!({})), ev(2, "b", json!({}))];
-        let m = build_manifest(&run(2), &events, vec![], "hola", &[], 1024);
+        let m = build_manifest(&run(2), &events, vec![], "hola", &[], 1024, vec![]);
         assert_eq!(m.recent_events.len(), 2);
         assert_eq!(m.recent_events[1]["sequence"], 2);
     }
@@ -431,7 +451,7 @@ mod tests {
     fn sim_provider_is_deterministic() {
         let p = SimProvider;
         let events = vec![ev(1, "a", json!({}))];
-        let m = build_manifest(&run(1), &events, vec![], "hola", &[], 1024);
+        let m = build_manifest(&run(1), &events, vec![], "hola", &[], 1024, vec![]);
         let req = ProviderRequest {
             run_id: "run_1".into(),
             prompt: "hola".into(),
@@ -446,8 +466,8 @@ mod tests {
     #[test]
     fn prompt_is_covered_by_manifest_hash() {
         let events = vec![ev(1, "a", json!({}))];
-        let a = build_manifest(&run(1), &events, vec![], "hola", &[], 1024);
-        let b = build_manifest(&run(1), &events, vec![], "adios", &[], 1024);
+        let a = build_manifest(&run(1), &events, vec![], "hola", &[], 1024, vec![]);
+        let b = build_manifest(&run(1), &events, vec![], "adios", &[], 1024, vec![]);
         assert_eq!(a.user_input.content, "hola");
         assert_ne!(a.user_input.content_hash, b.user_input.content_hash);
         assert_ne!(a.content_hash, b.content_hash);
@@ -456,7 +476,7 @@ mod tests {
     #[test]
     fn provider_receives_manifest_prompt() {
         let events = vec![ev(1, "a", json!({}))];
-        let m = build_manifest(&run(1), &events, vec![], "hola", &[], 1024);
+        let m = build_manifest(&run(1), &events, vec![], "hola", &[], 1024, vec![]);
         let p = SimProvider;
         let req = ProviderRequest {
             run_id: "run_1".into(),
@@ -479,5 +499,117 @@ mod tests {
         let out = execute_tool(&tmp, &call);
         assert_eq!(out.status, "error");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod explicit_reference_tests {
+    use super::*;
+    use hli_core::model::{ContextManifest, ExplicitReferenceEntry, UserInput};
+
+    fn entry(kind: &str, id: &str, hash: &str) -> ExplicitReferenceEntry {
+        ExplicitReferenceEntry {
+            reference_type: kind.into(),
+            stable_id: id.into(),
+            display_text: format!("display {id}"),
+            selected_at: "1700000000".into(),
+            selection_reason: "user_selected".into(),
+            validation_state: "valid".into(),
+            content_hash: Some(hash.into()),
+            revision: None,
+            materialization_kind: "inline_text".into(),
+            materialized_artifact_id: None,
+            slice_ids: vec![],
+            estimated_tokens: 3,
+            included: true,
+            exclusion_reason: None,
+            materialized_text: Some(format!("texto de {id}")),
+            detail: json!({}),
+        }
+    }
+
+    fn manifest(refs: Vec<ExplicitReferenceEntry>) -> ContextManifest {
+        ContextManifest {
+            manifest_id: "ctx_1".into(),
+            policy_version: POLICY_VERSION.into(),
+            workspace_id: "ws_1".into(),
+            run_id: "run_1".into(),
+            branch_revision: 3,
+            budget_tokens: 2048,
+            user_input: UserInput {
+                content: "prompt".into(),
+                content_hash: "sha256:u".into(),
+            },
+            instructions: vec![],
+            memories: vec![],
+            recent_events: vec![],
+            visible_event_ids: vec![],
+            summaries: vec![],
+            artifact_slices: vec![],
+            excluded: vec![],
+            explicit_references: refs,
+            payload_hash: String::new(),
+            estimated_tokens: 1,
+            content_hash: String::new(),
+            created_at: "2026-11-08T10:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn payload_includes_explicit_references() {
+        let m = manifest(vec![entry("file", "a.txt", "sha256:a")]);
+        let p = build_payload(&m, &[]);
+        assert_eq!(p["explicit_references"][0]["stable_id"], "a.txt");
+        assert_eq!(p["explicit_references"][0]["content_hash"], "sha256:a");
+    }
+
+    #[test]
+    fn reference_order_is_preserved() {
+        let m = manifest(vec![
+            entry("memory", "mem_2", "-"),
+            entry("file", "a.txt", "sha256:a"),
+            entry("branch", "main", "-"),
+        ]);
+        let p = build_payload(&m, &[]);
+        let ids: Vec<&str> = p["explicit_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["stable_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["mem_2", "a.txt", "main"]);
+    }
+
+    #[test]
+    fn payload_hash_covers_reference_hash() {
+        let a = manifest(vec![entry("file", "a.txt", "sha256:a")]);
+        let b = manifest(vec![entry("file", "a.txt", "sha256:b")]);
+        let ha = hash_canonical(&build_payload(&a, &[]));
+        let hb = hash_canonical(&build_payload(&b, &[]));
+        assert_ne!(ha, hb);
+    }
+
+    #[test]
+    fn reference_materialization_is_deterministic() {
+        let m = manifest(vec![entry("file", "a.txt", "sha256:a")]);
+        assert_eq!(build_payload(&m, &[]), build_payload(&m, &[]));
+    }
+
+    #[test]
+    fn old_manifest_without_references_is_readable() {
+        let m = manifest(vec![]);
+        let mut v = serde_json::to_value(&m).unwrap();
+        v.as_object_mut().unwrap().remove("explicit_references");
+        let back: ContextManifest = serde_json::from_value(v).unwrap();
+        assert!(back.explicit_references.is_empty());
+    }
+
+    #[test]
+    fn explicit_references_change_manifest_content_hash() {
+        let mut a = manifest(vec![]);
+        let mut b = manifest(vec![entry("file", "a.txt", "sha256:a")]);
+        a.seal();
+        b.seal();
+        assert_ne!(a.content_hash, b.content_hash);
     }
 }

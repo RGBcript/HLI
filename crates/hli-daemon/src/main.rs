@@ -759,8 +759,32 @@ fn dispatch(
                 .iter()
                 .filter_map(|m| m["id"].as_str().map(str::to_string))
                 .collect();
-            let mut manifest =
-                build_manifest(&run, &visible, instructions, &prompt, &memories, budget);
+            let explicit_in: Vec<hli_core::model::ExplicitReference> = args
+                .get("explicit_references")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| HliError::invalid(format!("explicit_references inválidas: {e}")))?
+                .unwrap_or_default();
+            let budget_chars = (budget.max(256) as usize) * 4;
+            let explicit = materialize_references(
+                r,
+                ws.as_str(),
+                ws_obj.root_path.as_str(),
+                th.as_str(),
+                &explicit_in,
+                budget_chars,
+            )?;
+            let mut manifest = build_manifest(
+                &run,
+                &visible,
+                instructions,
+                &prompt,
+                &memories,
+                budget,
+                explicit,
+            );
 
             // La trayectoria visible completa queda como evidencia; el contexto se presupuesta.
             manifest.visible_event_ids = visible.iter().map(|e| e.event_id.clone()).collect();
@@ -1659,6 +1683,216 @@ fn dispatch(
             format!("comando desconocido: {other}"),
         )),
     }
+}
+
+/// Valida y materializa las referencias explícitas antes de construir el
+/// manifiesto. Cualquier referencia inválida falla el run antes del provider.
+fn materialize_references(
+    r: &hli_store::reader::Reader,
+    workspace_id: &str,
+    root: &str,
+    thread_id: &str,
+    refs: &[hli_core::model::ExplicitReference],
+    budget_chars: usize,
+) -> hli_core::Result<Vec<hli_core::model::ExplicitReferenceEntry>> {
+    use std::path::{Component, Path};
+
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for rf in refs {
+        let mut e = hli_core::model::ExplicitReferenceEntry {
+            reference_type: rf.reference_type.clone(),
+            stable_id: rf.stable_id.clone(),
+            display_text: rf.display_text.clone(),
+            selected_at: rf.selected_at.clone(),
+            selection_reason: if rf.selection_reason.is_empty() {
+                "user_selected".to_string()
+            } else {
+                rf.selection_reason.clone()
+            },
+            validation_state: "valid".to_string(),
+            content_hash: rf.content_hash.clone(),
+            revision: rf.revision,
+            materialization_kind: "metadata".to_string(),
+            materialized_artifact_id: None,
+            slice_ids: vec![],
+            estimated_tokens: 0,
+            included: true,
+            exclusion_reason: None,
+            materialized_text: None,
+            detail: json!({}),
+        };
+        match rf.reference_type.as_str() {
+            "file" => {
+                let rel = Path::new(&rf.stable_id);
+                if rel.is_absolute()
+                    || rel
+                        .components()
+                        .any(|c| matches!(c, Component::ParentDir | Component::RootDir))
+                {
+                    return Err(HliError::invalid(format!(
+                        "reference_invalid_path: {}",
+                        rf.stable_id
+                    )));
+                }
+                let path = Path::new(root).join(rel);
+                let bytes = std::fs::read(&path).map_err(|_| {
+                    HliError::not_found(&format!("reference_missing: {}", rf.stable_id))
+                })?;
+                let hash = format!("sha256:{}", hli_store::export::sha256_hex(&bytes));
+                if let Some(want) = &rf.content_hash
+                    && !want.is_empty()
+                    && want != &hash
+                {
+                    return Err(HliError::conflict(format!(
+                        "reference_changed: {}",
+                        rf.stable_id
+                    )));
+                }
+                e.content_hash = Some(hash);
+                e.detail = json!({"size": bytes.len(), "path": rf.stable_id});
+                match String::from_utf8(bytes) {
+                    Ok(text) => {
+                        let room = budget_chars.saturating_sub(used).min(4000);
+                        let cut: String = text.chars().take(room).collect();
+                        if !cut.is_empty() {
+                            used += cut.chars().count();
+                            e.estimated_tokens = ((cut.chars().count() as i64) + 3) / 4;
+                            e.materialization_kind = "inline_text".to_string();
+                            e.materialized_text = Some(cut);
+                        }
+                    }
+                    Err(_) => e.materialization_kind = "metadata_only".to_string(),
+                }
+            }
+            "memory" => {
+                let m = serde_json::to_value(r.memory(&rf.stable_id)?).unwrap_or(json!({}));
+                if m["workspace_id"].as_str() != Some(workspace_id) {
+                    return Err(HliError::conflict(format!(
+                        "reference_scope_mismatch: {}",
+                        rf.stable_id
+                    )));
+                }
+                let status = m["status"].as_str().unwrap_or("");
+                if status != "active" {
+                    return Err(HliError::conflict(format!(
+                        "reference_{}: {}",
+                        status, rf.stable_id
+                    )));
+                }
+                if let Some(until) = m["valid_until"].as_str()
+                    && until < hli_core::time::now_iso().as_str()
+                {
+                    return Err(HliError::conflict(format!(
+                        "reference_expired: {}",
+                        rf.stable_id
+                    )));
+                }
+                let content: String = m["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(1200)
+                    .collect();
+                used += content.chars().count();
+                e.estimated_tokens = ((content.chars().count() as i64) + 3) / 4;
+                e.materialization_kind = "inline_text".to_string();
+                e.materialized_text = Some(content);
+                e.detail = json!({
+                    "status": status,
+                    "kind": m["kind"],
+                    "scope": m["scope"],
+                    "source_authority": m["source_authority"]
+                });
+            }
+            "artifact" => {
+                let a = serde_json::to_value(r.artifact(&rf.stable_id)?).unwrap_or(json!({}));
+                let sha = a["sha256"].as_str().unwrap_or("").to_string();
+                if let Some(want) = &rf.content_hash
+                    && !want.is_empty()
+                    && want.trim_start_matches("sha256:") != sha.trim_start_matches("sha256:")
+                {
+                    return Err(HliError::conflict(format!(
+                        "reference_hash_mismatch: {}",
+                        rf.stable_id
+                    )));
+                }
+                e.content_hash = Some(sha.clone());
+                e.detail = json!({
+                    "sha256": sha,
+                    "media_type": a["mime"],
+                    "size": a["bytes"]
+                });
+                let text_like = a["mime"].as_str().is_some_and(|m| m.starts_with("text/"));
+                if text_like
+                    && a["bytes"].as_i64().unwrap_or(i64::MAX) <= 4000
+                    && let Some(path) = a["path"].as_str()
+                    && let Ok(bytes) = std::fs::read(path)
+                    && let Ok(text) = String::from_utf8(bytes)
+                {
+                    used += text.chars().count();
+                    e.estimated_tokens = ((text.chars().count() as i64) + 3) / 4;
+                    e.materialization_kind = "inline_text".to_string();
+                    e.materialized_text = Some(text.chars().take(4000).collect());
+                } else {
+                    e.materialization_kind = "metadata_only".to_string();
+                }
+            }
+            "run" => {
+                let run = serde_json::to_value(r.run(&rf.stable_id)?).unwrap_or(json!({}));
+                if run["workspace_id"].as_str() != Some(workspace_id) {
+                    return Err(HliError::conflict(format!(
+                        "reference_scope_mismatch: {}",
+                        rf.stable_id
+                    )));
+                }
+                let text: String = run["result"]["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(1200)
+                    .collect();
+                if !text.is_empty() {
+                    used += text.chars().count();
+                    e.estimated_tokens = ((text.chars().count() as i64) + 3) / 4;
+                    e.materialization_kind = "inline_text".to_string();
+                    e.materialized_text = Some(text);
+                }
+                e.detail = json!({
+                    "state": run["state"],
+                    "receipt_hash": run["receipt"]["result_hash"]
+                });
+            }
+            "branch" => {
+                let branches = r.branches(thread_id)?;
+                let found = branches
+                    .iter()
+                    .find(|b| b.name == rf.stable_id || b.id == rf.stable_id)
+                    .ok_or_else(|| {
+                        HliError::not_found(&format!("reference_missing: {}", rf.stable_id))
+                    })?;
+                if let Some(rev) = rf.revision
+                    && rev != found.head_sequence
+                {
+                    return Err(HliError::conflict(format!(
+                        "reference_revision_mismatch: {}",
+                        rf.stable_id
+                    )));
+                }
+                e.revision = Some(found.head_sequence);
+                e.detail = json!({
+                    "branch_id": found.id,
+                    "thread_id": found.thread_id,
+                    "revision": found.head_sequence
+                });
+            }
+            other => {
+                return Err(HliError::invalid(format!("reference_unsupported: {other}")));
+            }
+        }
+        out.push(e);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
