@@ -3,6 +3,10 @@
 //! Políticas en milisegundos y `HLI_HOME` independiente por prueba. El fixture
 //! se empaqueta e instala por la ruta real (`module.install`).
 
+//! MCH depende de procesos y PIDs: el port a Linux está pendiente.
+//! El workflow declara Linux experimental; estos tests corren solo en Windows.
+#![cfg(windows)]
+
 mod common;
 
 use std::time::{Duration, Instant};

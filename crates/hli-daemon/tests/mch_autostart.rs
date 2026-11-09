@@ -5,6 +5,10 @@
 //! Cada prueba usa su propio `HLI_HOME`, políticas de milisegundos y un módulo
 //! fixture empaquetado al vuelo, sin estado compartido entre pruebas.
 
+//! MCH depende de procesos y PIDs: el port a Linux está pendiente.
+//! El workflow declara Linux experimental; estos tests corren solo en Windows.
+#![cfg(windows)]
+
 mod common;
 
 use std::time::{Duration, Instant};
@@ -19,7 +23,6 @@ fn prepare_case(tag: &str, autostart: bool, fixture: Value) -> Ctx {
 }
 
 #[test]
-#[cfg_attr(not(windows), ignore = "MCH autostart: port a Linux pendiente")]
 fn mch_autostart_recovers_after_daemon_restart() {
     let mut c = prepare_case("recovers", true, json!({"trace": true}));
 
@@ -52,7 +55,6 @@ fn mch_autostart_recovers_after_daemon_restart() {
 }
 
 #[test]
-#[cfg_attr(not(windows), ignore = "MCH autostart: port a Linux pendiente")]
 fn mch_non_autostart_remains_stopped() {
     let mut c = prepare_case("nonauto", false, json!({"trace": true}));
 
@@ -122,7 +124,6 @@ fn failing_autostart_does_not_block_daemon() {
 }
 
 #[test]
-#[cfg_attr(not(windows), ignore = "MCH autostart: port a Linux pendiente")]
 fn autostart_reaches_ready_only_after_lifecycle() {
     let mut c = prepare_case(
         "lifecycle",
@@ -177,7 +178,6 @@ fn autostart_reaches_ready_only_after_lifecycle() {
 }
 
 #[test]
-#[cfg_attr(not(windows), ignore = "MCH autostart: port a Linux pendiente")]
 fn autostart_does_not_reuse_stale_pid() {
     let mut c = prepare_case("stale", true, json!({}));
 
@@ -203,7 +203,6 @@ fn autostart_does_not_reuse_stale_pid() {
 }
 
 #[test]
-#[cfg_attr(not(windows), ignore = "MCH autostart: port a Linux pendiente")]
 fn concurrent_serve_and_autostart_spawn_once() {
     let mut c = prepare_case(
         "concurrent",
