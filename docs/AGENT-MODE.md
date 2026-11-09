@@ -102,11 +102,19 @@ Escribir `@` abre un selector con cinco categorías: **Files**, **Artifacts**,
   `stable_id`, hash o revisión, `selected_at`, `selection_reason`), no solo con el
   token visible. El daemon las valida y materializa en `ContextManifest`; el
   `payload_hash` cubre orden, identidad, hash y contenido materializado.
-- **Preflight**: antes de crear el run, la TUI compara el hash actual de cada
-  archivo con el seleccionado. Si difieren o faltan, abre un overlay con
-  `[r] Refresh` y `[c] Cancel`; no se crea run hasta que todas las referencias
-  sean válidas. Refresh recalcula hash y tamaño y continúa; Cancel conserva el
-  compositor y no crea nada.
+- **Preflight**: antes de crear el run, la TUI valida **todas** las referencias.
+  Archivos: hash actual vs. seleccionado. Memorias: estado y vigencia.
+  Artifacts: existencia y hash. Runs: workspace. Branches: revisión y thread.
+  Cualquier problema se agrupa en un overlay con el motivo; solo Refresh
+  (`r`) está disponible para archivos cambiados, el resto exige Cancel (`c`).
+  No se crea run ni se llama al provider mientras quede algo sin resolver.
+- **Aislamiento**: una referencia de otro workspace o de otro thread se rechaza
+  con `reference_out_of_scope` / `reference_not_found`; el provider nunca ve esa
+  entidad.
+- **Binarios**: un artifact binario se materializa como `metadata_only`; su
+  contenido no viaja al payload como texto ni base64.
+- **Orden**: el orden de las referencias forma parte del contexto y de
+  `payload_hash`; export/import no lo reordena.
 - **Keep no está soportado**: no existen snapshots originales persistidos. Se
   documenta como trabajo posterior.
 - **Procedencia**: el receipt registra `used_explicit_reference_ids` (solo las

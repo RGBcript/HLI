@@ -130,6 +130,25 @@ primer poll: es correcto.
 
 ---
 
+## 1g. Invariantes de referencias (v1.1)
+
+| # | Acción | Qué debe verse |
+|---|---|---|
+| 57 | Seleccionar `@memory` y supersederla antes de enviar | — |
+| 58 | Enviar el prompt | Preflight con `superseded` para esa memoria |
+| 59 | `c` Cancelar | No se crea run y el compositor conserva el texto |
+| 60 | Seleccionar `@branch` | Token con la rama y su revisión |
+| 61 | Provocar un cambio de revisión (nuevo run/evento) | — |
+| 62 | Enviar | Preflight `revision mismatch`, solo Cancel |
+| 63 | Archivo modificado + memoria superseded a la vez | — |
+| 64 | Enviar | Ambos aparecen agrupados en el mismo overlay |
+| 65 | `c` Cancelar | Compositor y tokens intactos |
+| 66 | Resolver y ejecutar un run válido | Run completado |
+| 67 | Ver el receipt | `used_explicit_reference_ids` con las referencias usadas |
+| 68 | `resume` | El transcript y el receipt conservan la procedencia |
+
+---
+
 ## 2. Criterio de aceptación
 
 - No hay pánico ni corrupción de pantalla.
@@ -151,7 +170,7 @@ Commit evaluado:
 Dimensiones probadas:
 Fecha:
 Paso 0 (teclado):       OK / REGRESIÓN
-Pasos ejecutados:       56 / 56
+Pasos ejecutados:       68 / 68
 Resultado:              PENDIENTE / PASA / FALLA
 Observaciones:
 Firma:

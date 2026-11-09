@@ -13,6 +13,9 @@
   `context/v1.1-explicit-references`.
 - Export/import conserva referencias, orden, estados de validación y
   procedencia del receipt.
+- **v1.0** (`explicit_references` ausente) y **v1.1** (presente) conviven: el
+  campo ausente se interpreta como `[]` y no se recalcula ningún hash histórico.
+- Keep no está soportado: no hay snapshots de selección persistidos.
 
 ## Versiones independientes
 
