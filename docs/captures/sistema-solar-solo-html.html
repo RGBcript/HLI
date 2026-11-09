@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Sistema Solar 3D - Three.js</title>
+  <style>
+    body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: sans-serif; background: #000; color: #fff; }
+    #container { width: 100vw; height: 100vh; position: relative; }
+    #gui { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.6); padding: 12px; border-radius: 8px; z-index: 10; font-size: 14px; }
+    #gui label { display: block; margin: 8px 0; cursor: pointer; user-select: none; }
+    #gui input[type=range] { width: 180px; }
+    #disclaimer { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.7); padding: 8px 16px; border-radius: 20px; font-size: 13px; text-align: center; z-index: 10; }
+    .label { position: absolute; pointer-events: none; font-size: 12px; color: #fff; text-shadow: 0 0 4px #000; padding: 2px 6px; background: rgba(0,0,0,0.5); border-radius: 4px; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
+  <div id="gui">
+    <label><input type="checkbox" id="orbitsToggle" checked> Mostrar órbitas</label>
+    <label><input type="checkbox" id="labelsToggle" checked> Mostrar etiquetas</label>
+    <label>Velocidad: <span id="speedValue">1.0</span><input type="range" id="speedSlider" min="0.1" max="5" step="0.1" value="1"></label>
+  </div>
+  <div id="disclaimer">Distancias y tamaños exagerados para visibilidad</div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const container = document.getElementById('container');
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+
+    // Estrellas de fondo
+    const starsGeometry = new THREE.BufferGeometry();
+    const starsCount = 5000;
+    const starsPositions = new Float32Array(starsCount * 3);
+    for (let i = 0; i < starsCount * 3; i++) {
+      starsPositions[i] = (Math.random() - 0.5) * 2000;
+    }
+    starsGeometry.setAttribute('position', new THREE.BufferAttribute(starsPositions, 3));
+    const starsMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 0.8 });
+    const stars = new THREE.Points(starsGeometry, starsMaterial);
+    scene.add(stars);
+
+    // Luz ambiental y direccional (para sombras suaves)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 5, 5);
+    scene.add(directionalLight);
+
+    // Cámara y controles
+    const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+    camera.position.set(0, 55, 95);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.minDistance = 8;
+    controls.maxDistance = 200;
+    controls.update();
+
+    // Datos de los planetas: [nombre, radio, distancia orbital, color, velocidad angular (base)]
+    const planetData = [
+      ['Sol', 4, 0, 0xffff00, 0],
+      ['Mercurio', 0.8, 10, 0x8c8c8c, 0.4],
+      ['Venus', 1.2, 14, 0xffd700, 0.3],
+      ['Tierra', 1.4, 19, 0x4a90e2, 0.2],
+      ['Marte', 1.0, 25, 0xe27d60, 0.15],
+      ['Jupiter', 3.0, 36, 0xd4a017, 0.08],
+      ['Saturno', 2.6, 48, 0xf4a460, 0.06],
+      ['Urano', 2.0, 60, 0xadd8e6, 0.04],
+      ['Neptuno', 1.9, 70, 0x4b0082, 0.02]
+    ];
+
+    const planets = [];
+    const orbits = [];
+    const labels = [];
+
+    // Crear sol
+    const sunGeometry = new THREE.SphereGeometry(planetData[0][1], 32, 32);
+    const sunMaterial = new THREE.MeshPhongMaterial({ color: planetData[0][3], emissive: planetData[0][3], emissiveIntensity: 1.5 });
+    const sun = new THREE.Mesh(sunGeometry, sunMaterial);
+    scene.add(sun);
+    const sunLight = new THREE.PointLight(0xffffff, 3, 400);
+    scene.add(sunLight);
+
+    // Crear planetas, órbitas y etiquetas
+    for (let i = 1; i < planetData.length; i++) {
+      const [name, radius, distance, color] = planetData[i];
+
+      // Orbita (como un anillo fino)
+      const orbitGeometry = new THREE.RingGeometry(distance - 0.1, distance + 0.1, 64);
+      const orbitMaterial = new THREE.MeshBasicMaterial({ color: 0x555555, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
+      const orbit = new THREE.Mesh(orbitGeometry, orbitMaterial);
+      orbit.rotation.x = Math.PI / 2; // colocar en plano XZ
+      scene.add(orbit);
+      orbits.push(orbit);
+
+      // Planeta
+      const planetGeometry = new THREE.SphereGeometry(radius, 32, 32);
+      const planetMaterial = new THREE.MeshPhongMaterial({ color });
+      const planet = new THREE.Mesh(planetGeometry, planetMaterial);
+      planet.position.set(distance, 0, 0);
+      scene.add(planet);
+      planets.push({ mesh: planet, distance: distance, speed: planetData[i][5] });
+
+      // Etiqueta
+      const labelDiv = document.createElement('div');
+      labelDiv.className = 'label';
+      labelDiv.textContent = name;
+      container.appendChild(labelDiv);
+      labels.push(labelDiv);
+    }
+
+    // Anillo de Saturno (índice 6 en planetData: Saturno)
+    const ringGeometry = new THREE.RingGeometry(2.8, 4.0, 64);
+    const ringMaterial = new THREE.MeshBasicMaterial({
+      color: 0xc0c0c0,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.7
+    });
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    ring.rotation.x = Math.PI / 2;
+    scene.add(ring);
+
+    // Actualizar tamaño del renderer al redimensionar
+    window.addEventListener('resize', () => {
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      renderer.setSize(width, height);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    });
+
+    // GUI interactividad
+    const speedSlider = document.getElementById('speedSlider');
+    const speedValue = document.getElementById('speedValue');
+    const orbitsToggle = document.getElementById('orbitsToggle');
+    const labelsToggle = document.getElementById('labelsToggle');
+
+    let speedMultiplier = 1;
+
+    speedSlider.addEventListener('input', () => {
+      speedMultiplier = parseFloat(speedSlider.value);
+      speedValue.textContent = speedMultiplier.toFixed(1);
+    });
+
+    orbitsToggle.addEventListener('change', () => {
+      orbits.forEach(orbit => orbit.visible = orbitsToggle.checked);
+    });
+
+    labelsToggle.addEventListener('change', () => {
+      labels.forEach(label => label.style.display = labelsToggle.checked ? 'block' : 'none');
+    });
+
+    // Reloj para animación
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const delta = clock.getDelta() * speedMultiplier;
+
+      // Animar planetas (rotación alrededor del sol)
+      for (let i = 0; i < planets.length; i++) {
+        const planetObj = planets[i];
+        const angle = Date.now() * 0.0001 * planetObj.speed * speedMultiplier; // velocidad base ajustada
+        planetObj.mesh.position.set(
+          planetObj.distance * Math.cos(angle),
+          0,
+          planetObj.distance * Math.sin(angle)
+        );
+
+        // Rotación propia (opcional, para dar sensación de giro)
+        planetObj.mesh.rotation.y += delta * 0.5;
+      }
+
+      // Rotar anillo de Saturno lentamente
+      ring.rotation.z += delta * 0.02;
+
+      // Actualizar posición de etiquetas en pantalla
+      if (labelsToggle.checked) {
+        for (let i = 0; i < labels.length; i++) {
+          const planet = planets[i].mesh;
+          const vector = new THREE.Vector3();
+          vector.setFromMatrixPosition(planet.matrixWorld);
+          vector.project(camera);
+
+          const w = renderer.domElement.clientWidth || window.innerWidth;
+          const x = (vector.x * 0.5 + 0.5) * w;
+          const h = renderer.domElement.clientHeight || window.innerHeight;
+          const y = (-vector.y * 0.5 + 0.5) * h;
+
+          labels[i].style.left = `${x}px`;
+          labels[i].style.display = vector.z > 1 ? "none" : "block";
+          labels[i].style.top = `${y}px`;
+        }
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    animate();
+  </script>
+</body>
+</html>
+```
