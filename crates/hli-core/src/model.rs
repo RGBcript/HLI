@@ -215,6 +215,14 @@ pub struct Receipt {
     pub approved_effects: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rejected_effects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_snapshot_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superseded_plan_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invalidation_events: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

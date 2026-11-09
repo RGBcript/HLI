@@ -489,6 +489,90 @@ fn run_lines(app: &App) -> Vec<Line<'static>> {
             m["budget_tokens"], m["estimated_tokens"]
         )));
     }
+    if let Some(p) = &app.inspector_plan {
+        let dash = |s: &Option<String>| s.clone().unwrap_or_else(|| "-".into());
+        v.push(Line::from(""));
+        v.push(Line::from("Plan"));
+        v.push(Line::from(format!("Plan ID                {}", p.plan_id)));
+        v.push(Line::from(format!("Revision               {}", p.revision)));
+        v.push(Line::from(format!(
+            "Supersedes Plan        {}",
+            dash(&p.supersedes)
+        )));
+        v.push(Line::from(format!("Run ID                 {}", p.run_id)));
+        v.push(Line::from(format!("Origin                 {}", p.origin)));
+        v.push(Line::from(format!("Status                 {}", p.status)));
+        v.push(Line::from(format!("Summary                {}", p.summary)));
+        for s in &p.steps {
+            v.push(Line::from(format!(
+                "  {}. {:<38} {}{}",
+                s.order,
+                s.description,
+                s.effect,
+                if s.requires_approval {
+                    " · approval required"
+                } else {
+                    ""
+                }
+            )));
+        }
+        v.push(Line::from(format!(
+            "Requested effects      {}",
+            if p.effects.is_empty() {
+                "-".into()
+            } else {
+                p.effects.join(", ")
+            }
+        )));
+        v.push(Line::from(format!(
+            "Approval scope         {}",
+            dash(&p.approval_scope)
+        )));
+        v.push(Line::from(format!(
+            "Approved by            {}",
+            dash(&p.approved_by)
+        )));
+        v.push(Line::from(format!(
+            "Created at             {}",
+            p.created_at
+        )));
+        v.push(Line::from(format!(
+            "Approved or rejected   {}",
+            dash(&p.decided_at)
+        )));
+        v.push(Line::from(format!(
+            "Plan content hash      {}",
+            p.plan_hash
+        )));
+        v.push(Line::from(format!(
+            "Execution snapshot     {}",
+            p.execution_hash
+        )));
+        v.push(Line::from(format!(
+            "Invalidation reasons   {}",
+            if p.invalidation_reasons.is_empty() {
+                "-".to_string()
+            } else {
+                p.invalidation_reasons.join("; ")
+            }
+        )));
+        v.push(Line::from(format!(
+            "Provider/model         {} / {}",
+            p.provider, p.model
+        )));
+        v.push(Line::from(format!(
+            "ContextManifest        {}",
+            p.manifest_id
+        )));
+        v.push(Line::from(format!(
+            "Branch revision        {}",
+            p.branch_revision
+        )));
+        v.push(Line::from(""));
+        v.push(Line::from(
+            "[y] approve once  [a] run  [w] workspace  [n] reject  [r] replan",
+        ));
+    }
     v
 }
 
@@ -818,6 +902,45 @@ fn draw_agent(f: &mut Frame, app: &App) {
     if let Some(pf) = &app.agent.preflight {
         draw_preflight(f, area, pf);
     }
+    if app.agent.reject_open {
+        draw_reject_reason(f, area, app);
+    } else if let Some(plan) = &app.agent.plan
+        && plan.waiting()
+    {
+        draw_plan(f, area, plan);
+    }
+}
+
+fn draw_plan(f: &mut Frame, area: Rect, plan: &crate::app::PlanView) {
+    let height = (plan.overlay_lines().len() as u16 + 2).min(area.height.saturating_sub(2));
+    let rect = overlay_rect(area, 92, height);
+    f.render_widget(Clear, rect);
+    let lines: Vec<Line> = plan.overlay_lines().into_iter().map(Line::from).collect();
+    let title = if plan.invalidated() {
+        " plan invalidated "
+    } else {
+        " plan approval "
+    };
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: false }),
+        rect,
+    );
+}
+
+fn draw_reject_reason(f: &mut Frame, area: Rect, app: &App) {
+    let rect = overlay_rect(area, 70, 6);
+    f.render_widget(Clear, rect);
+    let text = vec![
+        Line::from("Reason for rejection (opcional, Enter para confirmar)"),
+        Line::from(format!("> {}", app.agent.reject_reason)),
+        Line::from("[Enter] Reject   [Esc] Cancel"),
+    ];
+    f.render_widget(
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" reject ")),
+        rect,
+    );
 }
 
 fn draw_preflight(f: &mut Frame, area: Rect, pf: &crate::app::Preflight) {

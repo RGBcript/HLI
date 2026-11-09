@@ -3,12 +3,13 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use serde_json::json;
 
 use hli_tui::app::{
-    ActivityDetail, AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, RefItem, RefKind,
-    Reference, TuiMode, available_commands, classify_artifact_hash, classify_branch_revision,
-    classify_memory, format_providers, layout_mode, project_thread, reference_token, split_command,
-    terminal_summary,
+    ActivityDetail, AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, PlanStepView,
+    PlanView, RefItem, RefKind, Reference, TuiMode, available_commands, classify_artifact_hash,
+    classify_branch_revision, classify_memory, format_providers, layout_mode, project_thread,
+    reference_token, split_command, terminal_summary,
 };
 use hli_tui::ui;
 
@@ -1502,6 +1503,214 @@ fn branch_revision_mismatch_is_detected() {
     );
     assert_eq!(classify_branch_revision(Some(4), 4), None);
     assert_eq!(classify_branch_revision(None, 9), None);
+}
+
+// ---------------------------------------------------------------------------
+// Plan durable: overlay, Inspector y transcript
+// ---------------------------------------------------------------------------
+
+fn demo_plan() -> PlanView {
+    PlanView {
+        run_id: "run_1".into(),
+        plan_id: "plan_1".into(),
+        revision: 2,
+        supersedes: Some("plan_0".into()),
+        origin: "runtime_generated".into(),
+        status: "waiting_approval".into(),
+        summary: "3 pasos; efectos: read, write".into(),
+        steps: vec![
+            PlanStepView {
+                order: 1,
+                description: "Inspect the workspace".into(),
+                effect: "read".into(),
+                requires_approval: false,
+                tool: None,
+            },
+            PlanStepView {
+                order: 2,
+                description: "Modify the selected file".into(),
+                effect: "write".into(),
+                requires_approval: true,
+                tool: Some("filesystem.write".into()),
+            },
+        ],
+        effects: vec!["read".into(), "write".into()],
+        invalidation_reasons: vec![],
+        plan_hash: "sha256:plan".into(),
+        execution_hash: "sha256:exec".into(),
+        provider: "local (ollama)".into(),
+        model: "m2".into(),
+        manifest_id: "ctx_1".into(),
+        branch_revision: 3,
+        tools: vec!["filesystem.write=ask".into()],
+        modules: vec![],
+        mch: vec![],
+        secrets: vec!["api@v1".into()],
+        approval_scope: None,
+        approved_by: None,
+        created_at: "2026-11-09T00:00:00Z".into(),
+        decided_at: None,
+        details: false,
+    }
+}
+
+fn agent_with_plan(plan: PlanView) -> App {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.plan = Some(plan);
+    app.agent.run_state = "waiting_approval".into();
+    app
+}
+
+#[test]
+fn plan_is_visible_in_agent_mode() {
+    let app = agent_with_plan(demo_plan());
+    let text = render(&app, 110, 40);
+    assert!(text.contains("Plan requires approval"), "{text}");
+    assert!(text.contains("Revision: 2"), "{text}");
+    assert!(text.contains("Modify the selected file"), "{text}");
+    assert!(text.contains("write · approval required"), "{text}");
+}
+
+#[test]
+fn runtime_generated_origin_is_visible() {
+    let text = render(&agent_with_plan(demo_plan()), 110, 40);
+    assert!(text.contains("runtime-generated"), "{text}");
+}
+
+#[test]
+fn provider_origin_is_visible() {
+    let mut plan = demo_plan();
+    plan.origin = "provider".into();
+    let text = render(&agent_with_plan(plan), 110, 40);
+    assert!(text.contains("Origin: provider"), "{text}");
+}
+
+#[test]
+fn approval_overlay_blocks_prompt_submission() {
+    let mut app = agent_with_plan(demo_plan());
+    for c in "hola".chars() {
+        tap(&mut app, KeyCode::Char(c));
+    }
+    tap(&mut app, KeyCode::Enter);
+    assert!(
+        app.agent.composer.is_empty(),
+        "el compositor no debe recibir texto"
+    );
+    assert!(
+        !app.agent.lines.iter().any(|l| l.kind == AgentKind::User),
+        "no debe enviarse un prompt con la aprobación pendiente"
+    );
+}
+
+#[test]
+fn invalidated_plan_disables_approval() {
+    let mut plan = demo_plan();
+    plan.invalidation_reasons = vec!["el modelo cambió".into()];
+    let text = render(&agent_with_plan(plan), 110, 40);
+    assert!(text.contains("Plan invalidated"), "{text}");
+    assert!(text.contains("Replan"), "{text}");
+    assert!(!text.contains("Approve once"), "{text}");
+}
+
+#[test]
+fn view_details_never_shows_secret_values() {
+    let mut plan = demo_plan();
+    plan.details = true;
+    let text = render(&agent_with_plan(plan), 140, 50);
+    assert!(text.contains("api@v1"), "{text}");
+    assert!(!text.contains("sk-"), "{text}");
+    assert!(text.contains("snapshot hash"), "{text}");
+}
+
+#[test]
+fn mode_switch_preserves_plan_overlay() {
+    let mut app = agent_with_plan(demo_plan());
+    // El overlay consume 'o' sin modificador; el cambio de modo es Ctrl+O.
+    tap(&mut app, KeyCode::Char('o'));
+    assert_eq!(app.mode, TuiMode::Agent);
+    app.handle_key(key_with(
+        KeyCode::Char('o'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Inspector);
+    app.handle_key(key_with(
+        KeyCode::Char('o'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Agent);
+    assert!(app.agent.plan.is_some());
+    assert!(render(&app, 110, 40).contains("Plan requires approval"));
+}
+
+#[test]
+fn inspector_displays_plan_and_revision() {
+    let mut app = App::demo();
+    app.inspector_plan = Some(demo_plan());
+    app.tab = 0;
+    let text = render(&app, 150, 80);
+    assert!(text.contains("Plan ID"), "{text}");
+    assert!(text.contains("Revision"), "{text}");
+    assert!(text.contains("Execution snapshot"), "{text}");
+    assert!(
+        text.contains("supersedes") || text.contains("plan_0"),
+        "{text}"
+    );
+}
+
+#[test]
+fn inspector_displays_invalidation_reasons() {
+    let mut plan = demo_plan();
+    plan.invalidation_reasons = vec!["secret api cambió de versión".into()];
+    let mut app = App::demo();
+    app.inspector_plan = Some(plan);
+    let text = render(&app, 150, 80);
+    assert!(text.contains("Invalidation reasons"), "{text}");
+    assert!(text.contains("cambió de versión"), "{text}");
+}
+
+#[test]
+fn transcript_projects_plan_events_in_order() {
+    let runs = vec![json!({
+        "id": "run_1", "state": "completed", "prompt": "write algo",
+        "started_at": "2026-11-09T00:00:00Z",
+        "receipt": {"provider": "sim", "model": "sim-1", "usage": {}, "cost": {"total": 0.0}, "result_hash": "sha256:r"}
+    })];
+    let events = vec![
+        json!({"sequence": 2, "type": "plan.created", "run_id": "run_1", "payload": {"revision": 1, "origin": "runtime_generated"}}),
+        json!({"sequence": 3, "type": "run.waiting_approval", "run_id": "run_1", "payload": {"requested_effects": ["write"]}}),
+        json!({"sequence": 4, "type": "plan.approved", "run_id": "run_1", "payload": {"scope": "once", "approved_by": "cli"}}),
+        json!({"sequence": 5, "type": "plan.execution_started", "run_id": "run_1", "payload": {}}),
+        json!({"sequence": 6, "type": "plan.completed", "run_id": "run_1", "payload": {}}),
+    ];
+    let lines = project_thread(&runs, &events);
+    let texts: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
+    let idx = |needle: &str| texts.iter().position(|t| t.contains(needle));
+    let created = idx("Plan created").expect("plan.created");
+    let waiting = idx("Waiting for approval").expect("waiting");
+    let approved = idx("Approval granted").expect("approved");
+    let started = idx("Execution started").expect("execution");
+    let completed = idx("Plan completed").expect("completed");
+    assert!(created < waiting && waiting < approved && approved < started && started < completed);
+}
+
+#[test]
+fn polling_does_not_duplicate_plan_events() {
+    let runs = vec![
+        json!({"id": "run_1", "state": "completed", "prompt": "p", "started_at": "2026-11-09T00:00:00Z"}),
+    ];
+    let events = vec![
+        json!({"sequence": 2, "type": "plan.created", "run_id": "run_1", "payload": {"revision": 1}}),
+    ];
+    let a = project_thread(&runs, &events);
+    let b = project_thread(&runs, &events);
+    assert_eq!(a.len(), b.len());
+    assert_eq!(
+        a.iter().filter(|l| l.text.contains("Plan created")).count(),
+        1
+    );
 }
 
 #[test]

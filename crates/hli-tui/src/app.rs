@@ -206,6 +206,9 @@ pub struct AgentState {
     pub ref_items: Vec<Vec<RefItem>>,
     pub ref_start: usize,
     pub preflight: Option<Preflight>,
+    pub plan: Option<PlanView>,
+    pub reject_open: bool,
+    pub reject_reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -334,6 +337,275 @@ pub fn reference_token(r: &Reference) -> String {
     format!("@{}:{}", r.kind.label(), r.stable_id)
 }
 
+/// Vista read-only del plan durable para Agent Mode e Inspector.
+#[derive(Clone, Debug, Default)]
+pub struct PlanView {
+    pub run_id: String,
+    pub plan_id: String,
+    pub revision: i64,
+    pub supersedes: Option<String>,
+    pub origin: String,
+    pub status: String,
+    pub summary: String,
+    pub steps: Vec<PlanStepView>,
+    pub effects: Vec<String>,
+    pub invalidation_reasons: Vec<String>,
+    pub plan_hash: String,
+    pub execution_hash: String,
+    pub provider: String,
+    pub model: String,
+    pub manifest_id: String,
+    pub branch_revision: i64,
+    pub tools: Vec<String>,
+    pub modules: Vec<String>,
+    pub mch: Vec<String>,
+    pub secrets: Vec<String>,
+    pub approval_scope: Option<String>,
+    pub approved_by: Option<String>,
+    pub created_at: String,
+    pub decided_at: Option<String>,
+    pub details: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PlanStepView {
+    pub order: i64,
+    pub description: String,
+    pub effect: String,
+    pub requires_approval: bool,
+    pub tool: Option<String>,
+}
+
+impl PlanView {
+    pub fn from_value(v: &Value) -> Option<Self> {
+        let plan = v.get("plan")?;
+        if plan.is_null() {
+            return None;
+        }
+        let exec = v.get("execution").cloned().unwrap_or(Value::Null);
+        let steps = plan["steps"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|s| PlanStepView {
+                        order: s["order"].as_i64().unwrap_or(0),
+                        description: s["description"].as_str().unwrap_or("").to_string(),
+                        effect: s["effect"].as_str().unwrap_or("unknown").to_string(),
+                        requires_approval: s["requires_approval"].as_bool().unwrap_or(false),
+                        tool: s["tool_name"].as_str().map(str::to_string),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let list = |v: Option<&Value>| -> Vec<String> {
+            v.and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Some(Self {
+            run_id: plan["run_id"].as_str().unwrap_or("").to_string(),
+            plan_id: plan["plan_id"].as_str().unwrap_or("").to_string(),
+            revision: plan["revision"].as_i64().unwrap_or(1),
+            supersedes: plan["supersedes_plan_id"].as_str().map(str::to_string),
+            origin: plan["origin"].as_str().unwrap_or("-").to_string(),
+            status: plan["status"].as_str().unwrap_or("-").to_string(),
+            summary: plan["summary"].as_str().unwrap_or("").to_string(),
+            steps,
+            effects: list(plan.get("requested_effects")),
+            invalidation_reasons: list(plan.get("invalidation_reasons")),
+            plan_hash: plan["content_hash"].as_str().unwrap_or("-").to_string(),
+            execution_hash: exec["content_hash"].as_str().unwrap_or("-").to_string(),
+            provider: format!(
+                "{} ({})",
+                exec["provider_id"].as_str().unwrap_or("-"),
+                exec["provider_kind"].as_str().unwrap_or("-")
+            ),
+            model: exec["model"].as_str().unwrap_or("-").to_string(),
+            manifest_id: plan["context_manifest_id"]
+                .as_str()
+                .unwrap_or("-")
+                .to_string(),
+            branch_revision: plan["branch_revision"].as_i64().unwrap_or(0),
+            tools: exec["tool_policy"]
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or("")))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            modules: exec["module_versions"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|m| {
+                            format!(
+                                "{} {}",
+                                m["name"].as_str().unwrap_or("-"),
+                                m["version"].as_str().unwrap_or("")
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            mch: exec["mch_instances"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|m| {
+                            format!(
+                                "{} ({})",
+                                m["name"].as_str().unwrap_or("-"),
+                                m["profile"].as_str().unwrap_or("-")
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            secrets: exec["secret_handles"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|h| {
+                            format!(
+                                "{}@{}",
+                                h["id"].as_str().unwrap_or("-"),
+                                h["version"].as_str().unwrap_or("-")
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            approval_scope: plan["approval_scope"].as_str().map(str::to_string),
+            approved_by: plan["approved_by"].as_str().map(str::to_string),
+            created_at: plan["created_at"].as_str().unwrap_or("-").to_string(),
+            decided_at: plan["approved_at"]
+                .as_str()
+                .or_else(|| plan["rejected_at"].as_str())
+                .map(str::to_string),
+            details: false,
+        })
+    }
+
+    pub fn waiting(&self) -> bool {
+        self.status == "waiting_approval"
+    }
+
+    pub fn invalidated(&self) -> bool {
+        !self.invalidation_reasons.is_empty() && self.status == "waiting_approval"
+    }
+
+    /// Texto del overlay; nunca incluye valores de secreto.
+    pub fn overlay_lines(&self) -> Vec<String> {
+        let mut out = vec![
+            "Plan requires approval".to_string(),
+            String::new(),
+            format!("Run: {}", self.run_id),
+            format!("Plan: {}", self.plan_id),
+            format!("Revision: {}", self.revision),
+            format!("Origin: {}", self.origin.replace('_', "-")),
+            String::new(),
+        ];
+        for s in &self.steps {
+            out.push(format!(
+                "{}. {:<40} {}{}",
+                s.order,
+                s.description,
+                s.effect,
+                if s.requires_approval {
+                    " · approval required"
+                } else {
+                    ""
+                }
+            ));
+        }
+        out.push(String::new());
+        out.push(format!("Requested effects: {}", self.effects.join(", ")));
+        if !self.invalidation_reasons.is_empty() {
+            out.push(String::new());
+            out.push("Plan invalidated:".to_string());
+            for r in &self.invalidation_reasons {
+                out.push(format!("  · {r}"));
+            }
+        }
+        if self.details {
+            out.push(String::new());
+            out.extend(self.detail_lines());
+        }
+        out.push(String::new());
+        if self.invalidated() {
+            out.push("[r] Replan   [v] View details   [Esc] Cancel approval".to_string());
+        } else {
+            out.push(
+                "[y] Approve once   [a] This run   [w] This workspace   [n] Reject   [v] Details   [r] Replan"
+                    .to_string(),
+            );
+            out.push("[Esc] Cancel approval".to_string());
+        }
+        out
+    }
+
+    pub fn detail_lines(&self) -> Vec<String> {
+        let mut out = vec![
+            format!("plan hash:        {}", self.plan_hash),
+            format!("snapshot hash:    {}", self.execution_hash),
+            format!("provider/model:   {} / {}", self.provider, self.model),
+            format!("manifest:         {}", self.manifest_id),
+            format!("branch revision:  {}", self.branch_revision),
+            format!(
+                "tool policy:      {}",
+                if self.tools.is_empty() {
+                    "-".into()
+                } else {
+                    self.tools.join(", ")
+                }
+            ),
+            format!(
+                "modules:          {}",
+                if self.modules.is_empty() {
+                    "-".into()
+                } else {
+                    self.modules.join(", ")
+                }
+            ),
+            format!(
+                "MCH instances:    {}",
+                if self.mch.is_empty() {
+                    "-".into()
+                } else {
+                    self.mch.join(", ")
+                }
+            ),
+            format!(
+                "secret handles:   {}",
+                if self.secrets.is_empty() {
+                    "-".into()
+                } else {
+                    self.secrets.join(", ")
+                }
+            ),
+            format!("created:          {}", self.created_at),
+        ];
+        if let Some(s) = &self.supersedes {
+            out.push(format!("supersedes:       {s}"));
+        }
+        if let Some(s) = &self.approval_scope {
+            out.push(format!("approval scope:   {s}"));
+        }
+        if let Some(s) = &self.approved_by {
+            out.push(format!("approved by:      {s}"));
+        }
+        if let Some(s) = &self.decided_at {
+            out.push(format!("decided at:       {s}"));
+        }
+        out
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ResumeItem {
     pub workspace_id: String,
@@ -389,6 +661,9 @@ impl Default for AgentState {
             ref_items: vec![Vec::new(); 5],
             ref_start: 0,
             preflight: None,
+            plan: None,
+            reject_open: false,
+            reject_reason: String::new(),
         }
     }
 }
@@ -452,6 +727,8 @@ pub struct App {
     pub mchs: Vec<Value>,
     pub selected_run: Option<Value>,
     pub manifest: Option<Value>,
+    /// Plan durable del run seleccionado (Inspector, sólo lectura).
+    pub inspector_plan: Option<PlanView>,
     pub input: String,
     pub status: String,
     pub status_ok: bool,
@@ -499,6 +776,7 @@ impl App {
             mchs: vec![],
             selected_run: None,
             manifest: None,
+            inspector_plan: None,
             input: String::new(),
             status: "ready · ? help · : command · q quit".into(),
             status_ok: true,
@@ -547,6 +825,7 @@ impl App {
                 json!({"id": "br_adapt", "name": "adaptive-k", "head_sequence": 9}),
             ],
             runs: vec![run.clone()],
+            inspector_plan: None,
             events: vec![
                 json!({"sequence": 4, "type": "context.manifest.created", "actor": {"kind":"agent"}, "created_at": "2026-11-07T10:00:00Z"}),
                 json!({"sequence": 5, "type": "model.requested", "actor": {"kind":"agent"}, "created_at": "2026-11-07T10:00:01Z"}),
@@ -632,6 +911,7 @@ impl App {
         if self.runs.is_empty() {
             self.selected_run = None;
             self.manifest = None;
+            self.inspector_plan = None;
             self.selected_run_id = None;
             self.collection_index = 0;
             self.last_runs = Instant::now();
@@ -650,6 +930,10 @@ impl App {
                 self.selected_run = Some(got["run"].clone());
                 self.manifest = Some(got["manifest"].clone());
             }
+            // El plan del Inspector también se lee del daemon, nunca de SQLite.
+            self.inspector_plan = client::call("run.plan", json!({"run_id": id}))
+                .ok()
+                .and_then(|v| PlanView::from_value(&v));
         }
         self.last_runs = Instant::now();
     }
@@ -2147,14 +2431,68 @@ fn event_line(e: &Value) -> Option<String> {
     if !(kind.starts_with("tool.")
         || kind.starts_with("run.")
         || kind.starts_with("model.")
-        || kind.starts_with("context."))
+        || kind.starts_with("context.")
+        || kind.starts_with("plan."))
     {
         return None;
     }
-    let detail = e["payload"]["tool"]
+    let p = &e["payload"];
+    let detail = p["tool"]
         .as_str()
-        .or_else(|| e["payload"]["model"].as_str())
+        .or_else(|| p["model"].as_str())
         .unwrap_or("");
+    // Proyección legible del plan, en orden de Event Store.
+    let line = match kind {
+        "plan.created" => Some(format!(
+            "Plan created · revision {} · {}",
+            p["revision"].as_i64().unwrap_or(1),
+            p["origin"].as_str().unwrap_or("-").replace('_', "-")
+        )),
+        "run.waiting_approval" => Some(format!(
+            "Waiting for approval · effects: {}",
+            p["requested_effects"]
+                .as_array()
+                .map(|a| a
+                    .iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "declared".into())
+        )),
+        "plan.approved" => Some(format!(
+            "Approval granted · {} · {}",
+            p["scope"].as_str().unwrap_or("-"),
+            p["approved_by"].as_str().unwrap_or("-")
+        )),
+        "plan.rejected" => Some(format!(
+            "Approval rejected · {}",
+            p["reason"].as_str().unwrap_or("-")
+        )),
+        "plan.invalidated" => Some(format!(
+            "Plan invalidated · {}",
+            p["reasons"]
+                .as_array()
+                .map(|a| a
+                    .iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; "))
+                .unwrap_or_default()
+        )),
+        "plan.revised" => Some(format!(
+            "Plan revised · revision {} · supersedes {}",
+            p["revision"].as_i64().unwrap_or(0),
+            p["supersedes_plan_id"].as_str().unwrap_or("-")
+        )),
+        "plan.execution_started" => Some("Execution started".to_string()),
+        "plan.completed" => Some("Plan completed".to_string()),
+        "plan.failed" => Some("Plan failed".to_string()),
+        _ => None,
+    };
+    if let Some(line) = line {
+        return Some(line);
+    }
     Some(if detail.is_empty() {
         kind.to_string()
     } else {
@@ -2527,7 +2865,14 @@ impl App {
         let changed = state != self.agent.run_state;
         self.agent.run_state = state.clone();
         if changed {
-            self.agent.push(AgentKind::Info, format!("run {state}"));
+            let text = if state == "planning" {
+                "↻ Preparing plan".to_string()
+            } else if state == "waiting_approval" {
+                "Plan requires approval".to_string()
+            } else {
+                format!("run {state}")
+            };
+            self.agent.push(AgentKind::Info, text);
         }
         if is_terminal(&state) && !self.agent.receipt_shown {
             self.agent.receipt_shown = true;
@@ -2568,6 +2913,109 @@ impl App {
         added
     }
 
+    /// Recarga el plan durable del run activo desde el daemon (fuente de verdad).
+    pub fn load_plan(&mut self) {
+        let Some(id) = self.agent.last_run.clone() else {
+            self.agent.plan = None;
+            return;
+        };
+        match client::call("run.plan", json!({ "run_id": id })) {
+            Ok(v) => {
+                let details = self.agent.plan.as_ref().map(|p| p.details).unwrap_or(false);
+                let mut fresh = PlanView::from_value(&v);
+                if let Some(p) = fresh.as_mut() {
+                    p.details = details;
+                }
+                self.agent.plan = fresh;
+            }
+            Err(_) => {
+                // Se conserva la última vista conocida; el overlay sólo se
+                // dibuja si su estado sigue siendo waiting_approval.
+            }
+        }
+    }
+
+    pub fn approve_plan(&mut self, scope: &str) {
+        let Some(plan) = self.agent.plan.clone() else {
+            return;
+        };
+        match client::call(
+            "run.approve",
+            json!({ "run_id": plan.run_id, "scope": scope, "plan_id": plan.plan_id }),
+        ) {
+            Ok(_) => {
+                self.agent.push(
+                    AgentKind::Info,
+                    format!(
+                        "approval requested · scope {scope} · revision {}",
+                        plan.revision
+                    ),
+                );
+                self.agent.plan = None;
+                self.agent.run_state = "running".into();
+                self.agent.status = self.agent_status_line();
+            }
+            Err(e) => {
+                self.agent.push(AgentKind::Error, format!("approve: {e}"));
+                self.load_plan();
+            }
+        }
+    }
+
+    pub fn reject_plan(&mut self, reason: &str) {
+        let Some(plan) = self.agent.plan.clone() else {
+            return;
+        };
+        let reason = if reason.trim().is_empty() {
+            "rejected_by_user"
+        } else {
+            reason.trim()
+        };
+        match client::call(
+            "run.reject",
+            json!({ "run_id": plan.run_id, "plan_id": plan.plan_id, "reason": reason }),
+        ) {
+            Ok(_) => {
+                self.agent
+                    .push(AgentKind::Info, format!("approval rejected · {reason}"));
+                self.agent.plan = None;
+                self.agent.run_state = "cancelled".into();
+                self.agent.status = self.agent_status_line();
+            }
+            Err(e) => {
+                self.agent.push(AgentKind::Error, format!("reject: {e}"));
+                self.load_plan();
+            }
+        }
+    }
+
+    pub fn replan_plan(&mut self) {
+        let Some(plan) = self.agent.plan.clone() else {
+            return;
+        };
+        match client::call("run.replan", json!({ "run_id": plan.run_id })) {
+            Ok(v) => {
+                let revision = v["plan"]["revision"].as_i64().unwrap_or(plan.revision + 1);
+                self.agent.push(
+                    AgentKind::Info,
+                    format!("plan replanned · revision {revision}"),
+                );
+                self.load_plan();
+            }
+            Err(e) => self.agent.push(AgentKind::Error, format!("replan: {e}")),
+        }
+    }
+
+    pub fn cancel_approval(&mut self) {
+        let reason = self
+            .agent
+            .plan
+            .as_ref()
+            .map(|p| format!("approval_cancelled_at_revision_{}", p.revision))
+            .unwrap_or_else(|| "approval_cancelled".into());
+        self.reject_plan(&reason);
+    }
+
     fn poll_agent(&mut self) {
         let Some(id) = self.agent.last_run.clone() else {
             return;
@@ -2604,6 +3052,12 @@ impl App {
             {
                 self.ingest_events(arr);
             }
+        }
+        if matches!(
+            self.agent.run_state.as_str(),
+            "planning" | "waiting_approval"
+        ) {
+            self.load_plan();
         }
     }
 
@@ -2905,6 +3359,51 @@ impl App {
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+        if self.agent.reject_open {
+            match k.code {
+                KeyCode::Enter => {
+                    let reason = self.agent.reject_reason.clone();
+                    self.agent.reject_open = false;
+                    self.agent.reject_reason.clear();
+                    self.reject_plan(&reason);
+                }
+                KeyCode::Esc => {
+                    self.agent.reject_open = false;
+                    self.agent.reject_reason.clear();
+                }
+                KeyCode::Backspace => {
+                    self.agent.reject_reason.pop();
+                }
+                KeyCode::Char(c) => self.agent.reject_reason.push(c),
+                _ => {}
+            }
+            return false;
+        }
+        if let Some(plan) = self.agent.plan.clone()
+            && plan.waiting()
+        {
+            // El overlay consume el teclado: el compositor no envía prompts.
+            match k.code {
+                KeyCode::Char('o') if ctrl => self.toggle_mode(),
+                KeyCode::Char('y') => self.approve_plan("once"),
+                KeyCode::Char('a') => self.approve_plan("run"),
+                KeyCode::Char('w') => self.approve_plan("workspace"),
+                KeyCode::Char('n') => {
+                    self.agent.reject_open = true;
+                    self.agent.reject_reason.clear();
+                }
+                KeyCode::Char('v') => {
+                    if let Some(mut p) = self.agent.plan.clone() {
+                        p.details = !p.details;
+                        self.agent.plan = Some(p);
+                    }
+                }
+                KeyCode::Char('r') => self.replan_plan(),
+                KeyCode::Esc => self.cancel_approval(),
+                _ => {}
+            }
+            return false;
+        }
         match k.code {
             KeyCode::Char('c') if ctrl => {
                 if is_active(&self.agent.run_state) && self.agent.last_run.is_some() {

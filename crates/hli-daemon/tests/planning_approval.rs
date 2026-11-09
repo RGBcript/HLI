@@ -119,7 +119,15 @@ fn approve_executes_frozen_snapshot_and_records_receipt() {
             .iter()
             .any(|e| e == "write")
     );
-    assert_ne!(snapshot_hash, "");
+    assert_eq!(receipt["plan_revision"], 1);
+    let exec_hash = plan["execution"]["content_hash"].as_str().unwrap();
+    assert_eq!(receipt["execution_snapshot_hash"], exec_hash);
+    assert_eq!(snapshot_hash, exec_hash);
+    assert_eq!(receipt["provider_id"], "sim");
+    // Nunca se persisten valores de secreto.
+    let raw = serde_json::to_string(receipt).unwrap();
+    assert!(!raw.contains("sk-"), "el receipt no debe contener claves");
+    assert!(!raw.contains("secret_values"));
 }
 
 #[test]
@@ -181,6 +189,34 @@ fn stale_snapshot_invalidates_keeps_revision_and_requires_replan() {
 
     let revisions = c.ok("run.plan", json!({"run_id": run_id}))["revisions"].clone();
     assert_eq!(revisions.as_array().unwrap().len(), 2);
+    assert_eq!(revisions[0]["plan_id"], v1);
+    assert_eq!(revisions[1]["revision"], 2);
+    // La revisión anterior sigue siendo auditable y no se reutiliza.
+    assert_eq!(revisions[0]["status"], "waiting_approval");
+    assert_eq!(revisions[1]["supersedes_plan_id"], v1);
+
+    // Aprobar la nueva revisión exige una decisión nueva y deja procedencia.
+    let new_plan = revisions[1]["plan_id"].as_str().unwrap().to_string();
+    c.ok(
+        "run.approve",
+        json!({"run_id": run_id, "scope": "once", "plan_id": new_plan}),
+    );
+    let finished = c.ok("run.wait", json!({"run_id": run_id, "timeout_secs": 10}));
+    let receipt = &finished["run"]["receipt"];
+    assert_eq!(receipt["plan_revision"], 2);
+    assert_eq!(receipt["superseded_plan_ids"][0], v1);
+    assert!(
+        receipt["execution_snapshot_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        !receipt["invalidation_events"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true)
+    );
 }
 
 #[test]

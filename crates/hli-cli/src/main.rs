@@ -665,8 +665,12 @@ fn run(args: &[String]) -> Result<(), String> {
         ("run", Some("reject")) => {
             let id = args.get(2).ok_or("falta run_id")?;
             let reason = need_flag(args, "--reason")?;
+            let plan_id = flag(args, "--plan");
             print_value(
-                &call("run.reject", json!({"run_id": id, "reason": reason}))?,
+                &call(
+                    "run.reject",
+                    json!({"run_id": id, "reason": reason, "plan_id": plan_id}),
+                )?,
                 output,
             )
         }

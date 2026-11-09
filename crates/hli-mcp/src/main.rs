@@ -196,22 +196,23 @@ fn tools() -> Value {
         ),
         t(
             "run_approve",
-            "Aprueba una revisión del plan y desbloquea la ejecución",
+            "Aprueba exactamente la revisión indicada y desbloquea la ejecución",
             json!({"run_id": {"type": "string"},
-                   "scope": {"type": "string", "enum": ["once", "run", "workspace"]},
-                   "plan_id": {"type": "string"}}),
-            json!(["run_id"])
+                   "plan_id": {"type": "string"},
+                   "scope": {"type": "string", "enum": ["once", "run", "workspace"]}}),
+            json!(["run_id", "plan_id"])
         ),
         t(
             "run_reject",
-            "Rechaza la revisión pendiente sin ejecutar herramientas",
-            json!({"run_id": {"type": "string"}, "reason": {"type": "string"}}),
-            json!(["run_id", "reason"])
+            "Rechaza la revisión indicada sin ejecutar herramientas",
+            json!({"run_id": {"type": "string"}, "plan_id": {"type": "string"},
+                   "reason": {"type": "string"}}),
+            json!(["run_id", "plan_id"])
         ),
         t(
             "run_replan",
             "Crea una nueva revisión del plan con las condiciones actuales",
-            json!({"run_id": {"type": "string"},
+            json!({"run_id": {"type": "string"}, "plan_id": {"type": "string"},
                    "reasons": {"type": "array", "items": {"type": "string"}}}),
             json!(["run_id"])
         ),
@@ -242,6 +243,22 @@ fn tools() -> Value {
             json!(["name", "operation"])
         )
     ])
+}
+
+/// El plan expuesto por MCP nunca incluye la instantánea completa: sólo el
+/// hash y los campos públicos de aprobación.
+fn plan_projection(v: &Value) -> Value {
+    let mut out = v.clone();
+    let hash = v
+        .get("execution")
+        .and_then(|e| e.get("content_hash"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    if let Some(obj) = out.as_object_mut() {
+        obj.remove("execution");
+        obj.insert("execution_snapshot_hash".into(), hash);
+    }
+    out
 }
 
 fn call_tool(name: &str, args: &Value, home: &std::path::Path) -> Result<Value, (i64, String)> {
@@ -278,29 +295,49 @@ fn call_tool(name: &str, args: &Value, home: &std::path::Path) -> Result<Value, 
             }),
         ),
         "run_get" => daemon(home, "run.get", json!({"run_id": args["run_id"]})),
-        "run_plan" => daemon(home, "run.plan", json!({"run_id": args["run_id"]})),
-        "run_approve" => daemon(
-            home,
-            "run.approve",
-            json!({
-                "run_id": args["run_id"],
-                "scope": args.get("scope").cloned().unwrap_or(json!("once")),
-                "plan_id": args.get("plan_id").cloned().unwrap_or(Value::Null)
-            }),
-        ),
-        "run_reject" => daemon(
-            home,
-            "run.reject",
-            json!({"run_id": args["run_id"], "reason": args["reason"]}),
-        ),
-        "run_replan" => daemon(
-            home,
-            "run.replan",
-            json!({
+        "run_plan" => {
+            daemon(home, "run.plan", json!({"run_id": args["run_id"]})).map(|v| plan_projection(&v))
+        }
+        "run_approve" => {
+            let plan_id = args
+                .get("plan_id")
+                .and_then(|v| v.as_str())
+                .ok_or((-32602, "run_approve requiere plan_id".to_string()))?;
+            daemon(
+                home,
+                "run.approve",
+                json!({
+                    "run_id": args["run_id"],
+                    "plan_id": plan_id,
+                    "scope": args.get("scope").cloned().unwrap_or(json!("once"))
+                }),
+            )
+        }
+        "run_reject" => {
+            let plan_id = args
+                .get("plan_id")
+                .and_then(|v| v.as_str())
+                .ok_or((-32602, "run_reject requiere plan_id".to_string()))?;
+            daemon(
+                home,
+                "run.reject",
+                json!({
+                    "run_id": args["run_id"],
+                    "plan_id": plan_id,
+                    "reason": args.get("reason").cloned().unwrap_or(json!("rejected"))
+                }),
+            )
+        }
+        "run_replan" => {
+            let mut payload = json!({
                 "run_id": args["run_id"],
                 "reasons": args.get("reasons").cloned().unwrap_or(json!([]))
-            }),
-        ),
+            });
+            if let Some(pid) = args.get("plan_id").and_then(|v| v.as_str()) {
+                payload["plan_id"] = json!(pid);
+            }
+            daemon(home, "run.replan", payload)
+        }
         "artifact_read" => daemon(
             home,
             "artifact.read",

@@ -229,6 +229,10 @@ fn make_receipt(
         approval_events: vec![],
         approved_effects: vec![],
         rejected_effects: vec![],
+        execution_snapshot_hash: None,
+        provider_id: None,
+        superseded_plan_ids: vec![],
+        invalidation_events: vec![],
     }
 }
 
@@ -975,13 +979,15 @@ fn dispatch(
                         .collect()
                 })
                 .unwrap_or_default();
-            runs::replan(home, w, r, &run_id, reasons)
+            let plan_id = o(args, "plan_id");
+            runs::replan(home, w, r, &run_id, plan_id.as_deref(), reasons)
         }
         "run.reject" => {
             let run_id = s(args, "run_id")?;
             let reason = o(args, "reason").unwrap_or_else(|| "sin razón".into());
             let actor = o(args, "actor").unwrap_or_else(|| "cli".into());
-            runs::reject(w, r, &run_id, &reason, &actor)
+            let plan_id = o(args, "plan_id");
+            runs::reject(w, r, &run_id, &reason, &actor, plan_id.as_deref())
         }
         "run.get" => {
             let run_id = s(args, "run_id")?;

@@ -358,6 +358,9 @@ fn attach_plan(
     receipt.approval_events = approval_events;
     receipt.approved_effects = plan.effectful_requests();
     receipt.effective_permissions = json!(snapshot.tool_policy);
+    receipt.execution_snapshot_hash = Some(snapshot.content_hash.clone());
+    receipt.provider_id = Some(snapshot.provider_id.clone());
+    receipt.superseded_plan_ids = plan.supersedes_plan_id.iter().cloned().collect();
 }
 
 /// Ejecuta la instantánea aprobada. Relee run, manifiesto, plan y snapshot y
@@ -556,19 +559,22 @@ pub fn execute_prepared_run(
                 vec![],
                 vec![],
             );
+            let plan = w
+                .set_plan_status(
+                    &plan.plan_id,
+                    "failed",
+                    plan.approval_scope.clone(),
+                    plan.approved_by.clone(),
+                    Some("provider_error".into()),
+                )
+                .unwrap_or(plan);
             attach_plan(&mut receipt, &plan, &snapshot, vec![]);
+            receipt.invalidation_events = invalidated_events(r, &run, run_id);
             let _ = w.finish_run(
                 run_id,
                 state,
                 Some(json!({"error": e.message})),
                 Some(receipt),
-            );
-            let _ = w.set_plan_status(
-                &plan.plan_id,
-                "failed",
-                None,
-                None,
-                Some("provider_error".into()),
             );
             cancels().lock().unwrap().remove(run_id);
             return r.run(run_id);
@@ -752,6 +758,7 @@ pub fn execute_prepared_run(
         rejected_memories,
     );
     attach_plan(&mut receipt, &plan, &snapshot, vec![]);
+    receipt.invalidation_events = invalidated_events(r, &run, run_id);
 
     let done = w.finish_run(run_id, state, Some(result), Some(receipt))?;
     cancels().lock().unwrap().remove(run_id);
@@ -813,6 +820,7 @@ fn finish_error(
         receipt.plan_hash = Some(p.content_hash.clone());
         receipt.plan_origin = Some(p.origin.clone());
         receipt.plan_revision = Some(p.revision);
+        receipt.superseded_plan_ids = p.supersedes_plan_id.iter().cloned().collect();
         receipt.approval_status = Some(p.status.clone());
         receipt.approval_events = events;
     }
@@ -828,6 +836,16 @@ fn finish_error(
 // ---------------------------------------------------------------------------
 // API de aprobación
 // ---------------------------------------------------------------------------
+
+/// IDs de eventos `plan.invalidated` del run, en orden de Event Store.
+fn invalidated_events(r: &Reader, run: &Run, run_id: &str) -> Vec<String> {
+    r.events(&run.workspace_id, Some(&run.branch_id))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.kind == "plan.invalidated" && e.run_id.as_deref() == Some(run_id))
+        .map(|e| e.event_id)
+        .collect()
+}
 
 /// Motivos por los que una instantánea ya no representa la configuración
 /// revisada. Vacío = vigente.
@@ -1065,6 +1083,7 @@ pub fn replan(
     w: &Writer,
     r: &Reader,
     run_id: &str,
+    plan_id: Option<&str>,
     reasons: Vec<String>,
 ) -> Result<Value, HliError> {
     let run = r.run(run_id)?;
@@ -1075,6 +1094,17 @@ pub fn replan(
         )));
     }
     let prev = r.plan_for_run(run_id)?;
+    if let Some(expected) = plan_id
+        && expected != prev.plan_id
+    {
+        return Err(HliError::new(
+            "plan_revision_changed",
+            format!(
+                "la revisión indicada ({expected}) no es la vigente ({})",
+                prev.plan_id
+            ),
+        ));
+    }
     if prev.status != "waiting_approval" {
         return Err(HliError::conflict(format!(
             "la revisión vigente no espera aprobación ({})",
@@ -1222,9 +1252,21 @@ pub fn reject(
     run_id: &str,
     reason: &str,
     actor: &str,
+    expected_plan_id: Option<&str>,
 ) -> Result<Value, HliError> {
     let run = r.run(run_id)?;
     let plan = r.plan_for_run(run_id)?;
+    if let Some(expected) = expected_plan_id
+        && expected != plan.plan_id
+    {
+        return Err(HliError::new(
+            "plan_revision_changed",
+            format!(
+                "la revisión indicada ({expected}) no es la vigente ({})",
+                plan.plan_id
+            ),
+        ));
+    }
     if plan.status == "rejected" {
         return Ok(json!({"run": run, "plan": plan, "idempotent": true}));
     }
@@ -1277,8 +1319,11 @@ pub fn reject(
     receipt.plan_revision = Some(plan.revision);
     receipt.approval_status = Some(plan.status.clone());
     receipt.rejected_effects = plan.effectful_requests();
+    receipt.superseded_plan_ids = plan.supersedes_plan_id.iter().cloned().collect();
     if let Some(s) = &snapshot {
         receipt.effective_permissions = json!(s.tool_policy);
+        receipt.execution_snapshot_hash = Some(s.content_hash.clone());
+        receipt.provider_id = Some(s.provider_id.clone());
     }
     let run = w.finish_run(run_id, "cancelled", Some(result), Some(receipt))?;
     Ok(json!({

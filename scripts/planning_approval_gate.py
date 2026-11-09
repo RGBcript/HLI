@@ -29,8 +29,14 @@ RESULT = {
     "read_only_policy": False,
     "write_waits": False,
     "no_execution_before_approval": False,
+    "approval_once": False,
+    "approval_run": False,
+    "approval_workspace": False,
+    "tui_state": False,
     "external_approval": False,
     "rejection": False,
+    "replan": False,
+    "revision_history": False,
     "restart": False,
     "receipt": False,
     "jsonl": False,
@@ -191,6 +197,39 @@ try:
         and done["receipt"]["approval_status"] == "completed"
         and done["receipt"]["plan_id"] == shown["plan"]["plan_id"]
     )
+    RESULT["approval_once"] = done["state"] == "completed"
+    # La TUI consume el mismo payload: plan, revisión, pasos y hash de snapshot.
+    RESULT["tui_state"] = bool(
+        shown["plan"]["revision"] >= 1
+        and shown["execution"]["content_hash"].startswith("sha256:")
+        and isinstance(shown["plan"]["steps"], list)
+        and shown["plan"]["requested_effects"]
+    )
+
+    # 3b) scopes con un workspace aparte: el grant de workspace no debe
+    # contaminar los runs de reinicio/rechazo del workspace principal.
+    scope_root = PROJECT / "scopes"
+    scope_root.mkdir(exist_ok=True)
+    ws2 = jrun("workspace", "create", "scopes", "--root", str(scope_root))["id"]
+    th2 = jrun("thread", "create", "scopes", "--workspace", ws2)["id"]
+    br2 = jrun("branch", "create", "main", "--thread", th2)["id"]
+
+    run_scope = jrun("run", "start", "--workspace", ws2, "--thread", th2, "--branch", br2,
+                     "--prompt", "tool:write run.txt r", "--provider", "sim")
+    jrun("run", "approve", run_scope["id"], "--scope", "run")
+    RESULT["approval_run"] = wait_state(ENV, run_scope["id"], "completed")["state"] == "completed"
+
+    ws_scope = jrun("run", "start", "--workspace", ws2, "--thread", th2, "--branch", br2,
+                    "--prompt", "tool:write ws.txt w", "--provider", "sim")
+    jrun("run", "approve", ws_scope["id"], "--scope", "workspace")
+    persisted = wait_state(ENV, ws_scope["id"], "completed")["state"] == "completed"
+    after_grant = jrun("run", "start", "--workspace", ws2, "--thread", th2, "--branch", br2,
+                       "--prompt", "tool:write ws2.txt w2", "--provider", "sim")
+    RESULT["approval_workspace"] = bool(
+        persisted
+        and after_grant["state"] == "completed"
+        and (scope_root / "ws.txt").exists()
+    )
 
     # 4) Rechazo: nunca ejecuta.
     reject_target = PROJECT / "reject.txt"
@@ -207,6 +246,45 @@ try:
         and rejected["run"]["receipt"]
         and rejected["run"]["receipt"]["result_hash"]
         and rejected["run"]["receipt"]["approval_status"] == "rejected"
+    )
+
+    # 4b) Replan tras un cambio material (modelo del proveedor).
+    jrun("provider", "add", "local", "--kind", "ollama",
+         "--base-url", "http://127.0.0.1:9", "--model", "m1", "--timeout", "2")
+    rp = jrun("run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+              "--prompt", "tool:write replan.txt r", "--provider", "local")
+    v1 = jrun("run", "plan", rp["id"])["plan"]
+    jrun("provider", "add", "local", "--kind", "ollama",
+         "--base-url", "http://127.0.0.1:9", "--model", "m2", "--timeout", "2")
+    stale = run("run", "approve", rp["id"], "--scope", "once")
+    jrun("run", "replan", rp["id"], "--reason", "model changed")
+    after = jrun("run", "plan", rp["id"])
+    revisions = after["revisions"]
+    RESULT["replan"] = bool(
+        stale.returncode != 0
+        and "plan_stale" in (stale.stderr + stale.stdout)
+        and after["plan"]["revision"] == 2
+        and after["plan"]["supersedes_plan_id"] == v1["plan_id"]
+        and after["plan"]["invalidation_reasons"]
+        and after["run"]["state"] == "waiting_approval"
+        and after["plan"]["status"] == "waiting_approval"
+    )
+    RESULT["revision_history"] = bool(
+        len(revisions) == 2
+        and revisions[0]["plan_id"] == v1["plan_id"]
+        and revisions[1]["revision"] == 2
+        and revisions[0]["content_hash"] == v1["content_hash"]
+    )
+    # Aprobar la revisión nueva sí funciona (el provider no responde, pero la
+    # ejecución usa exactamente la instantánea aprobada).
+    jrun("run", "approve", rp["id"], "--scope", "once", "--plan", after["plan"]["plan_id"])
+    final = wait_state(ENV, rp["id"], "completed", timeout=10)
+    receipt = final.get("receipt") or {}
+    RESULT["receipt"] = RESULT["receipt"] and bool(
+        receipt.get("plan_revision") == 2
+        and receipt.get("superseded_plan_ids")
+        and receipt.get("invalidation_events")
+        and receipt.get("execution_snapshot_hash")
     )
 
     # 5) Reinicio con un run en espera: el plan y la instantánea sobreviven.
@@ -284,10 +362,13 @@ try:
             "--prompt", "tool:write mcp.txt m", "--provider", "sim",
         )
         got = mcp.call("tools/call", {"name": "run_plan", "arguments": {"run_id": mcp_plan["id"]}})
+        plan_payload = json.loads(got["result"]["content"][0]["text"])
         approved_mcp = mcp.call(
             "tools/call",
             {"name": "run_approve",
-             "arguments": {"run_id": mcp_plan["id"], "scope": "once"}},
+             "arguments": {"run_id": mcp_plan["id"],
+                           "plan_id": plan_payload["plan"]["plan_id"],
+                           "scope": "once"}},
         )
         finished = wait_state(ENV, mcp_plan["id"], "completed")
         RESULT["mcp"] = (
