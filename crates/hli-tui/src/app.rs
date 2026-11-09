@@ -1134,6 +1134,28 @@ impl App {
             return self.handle_agent_key(k);
         }
         let in_command = self.focus == FocusArea::CommandBar;
+        // Acciones del Inspector sobre el plan seleccionado: reutilizan las
+        // mismas operaciones del daemon que el overlay de Agent Mode.
+        if !in_command
+            && let Some(plan) = self.inspector_plan.clone()
+            && plan.waiting()
+        {
+            match k.code {
+                KeyCode::Char('y') if !plan.invalidated() => self.approve_plan("once"),
+                KeyCode::Char('a') if !plan.invalidated() => self.approve_plan("run"),
+                KeyCode::Char('w') if !plan.invalidated() => self.approve_plan("workspace"),
+                KeyCode::Char('n') => self.reject_plan("rejected_from_inspector"),
+                KeyCode::Char('r') if plan.invalidated() => self.replan_plan(),
+                KeyCode::Char('v') => {
+                    if let Some(mut p) = self.inspector_plan.clone() {
+                        p.details = !p.details;
+                        self.inspector_plan = Some(p);
+                    }
+                }
+                _ => {}
+            }
+            return false;
+        }
         match k.code {
             KeyCode::Char('o') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.toggle_mode();
@@ -2935,8 +2957,25 @@ impl App {
         }
     }
 
+    /// Plan seleccionado según el modo activo: el overlay en Agent Mode o el
+    /// run seleccionado en Inspector. No hay dos copias de lógica.
+    pub fn selected_plan(&self) -> Option<PlanView> {
+        if self.mode == TuiMode::Inspector {
+            self.inspector_plan.clone()
+        } else {
+            self.agent.plan.clone()
+        }
+    }
+
+    fn refresh_plan_views(&mut self) {
+        if self.mode == TuiMode::Inspector {
+            self.refresh_runs();
+        }
+        self.load_plan();
+    }
+
     pub fn approve_plan(&mut self, scope: &str) {
-        let Some(plan) = self.agent.plan.clone() else {
+        let Some(plan) = self.selected_plan() else {
             return;
         };
         match client::call(
@@ -2954,16 +2993,17 @@ impl App {
                 self.agent.plan = None;
                 self.agent.run_state = "running".into();
                 self.agent.status = self.agent_status_line();
+                self.refresh_plan_views();
             }
             Err(e) => {
                 self.agent.push(AgentKind::Error, format!("approve: {e}"));
-                self.load_plan();
+                self.refresh_plan_views();
             }
         }
     }
 
     pub fn reject_plan(&mut self, reason: &str) {
-        let Some(plan) = self.agent.plan.clone() else {
+        let Some(plan) = self.selected_plan() else {
             return;
         };
         let reason = if reason.trim().is_empty() {
@@ -2981,16 +3021,17 @@ impl App {
                 self.agent.plan = None;
                 self.agent.run_state = "cancelled".into();
                 self.agent.status = self.agent_status_line();
+                self.refresh_plan_views();
             }
             Err(e) => {
                 self.agent.push(AgentKind::Error, format!("reject: {e}"));
-                self.load_plan();
+                self.refresh_plan_views();
             }
         }
     }
 
     pub fn replan_plan(&mut self) {
-        let Some(plan) = self.agent.plan.clone() else {
+        let Some(plan) = self.selected_plan() else {
             return;
         };
         match client::call("run.replan", json!({ "run_id": plan.run_id })) {
@@ -3000,9 +3041,12 @@ impl App {
                     AgentKind::Info,
                     format!("plan replanned · revision {revision}"),
                 );
-                self.load_plan();
+                self.refresh_plan_views();
             }
-            Err(e) => self.agent.push(AgentKind::Error, format!("replan: {e}")),
+            Err(e) => {
+                self.agent.push(AgentKind::Error, format!("replan: {e}"));
+                self.refresh_plan_views();
+            }
         }
     }
 

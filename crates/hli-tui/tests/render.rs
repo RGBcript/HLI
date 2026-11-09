@@ -1714,6 +1714,76 @@ fn polling_does_not_duplicate_plan_events() {
 }
 
 #[test]
+fn inspector_invalidated_plan_disables_approval() {
+    let mut plan = demo_plan();
+    plan.invalidation_reasons = vec!["el modelo cambió".into()];
+    let mut app = App::demo();
+    app.inspector_plan = Some(plan);
+    tap(&mut app, KeyCode::Char('y'));
+    tap(&mut app, KeyCode::Char('a'));
+    tap(&mut app, KeyCode::Char('w'));
+    assert!(
+        !app.agent
+            .lines
+            .iter()
+            .any(|l| l.text.starts_with("approve:")),
+        "un plan invalidado no debe intentar aprobarse"
+    );
+    assert!(app.inspector_plan.is_some());
+}
+
+#[test]
+fn inspector_approve_once_uses_daemon_operation() {
+    let mut app = App::demo();
+    app.inspector_plan = Some(demo_plan());
+    tap(&mut app, KeyCode::Char('y'));
+    // Sin daemon la operación falla, pero se invoca: misma vía que el overlay.
+    assert!(
+        app.agent
+            .lines
+            .iter()
+            .any(|l| l.text.starts_with("approve:")),
+        "el Inspector debe usar run.approve"
+    );
+}
+
+#[test]
+fn inspector_reject_uses_daemon_operation() {
+    let mut app = App::demo();
+    app.inspector_plan = Some(demo_plan());
+    tap(&mut app, KeyCode::Char('n'));
+    assert!(
+        app.agent
+            .lines
+            .iter()
+            .any(|l| l.text.starts_with("reject:"))
+    );
+}
+
+#[test]
+fn inspector_replan_uses_daemon_operation() {
+    let mut plan = demo_plan();
+    plan.invalidation_reasons = vec!["provider eliminado".into()];
+    let mut app = App::demo();
+    app.inspector_plan = Some(plan);
+    tap(&mut app, KeyCode::Char('r'));
+    assert!(
+        app.agent
+            .lines
+            .iter()
+            .any(|l| l.text.starts_with("replan:"))
+    );
+}
+
+#[test]
+fn inspector_view_details_toggles() {
+    let mut app = App::demo();
+    app.inspector_plan = Some(demo_plan());
+    tap(&mut app, KeyCode::Char('v'));
+    assert!(app.inspector_plan.as_ref().unwrap().details);
+}
+
+#[test]
 fn missing_file_requires_cancel_only() {
     let root = tmp_dir("preflight-missing");
     let mut app = agent_with_root(&root);
