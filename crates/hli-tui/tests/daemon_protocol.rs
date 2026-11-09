@@ -10,6 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use hli_tui::client::call_at;
+use hli_tui::daemon_async::{AsyncDaemon, Poll, Request};
 use serde_json::json;
 
 /// Levanta un servidor que atiende `connections` conexiones con `handler`.
@@ -106,6 +107,29 @@ fn closed_port_fails_fast() {
     let start = std::time::Instant::now();
     assert!(call_at(port, "x", json!({}), Duration::from_secs(2)).is_err());
     assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn worker_delivers_every_reply() {
+    let port = spawn_server(2, |_| {
+        (
+            Duration::from_millis(20),
+            b"{\"ok\":true,\"data\":[]}\n".to_vec(),
+        )
+    });
+    let daemon = AsyncDaemon::for_port(port);
+    daemon.request(Request::Providers);
+    daemon.request(Request::Workspaces);
+    let mut replies = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while replies < 2 && std::time::Instant::now() < deadline {
+        if let Poll::Reply(_) = daemon.poll() {
+            replies += 1;
+        } else {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert_eq!(replies, 2, "el worker perdió respuestas");
 }
 
 #[test]

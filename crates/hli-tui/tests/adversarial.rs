@@ -250,6 +250,25 @@ fn thousand_activity_lines_keep_the_viewport_consistent() {
 }
 
 #[test]
+fn transcript_is_pruned_but_keeps_the_latest() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    for i in 0..6_000 {
+        app.agent
+            .push(hli_tui::app::AgentKind::Info, format!("l{i}"));
+    }
+    assert!(app.agent.lines.len() <= 5_000, "sin poda");
+    assert!(app.agent.lines.len() >= 4_000, "poda demasiado agresiva");
+    assert!(
+        app.agent
+            .lines
+            .last()
+            .map(|l| l.text.contains("5999"))
+            .unwrap_or(false)
+    );
+}
+
+#[test]
 fn huge_transcript_stays_consistent() {
     let mut app = App::demo();
     app.mode = TuiMode::Agent;
@@ -259,7 +278,9 @@ fn huge_transcript_stays_consistent() {
     }
     app.observe_terminal(120, 40);
     assert!(app.agent.viewport.follow_mode);
-    assert!(app.agent.viewport.max_scroll() >= 99_000);
+    // Con poda, el transcript vivo no crece sin límite.
+    assert!(app.agent.lines.len() <= 5_000);
+    assert!(app.agent.viewport.max_scroll() >= 4_000);
     app.viewport_scroll(isize::MIN);
     assert_eq!(app.agent.viewport.first_visible_line, 0);
     assert!(draw_no_panic(&app, 120, 40));

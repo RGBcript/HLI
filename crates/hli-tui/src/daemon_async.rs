@@ -46,22 +46,34 @@ pub struct AsyncDaemon {
 
 impl AsyncDaemon {
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// Solo para tests: mismo worker, apuntando a un daemon falso.
+    #[doc(hidden)]
+    pub fn for_port(port: u16) -> Self {
+        Self::build(Some(port))
+    }
+
+    fn build(port: Option<u16>) -> Self {
         let (tx, jobs) = channel::<Request>();
         let (replies, rx) = channel::<Reply>();
         std::thread::spawn(move || {
             while let Ok(job) = jobs.recv() {
                 let reply = match job {
                     Request::Providers => {
-                        Reply::Providers(client::call_ui("provider.list", json!({})))
+                        Reply::Providers(call_with(port, "provider.list", json!({}), UI_BUDGET))
                     }
                     Request::Workspaces => {
-                        Reply::Workspaces(client::call_ui("workspace.list", json!({})))
+                        Reply::Workspaces(call_with(port, "workspace.list", json!({}), UI_BUDGET))
                     }
-                    Request::Threads(workspace_id) => Reply::Threads(client::call_ui(
+                    Request::Threads(workspace_id) => Reply::Threads(call_with(
+                        port,
                         "thread.list",
                         json!({ "workspace_id": workspace_id }),
+                        UI_BUDGET,
                     )),
-                    Request::Settings => Reply::Settings(load_settings()),
+                    Request::Settings => Reply::Settings(load_settings(port)),
                     Request::Transcript {
                         workspace_id,
                         branch_id,
@@ -70,9 +82,13 @@ impl AsyncDaemon {
                         if let Some(branch) = branch_id {
                             args["branch_id"] = json!(branch);
                         }
-                        let events = client::call_ui("event.list", args);
-                        let runs =
-                            client::call_ui("run.list", json!({ "workspace_id": workspace_id }));
+                        let events = call_with(port, "event.list", args, UI_BUDGET);
+                        let runs = call_with(
+                            port,
+                            "run.list",
+                            json!({ "workspace_id": workspace_id }),
+                            UI_BUDGET,
+                        );
                         Reply::Transcript(match (runs, events) {
                             (Ok(runs), Ok(events)) => Ok(json!({ "runs": runs, "events": events })),
                             (Err(e), _) | (_, Err(e)) => Err(e),
@@ -130,9 +146,24 @@ impl Default for AsyncDaemon {
     }
 }
 
+const UI_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Una llamada al daemon real o a uno falso de test, con el mismo contrato.
+fn call_with(
+    port: Option<u16>,
+    cmd: &str,
+    args: Value,
+    timeout: std::time::Duration,
+) -> Result<Value, String> {
+    match port {
+        Some(port) => client::call_at(port, cmd, args, timeout),
+        None => client::call_with_timeout(cmd, args, timeout),
+    }
+}
+
 /// Las cuatro consultas de Settings en paralelo: 800 ms de techo total, no por
 /// consulta. Antes, un daemon lento sumaba 3,2 s antes de pintar la vista.
-fn load_settings() -> Result<Value, String> {
+fn load_settings(port: Option<u16>) -> Result<Value, String> {
     let budget = std::time::Duration::from_millis(800);
     let calls: [(&'static str, Value); 4] = [
         ("provider.list", json!({})),
@@ -142,7 +173,7 @@ fn load_settings() -> Result<Value, String> {
     ];
     let handles: Vec<_> = calls
         .into_iter()
-        .map(|(cmd, args)| std::thread::spawn(move || client::call_with_timeout(cmd, args, budget)))
+        .map(|(cmd, args)| std::thread::spawn(move || call_with(port, cmd, args, budget)))
         .collect();
     let mut results = Vec::with_capacity(4);
     for handle in handles {

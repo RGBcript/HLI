@@ -872,9 +872,22 @@ impl Default for AgentState {
 }
 
 impl AgentState {
+    /// Techo del transcript en memoria. El Event Store conserva todo; al
+    /// recargar el thread se reconstruye. Sin esto, una sesión de días crece
+    /// sin límite y el dibujo se degrada.
+    const MAX_LINES: usize = 5_000;
+    const PRUNE_LINES: usize = 1_000;
+
+    fn push_line(&mut self, line: AgentLine) {
+        if self.lines.len() >= Self::MAX_LINES {
+            self.lines.drain(0..Self::PRUNE_LINES);
+        }
+        self.lines.push(line);
+    }
+
     pub fn push(&mut self, kind: AgentKind, text: impl Into<String>) {
         self.note_push();
-        self.lines.push(AgentLine {
+        self.push_line(AgentLine {
             kind,
             text: sanitize(&text.into()),
             detail: None,
@@ -885,7 +898,7 @@ impl AgentState {
     pub fn push_activity(&mut self, text: impl Into<String>, detail: ActivityDetail) {
         self.note_push();
         let expanded = self.details_all;
-        self.lines.push(AgentLine {
+        self.push_line(AgentLine {
             kind: AgentKind::Tool,
             text: text.into(),
             detail: Some(detail),
