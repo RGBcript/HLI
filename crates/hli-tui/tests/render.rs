@@ -6,8 +6,9 @@ use ratatui::backend::TestBackend;
 
 use hli_tui::app::{
     ActivityDetail, AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, RefItem, RefKind,
-    Reference, TuiMode, available_commands, format_providers, layout_mode, project_thread,
-    reference_token, split_command, terminal_summary,
+    Reference, TuiMode, available_commands, classify_artifact_hash, classify_branch_revision,
+    classify_memory, format_providers, layout_mode, project_thread, reference_token, split_command,
+    terminal_summary,
 };
 use hli_tui::ui;
 
@@ -1423,4 +1424,94 @@ fn run_starts_only_after_all_references_are_valid() {
     app.agent.composer = "usa el archivo".into();
     app.submit_prompt();
     assert!(app.agent.preflight.is_none());
+}
+
+// --- Invariantes de referencias: clasificadores puros -----------------------
+
+#[test]
+fn active_memory_is_materialized() {
+    assert_eq!(
+        classify_memory(
+            "active",
+            Some("2020-01-01T00:00:00Z"),
+            Some("2030-01-01T00:00:00Z"),
+            1_700_000_000
+        ),
+        None
+    );
+}
+
+#[test]
+fn superseded_memory_is_rejected() {
+    assert_eq!(
+        classify_memory("superseded", None, None, 0),
+        Some("superseded")
+    );
+}
+
+#[test]
+fn revoked_memory_is_rejected() {
+    assert_eq!(classify_memory("revoked", None, None, 0), Some("revoked"));
+}
+
+#[test]
+fn expired_memory_is_rejected() {
+    assert_eq!(
+        classify_memory("active", None, Some("2020-01-01T00:00:00Z"), 1_700_000_000),
+        Some("expired")
+    );
+}
+
+#[test]
+fn future_memory_is_rejected() {
+    assert_eq!(
+        classify_memory("active", Some("2030-01-01T00:00:00Z"), None, 1_700_000_000),
+        Some("not yet valid")
+    );
+}
+
+#[test]
+fn invalid_memory_timestamp_is_rejected() {
+    assert_eq!(
+        classify_memory("active", Some("no-es-fecha"), None, 0),
+        Some("invalid timestamp")
+    );
+}
+
+#[test]
+fn artifact_hash_mismatch_is_rejected() {
+    assert_eq!(
+        classify_artifact_hash(Some("sha256:aa"), Some("sha256:bb")),
+        Some("hash mismatch")
+    );
+    assert_eq!(
+        classify_artifact_hash(Some("sha256:aa"), None),
+        Some("not found")
+    );
+    assert_eq!(
+        classify_artifact_hash(Some("sha256:aa"), Some("sha256:aa")),
+        None
+    );
+}
+
+#[test]
+fn branch_revision_mismatch_is_detected() {
+    assert_eq!(
+        classify_branch_revision(Some(3), 4),
+        Some("revision mismatch")
+    );
+    assert_eq!(classify_branch_revision(Some(4), 4), None);
+    assert_eq!(classify_branch_revision(None, 9), None);
+}
+
+#[test]
+fn missing_file_requires_cancel_only() {
+    let root = tmp_dir("preflight-missing");
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![file_ref_at("nope.txt", "sha256:00")];
+    app.agent.composer = "usa".into();
+    app.submit_prompt();
+    let pf = app.agent.preflight.as_ref().unwrap();
+    assert_eq!(pf.issues[0].reason, "missing");
+    assert!(!pf.issues[0].refreshable);
 }

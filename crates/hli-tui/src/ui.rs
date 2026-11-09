@@ -841,7 +841,12 @@ fn draw_preflight(f: &mut Frame, area: Rect, pf: &crate::app::Preflight) {
         }
     }
     lines.push(Line::from(""));
-    lines.push(Line::from("[r] Refresh   [c] Cancel"));
+    let any_refresh = pf.issues.iter().any(|i| i.refreshable);
+    lines.push(Line::from(if any_refresh {
+        "[r] Refresh   [c] Cancel"
+    } else {
+        "[c] Cancel"
+    }));
     f.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" references ")),
         rect,

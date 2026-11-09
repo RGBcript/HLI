@@ -215,6 +215,60 @@ pub struct PreflightIssue {
     pub reason: String,
     pub selected_hash: Option<String>,
     pub current_hash: Option<String>,
+    pub refreshable: bool,
+}
+
+/// Estado de una memoria para preflight (puro, sin I/O).
+pub fn classify_memory(
+    status: &str,
+    valid_from: Option<&str>,
+    valid_until: Option<&str>,
+    now: i64,
+) -> Option<&'static str> {
+    if status != "active" {
+        return match status {
+            "superseded" => Some("superseded"),
+            "revoked" => Some("revoked"),
+            _ => Some("not active"),
+        };
+    }
+    if let Some(v) = valid_from {
+        match iso_to_secs(v) {
+            Some(t) if t <= now => {}
+            Some(_) => return Some("not yet valid"),
+            None => return Some("invalid timestamp"),
+        }
+    }
+    if let Some(v) = valid_until {
+        match iso_to_secs(v) {
+            Some(t) if t > now => {}
+            Some(_) => return Some("expired"),
+            None => return Some("invalid timestamp"),
+        }
+    }
+    None
+}
+
+pub fn classify_artifact_hash(
+    expected: Option<&str>,
+    current: Option<&str>,
+) -> Option<&'static str> {
+    match (expected, current) {
+        (_, None) => Some("not found"),
+        (Some(w), Some(c))
+            if w.trim_start_matches("sha256:") != c.trim_start_matches("sha256:") =>
+        {
+            Some("hash mismatch")
+        }
+        _ => None,
+    }
+}
+
+pub fn classify_branch_revision(expected: Option<i64>, head: i64) -> Option<&'static str> {
+    match expected {
+        Some(rev) if rev != head => Some("revision mismatch"),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1667,6 +1721,7 @@ impl App {
                     reason: "missing".into(),
                     selected_hash: r.content_hash.clone(),
                     current_hash: None,
+                    refreshable: false,
                 }),
                 (Some(sel), Some(cur)) if sel != &cur => out.push(PreflightIssue {
                     index,
@@ -1674,6 +1729,7 @@ impl App {
                     reason: "changed".into(),
                     selected_hash: Some(sel.clone()),
                     current_hash: Some(cur),
+                    refreshable: true,
                 }),
                 (None, Some(cur)) => out.push(PreflightIssue {
                     index,
@@ -1681,11 +1737,108 @@ impl App {
                     reason: "changed".into(),
                     selected_hash: None,
                     current_hash: Some(cur),
+                    refreshable: true,
                 }),
                 _ => {}
             }
         }
+        self.preflight_other_kinds(&mut out);
         out
+    }
+
+    fn preflight_other_kinds(&self, out: &mut Vec<PreflightIssue>) {
+        let ws = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["id"].as_str())
+            .map(str::to_string);
+        let thread = self
+            .agent
+            .thread
+            .as_ref()
+            .and_then(|t| t["id"].as_str())
+            .map(str::to_string);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        for (index, r) in self.agent.references.iter().enumerate() {
+            if r.kind == RefKind::File {
+                continue;
+            }
+            let reason = match r.kind {
+                RefKind::Memory => {
+                    match client::call("memory.get", json!({ "memory_id": r.stable_id })) {
+                        Ok(m) => classify_memory(
+                            m["status"].as_str().unwrap_or(""),
+                            m["valid_from"].as_str(),
+                            m["valid_until"].as_str(),
+                            now,
+                        )
+                        .map(str::to_string),
+                        Err(_) => Some("not found".to_string()),
+                    }
+                }
+                RefKind::Artifact => {
+                    let current = ws.as_ref().and_then(|w| {
+                        client::call("artifact.list", json!({ "workspace_id": w }))
+                            .ok()
+                            .and_then(|v| v.as_array().cloned())
+                            .and_then(|list| {
+                                list.iter()
+                                    .find(|a| a["id"].as_str() == Some(r.stable_id.as_str()))
+                                    .and_then(|a| a["sha256"].as_str().map(str::to_string))
+                            })
+                    });
+                    classify_artifact_hash(r.content_hash.as_deref(), current.as_deref())
+                        .map(str::to_string)
+                }
+                RefKind::Run => match client::call("run.get", json!({ "run_id": r.stable_id })) {
+                    Ok(v) => {
+                        let owner = v["run"]["workspace_id"].as_str().unwrap_or("");
+                        if Some(owner) != ws.as_deref() {
+                            Some("out of scope".to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => Some("not found".to_string()),
+                },
+                RefKind::Branch => {
+                    let branches = thread
+                        .as_ref()
+                        .and_then(|t| {
+                            client::call("branch.list", json!({ "thread_id": t }))
+                                .ok()
+                                .and_then(|v| v.as_array().cloned())
+                        })
+                        .unwrap_or_default();
+                    match branches.iter().find(|b| {
+                        b["id"].as_str() == Some(r.stable_id.as_str())
+                            || b["name"].as_str() == Some(r.stable_id.as_str())
+                    }) {
+                        Some(b) => classify_branch_revision(
+                            r.revision,
+                            b["head_sequence"].as_i64().unwrap_or(0),
+                        )
+                        .map(str::to_string),
+                        None => Some("not found".to_string()),
+                    }
+                }
+                RefKind::File => None,
+            };
+            if let Some(reason) = reason {
+                out.push(PreflightIssue {
+                    index,
+                    stable_id: r.stable_id.clone(),
+                    reason,
+                    selected_hash: None,
+                    current_hash: None,
+                    refreshable: false,
+                });
+            }
+        }
     }
 
     pub fn cancel_preflight(&mut self) {
