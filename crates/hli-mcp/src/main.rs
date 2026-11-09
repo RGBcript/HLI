@@ -217,6 +217,31 @@ fn tools() -> Value {
             json!(["run_id"])
         ),
         t(
+            "permission_list",
+            "Lista solicitudes de permiso por invocación",
+            json!({"run_id": {"type": "string"}, "status": {"type": "string"}}),
+            json!([])
+        ),
+        t(
+            "permission_get",
+            "Consulta una solicitud de permiso",
+            json!({"request_id": {"type": "string"}}),
+            json!(["request_id"])
+        ),
+        t(
+            "permission_approve",
+            "Autoriza una invocación concreta",
+            json!({"request_id": {"type": "string"},
+                   "scope": {"type": "string", "enum": ["once", "run", "workspace"]}}),
+            json!(["request_id"])
+        ),
+        t(
+            "permission_deny",
+            "Deniega una invocación concreta",
+            json!({"request_id": {"type": "string"}, "reason": {"type": "string"}}),
+            json!(["request_id"])
+        ),
+        t(
             "artifact_read",
             "Lee un artefacto (texto o hex)",
             json!({"artifact_id": {"type": "string"}}),
@@ -337,6 +362,51 @@ fn call_tool(name: &str, args: &Value, home: &std::path::Path) -> Result<Value, 
                 payload["plan_id"] = json!(pid);
             }
             daemon(home, "run.replan", payload)
+        }
+        "permission_list" => {
+            let mut payload = json!({});
+            if let Some(run) = args.get("run_id").and_then(|v| v.as_str()) {
+                payload["run_id"] = json!(run);
+            }
+            if let Some(status) = args.get("status").and_then(|v| v.as_str()) {
+                payload["status"] = json!(status);
+            }
+            daemon(home, "permission.list", payload)
+        }
+        "permission_get" => {
+            let request_id = args
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .ok_or((-32602, "permission_get requiere request_id".to_string()))?;
+            daemon(home, "permission.get", json!({"request_id": request_id}))
+        }
+        "permission_approve" => {
+            let request_id = args
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .ok_or((-32602, "permission_approve requiere request_id".to_string()))?;
+            daemon(
+                home,
+                "permission.approve",
+                json!({
+                    "request_id": request_id,
+                    "scope": args.get("scope").cloned().unwrap_or(json!("once"))
+                }),
+            )
+        }
+        "permission_deny" => {
+            let request_id = args
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .ok_or((-32602, "permission_deny requiere request_id".to_string()))?;
+            daemon(
+                home,
+                "permission.deny",
+                json!({
+                    "request_id": request_id,
+                    "reason": args.get("reason").cloned().unwrap_or(json!("denied"))
+                }),
+            )
         }
         "artifact_read" => daemon(
             home,
