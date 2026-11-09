@@ -2704,6 +2704,101 @@ fn failed_submission_preserves_real_composer_state() {
     assert_eq!(app.agent.composer, "fallo");
 }
 
+// --- Interfaz ampliada: scrollback, export, clic y statusline --------------
+
+#[test]
+fn transcript_dump_requests_scrollback() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    tap(&mut app, KeyCode::Char('['));
+    assert!(app.transcript_dump);
+    assert_eq!(app.mode, TuiMode::Agent);
+}
+
+#[test]
+fn transcript_export_requests_file() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    tap(&mut app, KeyCode::Char('v'));
+    assert!(app.transcript_export.is_some());
+    assert_eq!(app.mode, TuiMode::Agent);
+}
+
+#[test]
+fn scrollbar_click_jumps_proportionally() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.viewport_bottom();
+    let row = 3 + (app.agent.viewport.viewport_height as u16 / 2);
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: app.terminal_width as u16 - 1,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+    let line = app.agent.viewport.first_visible_line;
+    assert!(line > 0 && line < app.agent.viewport.max_scroll());
+}
+
+#[test]
+fn click_expands_activity() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.lines.clear();
+    app.agent.push_activity(
+        "tool.completed",
+        ActivityDetail {
+            kind: "tool".into(),
+            status: "success".into(),
+            started: "now".into(),
+            duration: Some(0.1),
+            input: "{}".into(),
+            output: "salida".into(),
+            causation: None,
+            correlation: None,
+            artifacts: vec![],
+            error: None,
+        },
+    );
+    app.observe_terminal(100, 40);
+    assert!(!app.agent.lines[0].expanded);
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: 5,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(app.agent.lines[0].expanded);
+}
+
+#[test]
+fn selection_clears_after_copy() {
+    let mut app = agent_with_long_history();
+    app.selection_start(0);
+    app.selection_update(3);
+    app.selection_copy();
+    assert!(app.sel.is_none());
+    assert!(app.sel_end.is_none());
+}
+
+#[test]
+fn statusline_parses_ui_toml() {
+    assert_eq!(
+        App::parse_statusline("[ui]\nstatusline = \"date\"\n"),
+        Some("date".into())
+    );
+    assert_eq!(App::parse_statusline("# nada\n"), None);
+}
+
+#[test]
+fn screen_reader_uses_classic_renderer() {
+    // El contrato: `HLI_SCREEN_READER=1` activa el renderer de texto plano.
+    let code = include_str!("../src/main.rs");
+    assert!(code.contains("HLI_SCREEN_READER"));
+    assert!(code.contains("classic::run"));
+}
+
 #[test]
 fn missing_file_requires_cancel_only() {
     let root = tmp_dir("preflight-missing");
