@@ -1584,7 +1584,30 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
             .filter(|e| e["run_id"].as_str() == Some(id))
             .collect();
         evs.sort_by_key(|e| e["sequence"].as_i64().unwrap_or(0));
+        let is_terminal_event = |e: &Value| {
+            matches!(
+                e["type"].as_str().unwrap_or(""),
+                "run.completed"
+                    | "run.failed"
+                    | "run.cancelled"
+                    | "run.timed_out"
+                    | "run.interrupted"
+            )
+        };
+        let answer = run["result"]["text"].as_str().unwrap_or("").trim();
+        let mut answer_placed = false;
         for e in evs {
+            // La respuesta del proveedor se muestra antes del cierre del run,
+            // nunca después del evento terminal.
+            if is_terminal_event(e) && !answer_placed && !answer.is_empty() {
+                out.push(AgentLine {
+                    kind: AgentKind::Hli,
+                    text: answer.to_string(),
+                    detail: None,
+                    expanded: false,
+                });
+                answer_placed = true;
+            }
             if let Some(line) = event_line(e) {
                 out.push(AgentLine {
                     kind: AgentKind::Tool,
@@ -1594,12 +1617,10 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
                 });
             }
         }
-        if let Some(text) = run["result"]["text"].as_str()
-            && !text.trim().is_empty()
-        {
+        if !answer_placed && !answer.is_empty() {
             out.push(AgentLine {
                 kind: AgentKind::Hli,
-                text: text.to_string(),
+                text: answer.to_string(),
                 detail: None,
                 expanded: false,
             });
@@ -2344,11 +2365,12 @@ impl App {
         }
         let remaining = self.preflight_issues();
         if remaining.is_empty() {
-            self.agent.composer.clear();
             self.agent.history.push(pf.prompt.clone());
             self.agent.history_index = None;
-            self.agent.push(AgentKind::User, pf.prompt.clone());
-            self.run_prompt(&pf.prompt);
+            if self.run_prompt(&pf.prompt) {
+                self.agent.composer.clear();
+                self.agent.push(AgentKind::User, pf.prompt.clone());
+            }
         } else {
             self.agent.preflight = Some(Preflight {
                 prompt: pf.prompt,
@@ -2853,9 +2875,10 @@ impl App {
                             format!("Workspace created: {}", w["id"].as_str().unwrap_or("-")),
                         );
                         self.load_threads();
-                        if let Some(p) = self.agent.pending.take() {
+                        if let Some(p) = self.agent.pending.take()
+                            && self.run_prompt(&p)
+                        {
                             self.agent.push(AgentKind::User, p.clone());
-                            self.run_prompt(&p);
                         }
                     }
                     Err(e) => self.agent.push(AgentKind::Error, e),
@@ -2915,10 +2938,12 @@ impl App {
         }
         self.agent.history.push(text.clone());
         self.agent.history_index = None;
-        self.agent.composer.clear();
-        self.agent.push(AgentKind::User, text.clone());
-        self.run_prompt(&text);
-        true
+        let accepted = self.run_prompt(&text);
+        if accepted {
+            self.agent.composer.clear();
+            self.agent.push(AgentKind::User, text.clone());
+        }
+        accepted
     }
 
     fn ensure_thread(&mut self, text: &str) -> Option<String> {
@@ -2982,16 +3007,25 @@ impl App {
         }
     }
 
-    pub fn run_prompt(&mut self, text: &str) {
+    /// Regla única del compositor: sólo un `run.start` aceptado lo vacía.
+    pub fn apply_submission_outcome(&mut self, accepted: bool, text: &str) {
+        if accepted {
+            self.agent.composer.clear();
+        } else {
+            self.agent.composer = text.to_string();
+        }
+    }
+
+    pub fn run_prompt(&mut self, text: &str) -> bool {
         let Some(ws) = self.agent.workspace.as_ref().and_then(|w| w["id"].as_str()) else {
-            return;
+            return false;
         };
         let ws = ws.to_string();
         let Some(th) = self.ensure_thread(text) else {
-            return;
+            return false;
         };
         let Some(br) = self.ensure_branch() else {
-            return;
+            return false;
         };
         let mut args = json!({
             "workspace_id": ws,
@@ -3018,6 +3052,7 @@ impl App {
         }
         self.agent.busy = true;
         self.agent.run_state = "starting".into();
+        let mut accepted = false;
         match client::call("run.start", args) {
             Ok(run) => {
                 let id = run["id"].as_str().unwrap_or("-").to_string();
@@ -3042,16 +3077,22 @@ impl App {
                 if is_terminal(&state) {
                     self.apply_run_status(&json!({ "run": run }));
                 }
+                // Aceptado de forma durable: el compositor queda libre.
+                self.apply_submission_outcome(true, text);
+                accepted = true;
             }
             Err(e) => {
                 self.agent.run_state = "failed".into();
                 self.agent.push(AgentKind::Error, e);
+                // No se creó el run: el prompt se conserva para reintentar.
+                self.apply_submission_outcome(false, text);
             }
         }
         self.agent.busy = false;
         self.agent.status = self.agent_status_line();
         self.refresh_lists();
         self.refresh_runs();
+        accepted
     }
 
     pub fn apply_run_status(&mut self, v: &Value) {
@@ -3328,16 +3369,13 @@ impl App {
         let Some(id) = self.agent.last_run.clone() else {
             return;
         };
-        if is_terminal(&self.agent.run_state) {
-            return;
-        }
         if self.agent.poll_at.elapsed() < Duration::from_millis(350) {
             return;
         }
         self.agent.poll_at = Instant::now();
-        if let Ok(v) = client::call("run.status", json!({ "run_id": id })) {
-            self.apply_run_status(&v);
-        }
+
+        // 1) Primero los eventos: el estado terminal nunca debe adelantarse a
+        // los eventos que lo causaron.
         let ws = self
             .agent
             .workspace
@@ -3361,6 +3399,21 @@ impl App {
                 self.ingest_events(arr);
             }
         }
+        // 2) Después el estado del run.
+        if let Ok(v) = client::call("run.status", json!({ "run_id": id })) {
+            self.apply_run_status(&v);
+        }
+
+        // 3) En estado terminal se reconstruye la proyección durable: mismo
+        // orden causal que el Event Store, sin duplicar ni adelantar líneas.
+        if is_terminal(&self.agent.run_state) {
+            if !self.agent.receipt_shown {
+                self.agent.receipt_shown = true;
+            }
+            self.load_transcript();
+            return;
+        }
+
         if matches!(
             self.agent.run_state.as_str(),
             "planning" | "waiting_approval"
