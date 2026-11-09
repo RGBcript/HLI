@@ -32,6 +32,8 @@ jobs:
         run: cargo build --release --workspace
       - name: tests release
         run: cargo test --workspace --release
+      - name: build bins
+        run: cargo build --workspace --bins
       - name: audit
         run: cargo audit
       - name: deny
@@ -77,6 +79,8 @@ jobs:
         run: cargo build --release --workspace
       - name: tests release
         run: cargo test --workspace --release
+      - name: build bins
+        run: cargo build --workspace --bins
       - name: audit
         run: cargo audit
       - name: deny
