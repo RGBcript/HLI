@@ -5,8 +5,9 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use hli_tui::app::{
-    AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, RefItem, RefKind, Reference,
-    TuiMode, layout_mode, project_thread, reference_token, split_command, terminal_summary,
+    ActivityDetail, AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, RefItem, RefKind,
+    Reference, TuiMode, available_commands, format_providers, layout_mode, project_thread,
+    reference_token, split_command, terminal_summary,
 };
 use hli_tui::ui;
 
@@ -579,7 +580,7 @@ fn slash_command_reuses_existing_contract() {
         app.agent
             .lines
             .last()
-            .is_some_and(|l| l.text.contains("no disponible"))
+            .is_some_and(|l| l.text.contains("no existe"))
     );
 }
 
@@ -1053,4 +1054,228 @@ fn changed_file_is_reported_without_substitution() {
         app.agent.references[0].content_hash.as_deref(),
         Some(hash.as_str())
     );
+}
+
+// --- Slice 3b: actividad expandible, scroll y slash -------------------------
+
+fn detail(kind: &str, error: Option<&str>) -> ActivityDetail {
+    ActivityDetail {
+        kind: kind.into(),
+        status: if error.is_some() {
+            "failed".into()
+        } else {
+            "ok".into()
+        },
+        started: "2026-11-08T10:00:00Z".into(),
+        duration: Some(1.5),
+        input: "tool".into(),
+        output: "4 matches".into(),
+        causation: None,
+        correlation: None,
+        artifacts: vec!["art_091".into()],
+        error: error.map(str::to_string),
+    }
+}
+
+#[test]
+fn tool_activity_is_collapsed_by_default() {
+    let runs = vec![run_json(
+        "run_1",
+        "thr_1",
+        "hola",
+        "completed",
+        "2026-11-08T10:00:00Z",
+    )];
+    let events = serde_json::json!([
+        {"run_id": "run_1", "sequence": 1, "type": "model.responded", "payload": {}}
+    ]);
+    let lines = project_thread(&runs, events.as_array().unwrap());
+    let tool = lines.iter().find(|l| l.kind == AgentKind::Tool).unwrap();
+    assert!(!tool.expanded);
+    assert!(tool.detail.is_some());
+}
+
+#[test]
+fn ctrl_e_expands_selected_activity() {
+    let mut app = agent_app();
+    app.agent
+        .push_activity("model.responded", detail("model.responded", None));
+    app.handle_key(key_with(
+        KeyCode::Char('e'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    let last = app.agent.lines.last().unwrap();
+    assert!(last.expanded);
+}
+
+#[test]
+fn ctrl_e_collapses_selected_activity() {
+    let mut app = agent_app();
+    app.agent
+        .push_activity("model.responded", detail("model.responded", None));
+    app.handle_key(key_with(
+        KeyCode::Char('e'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    app.handle_key(key_with(
+        KeyCode::Char('e'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert!(!app.agent.lines.last().unwrap().expanded);
+}
+
+#[test]
+fn details_command_toggles_all_activity() {
+    let mut app = agent_app();
+    app.agent
+        .push_activity("uno", detail("model.responded", None));
+    app.agent
+        .push_activity("dos", detail("memory.search", None));
+    app.run_slash("/details");
+    assert!(
+        app.agent
+            .lines
+            .iter()
+            .filter(|l| l.detail.is_some())
+            .all(|l| l.expanded)
+    );
+    app.run_slash("/details");
+    assert!(
+        app.agent
+            .lines
+            .iter()
+            .filter(|l| l.detail.is_some())
+            .all(|l| !l.expanded)
+    );
+}
+
+#[test]
+fn expanded_activity_survives_poll_refresh() {
+    let mut app = agent_app();
+    app.agent.last_run = Some("run_1".into());
+    app.agent
+        .push_activity("uno", detail("model.responded", None));
+    app.toggle_selected_activity();
+    let events = serde_json::json!([
+        {"run_id": "run_1", "sequence": 9, "type": "memory.search", "payload": {}}
+    ]);
+    app.ingest_events(events.as_array().unwrap());
+    assert!(app.agent.lines[0].expanded);
+}
+
+#[test]
+fn expanded_activity_survives_mode_switch() {
+    let mut app = agent_app();
+    app.agent
+        .push_activity("uno", detail("model.responded", None));
+    app.toggle_selected_activity();
+    app.toggle_mode();
+    app.toggle_mode();
+    assert!(app.agent.lines[0].expanded);
+}
+
+#[test]
+fn failed_activity_shows_structured_error() {
+    let mut app = agent_app();
+    app.agent.push_activity(
+        "provider timeout",
+        detail("model.responded", Some("timeout")),
+    );
+    app.toggle_selected_activity();
+    let text = render(&app, 120, 40);
+    assert!(text.contains("error:"), "{text}");
+    assert!(text.contains("timeout"));
+}
+
+#[test]
+fn page_up_moves_transcript_and_end_follows() {
+    let mut app = agent_app();
+    for i in 0..40 {
+        app.agent.push(AgentKind::Info, format!("linea {i}"));
+    }
+    app.scroll_page_up();
+    assert!(app.agent.scroll_top.is_some());
+    app.scroll_page_down();
+    assert!(app.agent.scroll_top.is_some() || app.agent.scroll_top.is_none());
+    app.scroll_home();
+    assert_eq!(app.agent.scroll_top, Some(0));
+    app.scroll_end();
+    assert!(app.agent.scroll_top.is_none());
+}
+
+#[test]
+fn new_activity_does_not_move_manual_scroll() {
+    let mut app = agent_app();
+    for i in 0..40 {
+        app.agent.push(AgentKind::Info, format!("linea {i}"));
+    }
+    app.scroll_home();
+    app.agent.push(AgentKind::Info, "nueva");
+    assert_eq!(app.agent.scroll_top, Some(0));
+    assert_eq!(app.agent.new_activity, 1);
+    let text = render(&app, 120, 40);
+    assert!(text.contains("new activity"), "{text}");
+}
+
+#[test]
+fn new_activity_follows_when_at_bottom() {
+    let mut app = agent_app();
+    app.agent.push(AgentKind::Info, "uno");
+    app.agent.push(AgentKind::Info, "dos");
+    assert!(app.agent.scroll_top.is_none());
+    assert_eq!(app.agent.new_activity, 0);
+}
+
+#[test]
+fn long_transcript_keeps_composer_visible() {
+    let mut app = agent_app();
+    for i in 0..80 {
+        app.agent
+            .push(AgentKind::Hli, format!("respuesta larga {i}"));
+    }
+    let text = render(&app, 120, 30);
+    assert!(text.contains("compose"), "composer no visible");
+    assert!(text.contains("> "));
+}
+
+#[test]
+fn slash_help_lists_only_available_commands() {
+    let cmds = available_commands();
+    assert!(cmds.contains(&"provider"));
+    assert!(cmds.contains(&"details"));
+    assert!(!cmds.contains(&"permissions"));
+    assert!(!cmds.contains(&"diff"));
+}
+
+#[test]
+fn slash_cancel_requests_real_cancellation() {
+    let mut app = agent_app();
+    app.agent.last_run = Some("run_1".into());
+    app.agent.run_state = "running".into();
+    app.run_slash("/cancel");
+    assert_eq!(app.agent.run_state, "cancelling");
+}
+
+#[test]
+fn unknown_slash_command_shows_valid_alternatives() {
+    let mut app = agent_app();
+    app.run_slash("/nope");
+    let last = &app.agent.lines.last().unwrap().text;
+    assert!(last.contains("disponibles"), "{last}");
+}
+
+#[test]
+fn slash_commands_never_expose_secrets() {
+    let list = vec![serde_json::json!({
+        "name": "openai", "kind": "openai", "model": "gpt-4o-mini",
+        "api_key": "sk-should-not-appear", "secret_handle": "openai"
+    })];
+    let lines = format_providers(&list, "openai");
+    let joined = lines.join("\n");
+    assert!(joined.contains("openai"));
+    assert!(!joined.contains("sk-should-not-appear"));
+    assert!(!joined.contains("secret"));
 }

@@ -135,10 +135,26 @@ pub enum AgentKind {
     Info,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ActivityDetail {
+    pub kind: String,
+    pub status: String,
+    pub started: String,
+    pub duration: Option<f64>,
+    pub input: String,
+    pub output: String,
+    pub causation: Option<String>,
+    pub correlation: Option<String>,
+    pub artifacts: Vec<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentLine {
     pub kind: AgentKind,
     pub text: String,
+    pub detail: Option<ActivityDetail>,
+    pub expanded: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,6 +171,10 @@ pub struct AgentState {
     pub thread: Option<Value>,
     pub branch: Option<Value>,
     pub lines: Vec<AgentLine>,
+    pub details_all: bool,
+    pub scroll_top: Option<usize>,
+    pub new_activity: usize,
+    pub activity_sel: Option<usize>,
     pub composer: String,
     pub history: Vec<String>,
     pub history_index: Option<usize>,
@@ -264,6 +284,10 @@ impl Default for AgentState {
             thread: None,
             branch: None,
             lines: Vec::new(),
+            details_all: false,
+            scroll_top: None,
+            new_activity: 0,
+            activity_sel: None,
             composer: String::new(),
             history: Vec::new(),
             history_index: None,
@@ -300,10 +324,31 @@ impl Default for AgentState {
 
 impl AgentState {
     pub fn push(&mut self, kind: AgentKind, text: impl Into<String>) {
+        self.note_push();
         self.lines.push(AgentLine {
             kind,
             text: text.into(),
+            detail: None,
+            expanded: false,
         });
+    }
+
+    pub fn push_activity(&mut self, text: impl Into<String>, detail: ActivityDetail) {
+        self.note_push();
+        let expanded = self.details_all;
+        self.lines.push(AgentLine {
+            kind: AgentKind::Tool,
+            text: text.into(),
+            detail: Some(detail),
+            expanded,
+        });
+        self.activity_sel = Some(self.lines.len() - 1);
+    }
+
+    fn note_push(&mut self) {
+        if self.scroll_top.is_some() {
+            self.new_activity += 1;
+        }
     }
 
     pub fn needs_thread(&self) -> bool {
@@ -977,6 +1022,8 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
             out.push(AgentLine {
                 kind: AgentKind::User,
                 text: prompt.to_string(),
+                detail: None,
+                expanded: false,
             });
         }
         let mut evs: Vec<&Value> = events
@@ -989,6 +1036,8 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
                 out.push(AgentLine {
                     kind: AgentKind::Tool,
                     text: line,
+                    detail: event_detail(e),
+                    expanded: false,
                 });
             }
         }
@@ -998,6 +1047,8 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
             out.push(AgentLine {
                 kind: AgentKind::Hli,
                 text: text.to_string(),
+                detail: None,
+                expanded: false,
             });
         }
         let ok = run["state"].as_str() == Some("completed");
@@ -1008,6 +1059,8 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
                 AgentKind::Error
             },
             text: terminal_summary(run),
+            detail: None,
+            expanded: false,
         });
     }
     out
@@ -1219,6 +1272,116 @@ impl App {
             _ => {}
         }
         false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Slice 3b: actividad expandible y scroll del transcript
+// ---------------------------------------------------------------------------
+
+pub const TRANSCRIPT_PAGE: usize = 12;
+
+fn detail_line_count(d: &ActivityDetail) -> usize {
+    let mut n = 8; // type/status/started/duration/input/output/causation/correlation
+    if !d.artifacts.is_empty() {
+        n += 1;
+    }
+    if d.error.is_some() {
+        n += 1;
+    }
+    n
+}
+
+impl App {
+    /// Líneas renderizadas aproximadas (texto + detalles expandidos).
+    pub fn rendered_len(&self) -> usize {
+        self.agent
+            .lines
+            .iter()
+            .map(|l| {
+                let text = l.text.split('\n').count();
+                let detail = if l.expanded {
+                    l.detail.as_ref().map(detail_line_count).unwrap_or(0)
+                } else {
+                    0
+                };
+                2 + text + detail
+            })
+            .sum()
+    }
+
+    pub fn toggle_selected_activity(&mut self) {
+        let idx = self.agent.activity_sel.or_else(|| {
+            self.agent
+                .lines
+                .iter()
+                .rposition(|l| l.kind == AgentKind::Tool)
+        });
+        if let Some(i) = idx
+            && let Some(line) = self.agent.lines.get_mut(i)
+            && line.detail.is_some()
+        {
+            line.expanded = !line.expanded;
+            self.agent.activity_sel = Some(i);
+        }
+    }
+
+    pub fn toggle_all_details(&mut self) {
+        self.agent.details_all = !self.agent.details_all;
+        let v = self.agent.details_all;
+        for l in &mut self.agent.lines {
+            if l.detail.is_some() {
+                l.expanded = v;
+            }
+        }
+    }
+
+    pub fn scroll_page_up(&mut self) {
+        let total = self.rendered_len();
+        let cur = self
+            .agent
+            .scroll_top
+            .unwrap_or_else(|| total.saturating_sub(TRANSCRIPT_PAGE));
+        self.agent.scroll_top = Some(cur.saturating_sub(TRANSCRIPT_PAGE));
+    }
+
+    pub fn scroll_page_down(&mut self) {
+        let total = self.rendered_len();
+        if let Some(cur) = self.agent.scroll_top {
+            let next = cur + TRANSCRIPT_PAGE;
+            if next + 1 >= total {
+                self.scroll_end();
+            } else {
+                self.agent.scroll_top = Some(next);
+            }
+        }
+    }
+
+    pub fn scroll_home(&mut self) {
+        self.agent.scroll_top = Some(0);
+    }
+
+    pub fn scroll_end(&mut self) {
+        self.agent.scroll_top = None;
+        self.agent.new_activity = 0;
+    }
+
+    pub fn scroll_lines(&mut self, delta: isize) {
+        let total = self.rendered_len() as isize;
+        if total <= 0 {
+            return;
+        }
+        let cur = self
+            .agent
+            .scroll_top
+            .map(|t| t as isize)
+            .unwrap_or(total - TRANSCRIPT_PAGE as isize);
+        let next = (cur + delta).clamp(0, total - 1);
+        self.agent.scroll_top = if next + 1 >= total {
+            None
+        } else {
+            Some(next as usize)
+        };
     }
 }
 
@@ -1581,7 +1744,7 @@ impl App {
 // Agent Mode
 // ---------------------------------------------------------------------------
 
-pub const SLASH_COMMANDS: [&str; 16] = [
+pub const SLASH_COMMANDS: [&str; 17] = [
     "help",
     "status",
     "inspect",
@@ -1592,13 +1755,30 @@ pub const SLASH_COMMANDS: [&str; 16] = [
     "branch",
     "new",
     "resume",
+    "details",
+    "cancel",
     "model",
     "provider",
-    "permissions",
-    "diff",
+    "export",
     "clear",
     "exit",
 ];
+
+pub fn available_commands() -> Vec<&'static str> {
+    SLASH_COMMANDS.to_vec()
+}
+
+pub fn format_providers(list: &[Value], current: &str) -> Vec<String> {
+    list.iter()
+        .map(|p| {
+            let name = p["name"].as_str().unwrap_or("-");
+            let kind = p["kind"].as_str().unwrap_or("-");
+            let model = p["model"].as_str().unwrap_or("-");
+            let mark = if name == current { " *" } else { "" };
+            format!("/{name} · {kind} · {model}{mark}")
+        })
+        .collect()
+}
 
 fn normalize_str(s: &str) -> String {
     s.replace('\\', "/").trim_end_matches('/').to_lowercase()
@@ -1627,6 +1807,66 @@ pub fn is_active(state: &str) -> bool {
         state,
         "queued" | "running" | "cancelling" | "waiting_approval" | "paused"
     )
+}
+
+fn event_detail(e: &Value) -> Option<ActivityDetail> {
+    let kind = e["type"].as_str()?.to_string();
+    let p = &e["payload"];
+    let error = p["error"].as_str().map(str::to_string);
+    let status = if error.is_some() || kind.ends_with("failed") {
+        "failed"
+    } else {
+        "ok"
+    };
+    let output = if let Some(usage) = p["usage"].as_object() {
+        format!(
+            "{} in / {} out",
+            usage
+                .get("input_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            usage
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+        )
+    } else {
+        p["result"]
+            .as_str()
+            .or_else(|| p["matches"].as_i64().map(|_| ""))
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect()
+    };
+    Some(ActivityDetail {
+        kind,
+        status: status.into(),
+        started: e["created_at"].as_str().unwrap_or("-").to_string(),
+        duration: None,
+        input: p["tool"]
+            .as_str()
+            .or_else(|| p["model"].as_str())
+            .unwrap_or("")
+            .to_string(),
+        output,
+        causation: e["causation_id"].as_str().map(str::to_string),
+        correlation: e["correlation_id"].as_str().map(str::to_string),
+        artifacts: e["artifacts"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| {
+                        v["artifact_id"]
+                            .as_str()
+                            .or_else(|| v.as_str())
+                            .map(str::to_string)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        error,
+    })
 }
 
 fn event_line(e: &Value) -> Option<String> {
@@ -2034,7 +2274,8 @@ impl App {
             if let Some(line) = event_line(e)
                 && added < 4
             {
-                self.agent.push(AgentKind::Tool, line);
+                let detail = event_detail(e).unwrap_or_default();
+                self.agent.push_activity(line, detail);
                 added += 1;
             }
             max_seq = max_seq.max(seq);
@@ -2117,17 +2358,25 @@ impl App {
     }
 
     pub fn run_slash(&mut self, line: &str) -> bool {
-        let cmd = line
-            .trim_start_matches('/')
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_string();
+        let raw = line.trim_start_matches('/');
+        let mut parts = raw.split_whitespace();
+        let cmd = parts.next().unwrap_or("").to_string();
+        let args: Vec<String> = parts.map(str::to_string).collect();
         self.agent.palette = false;
         self.agent.composer.clear();
         match cmd.as_str() {
             "" => {}
-            "help" => self.help = true,
+            "help" => {
+                self.help = true;
+                self.agent.push(
+                    AgentKind::Info,
+                    format!("disponibles: /{}", available_commands().join(" /")),
+                );
+            }
+            "status" => {
+                let s = self.agent_status_line();
+                self.agent.push(AgentKind::Info, s);
+            }
             "inspect" => self.toggle_mode(),
             "context" => {
                 self.mode = TuiMode::Inspector;
@@ -2145,17 +2394,22 @@ impl App {
                 self.mode = TuiMode::Inspector;
                 self.tab = 5;
             }
-            "clear" => self.agent.lines.clear(),
+            "clear" => {
+                self.agent.lines.clear();
+                self.agent.activity_sel = None;
+            }
+            "details" => self.toggle_all_details(),
             "cancel" => self.request_cancel(),
+            "resume" => self.open_resume(),
             "exit" => return true,
             "new" => {
-                let ws = self
+                if let Some(ws) = self
                     .agent
                     .workspace
                     .as_ref()
                     .and_then(|w| w["id"].as_str())
-                    .map(str::to_string);
-                if let Some(ws) = ws {
+                    .map(str::to_string)
+                {
                     match client::call(
                         "thread.create",
                         json!({ "workspace_id": ws, "title": "session" }),
@@ -2170,21 +2424,151 @@ impl App {
                     }
                 }
             }
-            "branch" => {
-                self.agent.offer = Offer::CreateBranch {
-                    name: format!("alternative-{}", self.branches.len() + 1),
-                };
-            }
-            "status" => {
-                let s = self.agent_status_line();
-                self.agent.push(AgentKind::Info, s);
-            }
+            "branch" => self.slash_branch(&args),
+            "provider" => self.slash_provider(&args),
+            "model" => self.slash_model(&args),
+            "export" => self.slash_export(&args),
             other => self.agent.push(
                 AgentKind::Info,
-                format!("/{other}: no disponible en este slice"),
+                format!(
+                    "/{other} no existe. disponibles: /{}",
+                    available_commands().join(" /")
+                ),
             ),
         }
         false
+    }
+
+    fn slash_branch(&mut self, args: &[String]) {
+        if args.first().map(String::as_str) == Some("new") {
+            let name = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| format!("alternative-{}", self.branches.len() + 1));
+            self.agent.offer = Offer::CreateBranch { name };
+            return;
+        }
+        if let Some(name) = args.first() {
+            if let Some(b) = self
+                .branches
+                .iter()
+                .find(|b| b["name"].as_str() == Some(name.as_str()))
+                .cloned()
+            {
+                self.agent.branch = Some(b);
+                self.agent.push(AgentKind::Info, format!("branch: {name}"));
+            } else {
+                self.agent
+                    .push(AgentKind::Error, format!("branch desconocida: {name}"));
+            }
+            return;
+        }
+        self.load_branches();
+        let names: Vec<String> = self
+            .branches
+            .iter()
+            .filter_map(|b| b["name"].as_str().map(str::to_string))
+            .collect();
+        self.agent.push(
+            AgentKind::Info,
+            if names.is_empty() {
+                "sin branches".to_string()
+            } else {
+                format!("branches: {}", names.join(", "))
+            },
+        );
+    }
+
+    fn slash_provider(&mut self, args: &[String]) {
+        let Some(ws) = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["id"].as_str())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        match args.first() {
+            None => match client::call("provider.list", json!({})) {
+                Ok(v) => {
+                    let list = v.as_array().cloned().unwrap_or_default();
+                    let lines = format_providers(&list, &self.agent.provider);
+                    self.agent.push(
+                        AgentKind::Info,
+                        if lines.is_empty() {
+                            "sin providers configurados".to_string()
+                        } else {
+                            lines.join("\n")
+                        },
+                    );
+                }
+                Err(e) => self.agent.push(AgentKind::Error, e),
+            },
+            Some(name) => {
+                let from = self.agent.provider.clone();
+                match client::call("provider.set_default", json!({ "name": name })) {
+                    Ok(_) => {
+                        self.agent.provider = name.clone();
+                        let mut event = json!({
+                            "workspace_id": ws,
+                            "type": "provider.handoff",
+                            "payload": { "from": from, "to": name }
+                        });
+                        if let Some(th) = self.agent.thread.as_ref().and_then(|t| t["id"].as_str())
+                        {
+                            event["thread_id"] = json!(th);
+                        }
+                        let _ = client::call("event.append", event);
+                        self.agent
+                            .push(AgentKind::Info, format!("provider: {from} → {name}"));
+                    }
+                    Err(e) => self.agent.push(AgentKind::Error, e),
+                }
+            }
+        }
+    }
+
+    fn slash_model(&mut self, args: &[String]) {
+        match args.first() {
+            None => {
+                let current = self.agent.model.clone();
+                self.agent.push(
+                    AgentKind::Info,
+                    format!("model: {current} · no hay catálogo expuesto; /model <nombre>"),
+                );
+            }
+            Some(model) => {
+                self.agent.model = model.clone();
+                self.agent.push(AgentKind::Info, format!("model: {model}"));
+            }
+        }
+    }
+
+    fn slash_export(&mut self, args: &[String]) {
+        let Some(ws) = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["id"].as_str())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let out = args.first().cloned().unwrap_or_else(|| {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            format!("hli-export-{stamp}.hliar")
+        });
+        match client::call("export", json!({ "workspace_id": ws, "out": out })) {
+            Ok(v) => self.agent.push(
+                AgentKind::Info,
+                format!("export: {}", v["out"].as_str().unwrap_or(&out)),
+            ),
+            Err(e) => self.agent.push(AgentKind::Error, e),
+        }
     }
 
     fn agent_history_up(&mut self) {
@@ -2269,6 +2653,13 @@ impl App {
                 }
                 self.help = false;
             }
+            KeyCode::Char('e') if ctrl => self.toggle_selected_activity(),
+            KeyCode::PageUp => self.scroll_page_up(),
+            KeyCode::PageDown => self.scroll_page_down(),
+            KeyCode::Home => self.scroll_home(),
+            KeyCode::End => self.scroll_end(),
+            KeyCode::Up if ctrl => self.scroll_lines(-3),
+            KeyCode::Down if ctrl => self.scroll_lines(3),
             KeyCode::Up => {
                 if !self.agent.palette && self.agent.composer.is_empty() {
                     self.agent_history_up();

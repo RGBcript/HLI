@@ -703,11 +703,52 @@ fn draw_agent(f: &mut Frame, app: &App) {
         for part in l.text.split('\n') {
             lines.push(Line::from(format!("  {part}")));
         }
+        if l.expanded
+            && let Some(d) = &l.detail
+        {
+            lines.push(Line::from(format!("    type:      {}", d.kind)));
+            lines.push(Line::from(format!("    status:    {}", d.status)));
+            lines.push(Line::from(format!("    started:   {}", d.started)));
+            lines.push(Line::from(format!(
+                "    duration:  {}",
+                d.duration
+                    .map(|v| format!("{v:.1} s"))
+                    .unwrap_or_else(|| "-".into())
+            )));
+            lines.push(Line::from(format!("    input:     {}", d.input)));
+            lines.push(Line::from(format!("    output:    {}", d.output)));
+            lines.push(Line::from(format!(
+                "    causation: {} · correlation: {}",
+                d.causation.as_deref().unwrap_or("-"),
+                d.correlation.as_deref().unwrap_or("-")
+            )));
+            if !d.artifacts.is_empty() {
+                lines.push(Line::from(format!(
+                    "    artifacts: {}",
+                    d.artifacts.join(", ")
+                )));
+            }
+            if let Some(err) = &d.error {
+                lines.push(Line::from(format!("    error:     {err}")));
+            }
+        }
         lines.push(Line::from(""));
     }
-    if lines.len() > inner_h {
-        lines = lines.split_off(lines.len() - inner_h);
-    }
+    let total = lines.len();
+    lines = match app.agent.scroll_top {
+        Some(top) => {
+            let top = top.min(total.saturating_sub(1));
+            let end = (top + inner_h).min(total);
+            lines[top..end].to_vec()
+        }
+        None => {
+            if total > inner_h {
+                lines.split_off(total - inner_h)
+            } else {
+                lines
+            }
+        }
+    };
     f.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(" transcript "))
@@ -752,7 +793,15 @@ fn draw_agent(f: &mut Frame, app: &App) {
         }
     }
 
-    f.render_widget(Paragraph::new(format!(" {}", app.agent.status)), parts[3]);
+    let status = if app.agent.new_activity > 0 {
+        format!(
+            " {} · {} new activity · End para seguirlas",
+            app.agent.status, app.agent.new_activity
+        )
+    } else {
+        format!(" {}", app.agent.status)
+    };
+    f.render_widget(Paragraph::new(status), parts[3]);
 
     if app.agent.palette {
         draw_palette(f, area, app);
