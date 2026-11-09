@@ -174,6 +174,14 @@ presupuesto, eventos recientes y el hash del payload.
 **Qué no es.** No es el prompt final en crudo ni un log de la conversación. No se
 regenera: se conserva tal como se envió.
 
+**Referencias explícitas.** `explicit_references` es una lista ordenada de
+`ExplicitReferenceEntry`: tipo (`file`, `artifact`, `memory`, `run`, `branch`),
+`stable_id`, `display_text`, `selected_at`, `selection_reason=user_selected`,
+`validation_state`, hash o revisión, `materialization_kind`, `materialized_text`,
+tokens estimados, `included` y `exclusion_reason`. El orden es el elegido por el
+usuario y se conserva en el manifiesto y en el payload. Los manifiestos antiguos
+sin el campo se leen como lista vacía (`serde(default)`).
+
 **Responsabilidades.**
 - Permitir auditar por qué el modelo respondió lo que respondió.
 - Justificar exclusiones (`excluded` con motivo, p. ej. `budget`).

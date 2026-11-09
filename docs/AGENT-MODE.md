@@ -95,9 +95,16 @@ Escribir `@` abre un selector con cinco categorías: **Files**, **Artifacts**,
 - Internamente se guarda `reference_type`, `stable_id`, `display_text`, hash o
   revisión y el instante de selección. El texto visible nunca es la identidad.
 - **Archivos**: se guarda ruta relativa, hash SHA-256 del contenido y tamaño. Al
-  enviar el prompt se recalcula: si el archivo cambió, se avisa
-  `reference changed: … (se conserva la revisión seleccionada)`; si desapareció,
-  `reference missing: …`. No se sustituye contenido en silencio.
+  enviar el prompt, el daemon revalida: si el archivo cambió o falta, **el run no
+  se inicia** (`reference_changed` / `reference_missing`) antes de llamar al
+  provider. La sustitución silenciosa no existe.
+- **Envío estructurado**: el prompt viaja con `explicit_references` (tipo,
+  `stable_id`, hash o revisión, `selected_at`, `selection_reason`), no solo con el
+  token visible. El daemon las valida y materializa en `ContextManifest`; el
+  `payload_hash` cubre orden, identidad, hash y contenido materializado.
+- **Overlay r/k/c**: todavía no existe. Hoy, un archivo cambiado bloquea el run y
+  el error aparece en el transcript; Refresh/Keeper se harán en el bloque
+  siguiente.
 - **Artifacts**: se conserva el `sha256` del artifact. **Branches**: se guarda
   `head_sequence` como revisión.
 
