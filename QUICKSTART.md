@@ -136,3 +136,18 @@ OpenAI-compatible requiere `secret_handle`; el secreto vive en
 - SimProvider no es un modelo real.
 - Ollama requiere un servidor disponible.
 - Soporte Linux experimental; el paquete probado es Windows x86_64.
+
+---
+
+## Aprobar una tarea con efectos
+
+```bash
+hli run "corrige el archivo notas.txt"
+# → waiting_approval
+hli run plan <run_id>        # revisa pasos, efectos y hashes
+hli run approve <run_id> --plan <plan_id> --scope once
+hli run status <run_id>      # → completed y receipt con procedencia
+```
+
+Si el proveedor o el modelo cambian entre el plan y la aprobación, HLI invalida
+la aprobación y exige `hli run replan <run_id>` antes de ejecutar.

@@ -8,6 +8,8 @@
 | Base de datos | corrupción/parcial | transacciones, migraciones, backup | restore manual |
 | MCH | bucle de procesos | límite de reinicios y backoff | no es sandbox |
 | MCP | cliente malicioso local | loopback + stdio del cliente | sin autenticación remota |
+| Plan/aprobación | aprobar algo distinto de lo revisado | hash del plan + hash de la instantánea + `plan_id` obligatorio | el usuario debe revisar el plan mostrado |
+| Instantánea de ejecución | filtración de secretos | sólo `id@versión`; nunca valores; MCP sólo expone el hash | acceso al FS de `HLI_HOME` sigue siendo del usuario |
 | Instalador | PATH/dirs peligrosos | rutas prohibidas y rollback | no valida firma del paquete |
 
 Fuera de alcance: atacante con privilegios de administrador, malware local,

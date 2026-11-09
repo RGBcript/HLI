@@ -10,6 +10,11 @@ repositorio de forma privada y describe versión, impacto y reproducción.
 - HLI es local: daemon en loopback, datos en `HLI_HOME`.
 - Secretos en `HLI_HOME/secrets/` o `HLI_SECRET_*`; nunca en base, eventos,
   exportaciones ni logs.
+- La instantánea de ejecución (`ExecSnapshot`) guarda sólo identificadores y
+  versiones de los handles (`id@v…`), jamás valores. El plan público no incluye
+  la instantánea; MCP expone únicamente su hash.
+- Al aprobar se verifica el hash de la instantánea y su vigencia: si un secreto
+  cambió de versión, la aprobación se invalida y se exige un replan.
 - Módulos son procesos locales; la firma Ed25519 y el trust store permiten
   política `require-signed`, pero no son un sandbox.
 - Los backups de base no incluyen secretos.

@@ -158,6 +158,53 @@ primer poll: es correcto.
 - El Inspector conserva estado al volver.
 - El daemon sigue vivo al cerrar.
 
+
+---
+
+## 4. Planificación y aprobación durable (pasos 69–96)
+
+Se ejecutan después de los 68 anteriores, sobre un workspace limpio. El gate
+automático (`scripts/planning_approval_gate.py`) cubre la parte no interactiva;
+esta tabla verifica la experiencia real en Windows Terminal.
+
+| # | Acción | Qué debe verse | Registro |
+|---|---|---|---|
+| 69 | Enviar una tarea read-only | `↻ Preparing plan` y avance sin aprobación | |
+| 70 | Ver el Plan | origen `runtime-generated` (o `provider`) y pasos | |
+| 71 | Confirmar avance según policy | `completed` sin overlay | |
+| 72 | Enviar una tarea con `write` | overlay `Plan requires approval` | |
+| 73 | Estado | `waiting_approval`, sin fichero escrito | |
+| 74 | `v` detalles | hashes, provider, manifiesto, scope, módulos, MCH | |
+| 75 | Confirmar hashes | `plan hash` y `snapshot hash` con prefijo `sha256:` | |
+| 76 | `y` aprobar once | el overlay se cierra y el run ejecuta | |
+| 77 | Confirmar ejecución | fichero escrito y estado terminal | |
+| 78 | Receipt | `plan_id`, revisión, `approval_scope=once`, efectos | |
+| 79 | Otra tarea con `write` | vuelve a esperar | |
+| 80 | `n` + razón | entrada de razón y rechazo | |
+| 81 | Confirmar no ejecución | sin fichero; estado `cancelled` | |
+| 82 | `Ctrl+O` Inspector | sección Plan read-only del run | |
+| 83 | `y`/`n` desde Inspector | misma operación que el overlay | |
+| 84 | Volver a Agent Mode | el overlay sigue activo | |
+| 85 | Dejar un Run waiting | `waiting_approval` | |
+| 86 | Reiniciar el daemon | `daemon stop` y `start` | |
+| 87 | `resume` | el thread recupera el plan una sola vez | |
+| 88 | Confirmar Plan recuperado | misma revisión y hash | |
+| 89 | Aprobar desde otra CLI | `hli run approve … --plan …` | |
+| 90 | Overlay | se cierra sin duplicar eventos | |
+| 91 | Cambiar modelo/provider | `hli provider add …` antes de aprobar | |
+| 92 | Aprobar | `plan_stale`: el overlay muestra `Plan invalidated` | |
+| 93 | `r` Replan | nueva revisión y snapshot | |
+| 94 | Confirmar `revision + 1` | `Revision: N+1`, `supersedes` visible | |
+| 95 | Aprobar la nueva revisión | exige decisión nueva; no se hereda | |
+| 96 | Receipt y JSONL | `superseded_plan_ids`, `invalidation_events` y eventos plan.* | |
+
+### Resultado esperado
+
+- Ningún paso aprueba automáticamente.
+- Un plan invalidado nunca acepta `y`/`a`/`w`.
+- El replan no reutiliza la aprobación anterior.
+- Los valores de secreto no aparecen en detalles ni en el receipt.
+
 ---
 
 ## 3. Resultado firmable
@@ -170,7 +217,7 @@ Commit evaluado:
 Dimensiones probadas:
 Fecha:
 Paso 0 (teclado):       OK / REGRESIÓN
-Pasos ejecutados:       68 / 68
+Pasos ejecutados:       68 + 28 (planificación)
 Resultado:              PENDIENTE / PASA / FALLA
 Observaciones:
 Firma:

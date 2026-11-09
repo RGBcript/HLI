@@ -296,3 +296,16 @@ declara una beta que existe, no una que se espera.
 
 Si el paso 1 es "no", probablemente no hace falta tocar el esquema; si el paso 3
 mete lógica de negocio en el despacho, se está engordando el monolito.
+
+---
+
+## Planificación durable
+
+- Reglas del dominio en `hli-core` (hashes y transiciones) y `hli-agent`
+  (planner). El daemon no decide la política: la aplica.
+- Todo cambio en el plan debe pasar por `RunPlan::seal()`; el hash cubre sólo
+  contenido revisado (no estado ni aprobación).
+- Pruebas: `crates/hli-agent/src/plan.rs`, `crates/hli-daemon/tests/planning_approval.rs`,
+  `crates/hli-tui/tests/render.rs` y `scripts/planning_approval_gate.py`.
+- No añadir campos privados al plan: la instantánea de ejecución es el único
+  lugar para configuración, y nunca guarda valores de secreto.

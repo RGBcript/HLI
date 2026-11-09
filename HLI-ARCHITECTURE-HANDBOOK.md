@@ -503,3 +503,19 @@ base desde un cliente rompe el modelo y debe rechazarse.
 | Handle de secreto | Nombre de archivo en `HLI_HOME/secrets/`, nunca el valor |
 | Generación | Contador de procesos de una instancia MCH |
 | Gate | Script externo que demuestra una propiedad con binarios reales |
+
+---
+
+## Planificación durable (0.9)
+
+- `hli-agent/src/plan.rs`: construye `RunPlan` (runtime_generated o provider),
+  clasifica efectos y aplica grants de workspace.
+- `hli-core/src/model.rs`: `RunPlan`, `PlanStep`, `ExecSnapshot`,
+  `PermissionGrant` y las tablas de transiciones de run y plan.
+- `hli-store`: migración `0008_run_plans`; una fila por revisión
+  (`UNIQUE(run_id, revision)`), con `execution_json` privado y hasheado.
+- `hli-daemon/src/runs.rs`: `prepare` (manifiesto → plan → instantánea),
+  `execute_prepared_run` (relee y verifica hashes), `approve`, `reject` y
+  `replan`.
+- La aprobación se liga a `plan_id`; si la instantánea dejó de ser válida se
+  emite `plan.invalidated` y se exige `run.replan`.

@@ -1,6 +1,6 @@
 # HLI — Estado del proyecto
 
-**Versión:** `0.9.0-beta.1` · **Commit:** `6f273be` · **Fecha:** 2026-11-07
+**Versión:** `0.9.0-beta.1` · **Commit:** posterior a `80bee6d` · **Fecha:** 2026-11-09
 **Repositorio:** `C:\Users\GUERRA\Documents\TEC\Doc\Software\HLI`
 **Plataforma probada:** Windows x86_64. Linux: experimental.
 
@@ -94,11 +94,43 @@ Decisiones estructurales vigentes:
 
 ---
 
+## 3.b Planificación durable y aprobación
+
+Implementado y probado:
+
+- `RunPlan` público con revisión, `supersedes_plan_id`, `invalidation_reasons`
+  y hash canónico del contenido revisado.
+- `ExecSnapshot` privada, durable y hasheada: provider, modelo, endpoint,
+  sampling, timeout, manifiesto, revisión, política de herramientas, módulos,
+  MCH y handles `id@versión` (nunca valores).
+- Estados `planning` y `waiting_approval`; un run con efectos no ejecuta nada
+  hasta que se aprueba.
+- `run.plan`, `run.approve` (con `plan_id` obligatorio en MCP), `run.reject` y
+  `run.replan`; scopes `once`, `run` y `workspace` con grants persistentes.
+- Invalidación por cambio material (provider, modelo, endpoint, timeout,
+  manifiesto, revisión de rama, módulos, MCH, política o versión de secreto):
+  evento `plan.invalidated`, revisión conservada y replan obligatorio.
+- Overlay de aprobación en Agent Mode, sección read-only y acciones en
+  Inspector, transcript durable y eventos plan.* en JSONL.
+- Receipt con procedencia completa (`plan_id`, revisión, hashes, scope,
+  eventos, efectos, supersedes, invalidaciones, provider/model/adapter).
+- Herramientas MCP `run_plan`, `run_approve`, `run_reject` y `run_replan`, sin
+  exponer `execution_json`.
+- Gate `scripts/planning_approval_gate.py` con 19 comprobaciones, incluida
+  seguridad de secretos y acciones del Inspector.
+
+No implementado todavía: **permisos interactivos por cada tool call**. La
+aprobación cubre el conjunto declarado de efectos del plan, no invocaciones
+individuales.
+
+---
+
 ## 4. Componentes pendientes
 
 | Pendiente | Naturaleza | Bloquea |
 |---|---|---|
-| Firma del gate visual de la TUI (19 pasos) | Verificación humana, no código | Tag `v0.9.0-beta.1` |
+| Firma del gate visual de la TUI (96 pasos) | Verificación humana, no código | Tag `v0.9.0-beta.1` |
+| Permisos interactivos por tool call | Ingeniería nueva (siguiente bloque) | Aprobación granular por invocación |
 | Guion del gate visual desalineado con la TUI real | Corrección de documentación | Ejecución del gate |
 | Gates de integración en Linux | Portar scripts | Soportar Linux como plataforma |
 | Validación con clientes MCP de terceros | Prueba externa | Afirmar compatibilidad MCP |

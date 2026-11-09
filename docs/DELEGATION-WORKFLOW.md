@@ -109,3 +109,20 @@ producen streams separados.
 - No muestra un plan aprobable paso a paso; el plan/aprobación es el siguiente
   slice.
 - No mantiene una copia durable en el cliente.
+
+---
+
+## Plan y aprobación
+
+El flujo ya no ejecuta al recibir el prompt:
+
+```
+prompt → run durable → ContextManifest → RunPlan
+      → waiting_approval (si hay efectos)
+      → approve | reject | replan
+      → ejecución reanudable → Receipt
+```
+
+La aprobación cubre el conjunto declarado de efectos. Si durante la ejecución
+aparece una herramienta no declarada, se crea una revisión y el run vuelve a
+esperar. Los permisos interactivos por tool call son el bloque siguiente.

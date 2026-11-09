@@ -13,7 +13,11 @@ hli event list --workspace <id> [--branch ID]
 hli artifact put <file> --workspace <id> | list --workspace <id>
 hli artifact slice <artifact_id> --workspace <id> [--kind K] [--start N] [--end M] [--reason R]
 hli run start --workspace <id> --thread <id> --branch <id> --prompt PROMPT [--provider P] [--model M] [--base-url U] [--secret HANDLE]
-hli run get <run_id> | list --workspace <id> | approve <run_id>
+hli run get <run_id> | list --workspace <id> | status <run_id> | wait <run_id>
+hli run plan <run_id>
+hli run approve <run_id> [--scope once|run|workspace] [--plan PLAN_ID]
+hli run reject <run_id> --reason TEXTO [--plan PLAN_ID]
+hli run replan <run_id> [--plan PLAN_ID] [--reason TEXTO]...
 hli manifest get <manifest_id>
 hli prices list
 hli module install <file.hlimod> | list | inspect <name> | test <name> | remove <name>

@@ -347,3 +347,18 @@ hli module test <nombre>
 - Sin streaming ni reconexión automática de la TUI: si el daemon cae, hay que
   reabrirla.
 - Sin scheduler: HLI no ejecuta tareas periódicas por sí solo.
+
+---
+
+## Aprobar un run con efectos
+
+```bash
+hli run plan <run_id>                       # pasos, efectos y hashes
+hli run approve <run_id> --plan <plan_id> --scope once|run|workspace
+hli run reject  <run_id> --plan <plan_id> --reason "motivo"
+hli run replan  <run_id> [--reason "motivo"]
+```
+
+Diagnóstico: `hli event list --workspace <id>` muestra `plan.created`,
+`run.waiting_approval`, `plan.approved|rejected|invalidated|revised` y el resto
+de la traza. Un run `waiting_approval` sobrevive al reinicio del daemon.

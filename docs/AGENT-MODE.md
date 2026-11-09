@@ -253,6 +253,22 @@ prompt → run queued → planning → plan durable
   `rejected_effects`. Un run rechazado conserva la procedencia y no tiene
   resumen de éxito.
 
+### Aprobar desde cada superficie
+
+| Superficie | Operación |
+|---|---|
+| Agent Mode | `y` once · `a` run · `w` workspace · `n` rechazar · `v` detalles · `r` replan · `Esc` cancelar |
+| Inspector | mismas teclas sobre el plan seleccionado; reutiliza `run.approve/reject/replan` |
+| CLI | `hli run plan/approve/reject/replan` con `--plan` y `--scope` |
+| MCP | `run_plan`, `run_approve`, `run_reject`, `run_replan` (sin `execution_json`) |
+
+### Plan approval frente a tool permission
+
+La aprobación de plan autoriza el **conjunto declarado de efectos** (leer,
+escribir, red, servicio externo, destructivo, desconocido). No autoriza una
+invocación concreta de herramienta: los permisos interactivos por tool call no
+están implementados en este bloque.
+
 ## Límites de este slice
 
 - La actividad es por polling, no streaming push del daemon.
