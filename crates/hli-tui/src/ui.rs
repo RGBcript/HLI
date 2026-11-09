@@ -2,7 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Wrap,
+};
 use serde_json::Value;
 
 use crate::app::{
@@ -87,6 +90,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         return;
     }
+    if app.mode == TuiMode::Transcript {
+        draw_transcript(f, app);
+        return;
+    }
     match layout_mode(area.width, area.height) {
         LayoutMode::TooSmall => draw_too_small(f, area),
         LayoutMode::Reduced => draw_reduced(f, area, app),
@@ -97,6 +104,84 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help {
         draw_help(f, area, app);
     }
+}
+
+
+/// Transcript Mode: revisión y búsqueda de la conversación a pantalla casi
+/// completa. No administra runs ni contexto (eso es el Inspector).
+fn draw_transcript(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let t = Theme::for_app(app);
+    let head = format!(
+        "HLI · transcript · {} líneas · Ctrl+O/Esc/q volver",
+        app.transcript_lines(app.transcript_width).len()
+    );
+    f.render_widget(
+        Paragraph::new(head)
+            .block(Block::default().borders(Borders::ALL).title(" transcript ")),
+        parts[0],
+    );
+
+    let height = parts[1].height.saturating_sub(2) as usize;
+    let lines = app.transcript_lines(app.transcript_width);
+    let start = app
+        .transcript
+        .scroll
+        .min(lines.len().saturating_sub(height));
+    let query = app.transcript.query.to_lowercase();
+    let active = app
+        .transcript
+        .matches
+        .get(app.transcript.match_index)
+        .copied();
+    let mut body: Vec<Line> = Vec::new();
+    for (i, (_, text, _)) in lines.iter().enumerate().skip(start).take(height) {
+        let hit = !query.is_empty() && text.to_lowercase().contains(&query);
+        let is_active = active == Some(i);
+        let style = if is_active {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else if hit {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        let prefix = if hit { "» " } else { "  " };
+        body.push(Line::from(Span::styled(format!("{prefix}{text}"), style)));
+    }
+    if body.is_empty() {
+        body.push(Line::from("(transcript vacío)"));
+    }
+    f.render_widget(
+        Paragraph::new(body)
+            .block(Block::default().borders(Borders::ALL).title(" conversation "))
+            .wrap(Wrap { trim: false }),
+        parts[1],
+    );
+
+    let footer = if app.transcript.search_open {
+        format!("Buscar: {}_   [Enter] aceptar   [Esc] cancelar", app.transcript.query)
+    } else if !app.transcript.matches.is_empty() {
+        format!(
+            " {} coincidencias · n/N · j/k · PgUp/PgDn · g/G · {{ }} prompt · / buscar · q volver",
+            app.transcript.matches.len()
+        )
+    } else {
+        " j/k · PgUp/PgDn · g/G · { } prompt · / buscar · q volver".to_string()
+    };
+    let style = if t.mono {
+        Style::default()
+    } else {
+        Style::default().fg(t.text)
+    };
+    f.render_widget(Paragraph::new(Span::styled(footer, style)), parts[2]);
 }
 
 fn draw_too_small(f: &mut Frame, area: Rect) {
@@ -905,6 +990,17 @@ fn draw_agent(f: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         parts[1],
     );
+    // Scrollbar sólo cuando hay contenido fuera del viewport; su posición y
+    // proporción salen del modelo, no de un valor decorativo.
+    let vp = &app.agent.viewport;
+    if vp.total_rendered_lines > vp.viewport_height {
+        let mut state = ScrollbarState::new(vp.max_scroll()).position(vp.first_visible_line);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            parts[1],
+            &mut state,
+        );
+    }
 
     match app.agent.offer.clone() {
         Offer::None => {
@@ -943,10 +1039,11 @@ fn draw_agent(f: &mut Frame, app: &App) {
         }
     }
 
-    let status = if app.agent.new_activity > 0 {
+    let unseen = app.agent.viewport.unseen_activity_count.max(app.agent.new_activity);
+    let status = if unseen > 0 {
         format!(
-            " {} · {} new activity · End para seguirlas",
-            app.agent.status, app.agent.new_activity
+            " {} · ↓ {unseen} new activity · Ctrl+End para volver al final",
+            app.agent.status
         )
     } else {
         format!(" {}", app.agent.status)

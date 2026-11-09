@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event};
 use hli_tui::app::{App, TuiMode};
+use hli_tui::terminal::{MouseGuard, mouse_enabled_from_env};
 use hli_tui::ui;
 
 fn main() -> io::Result<()> {
@@ -12,6 +13,9 @@ fn main() -> io::Result<()> {
     let root = flag(&args, "--root");
 
     let mut terminal = ratatui::init();
+    // RAII: la captura de ratón se libera al salir por cualquier vía. Con
+    // HLI_DISABLE_MOUSE=1 Windows Terminal conserva su selección nativa.
+    let guard = MouseGuard::new(mouse_enabled_from_env())?;
     let mut app = App::new();
     if mode == TuiMode::Agent {
         app.begin_agent(root.map(std::path::PathBuf::from));
@@ -20,6 +24,7 @@ fn main() -> io::Result<()> {
         }
     }
     let res = run(&mut terminal, &mut app);
+    drop(guard);
     ratatui::restore();
     res
 }
@@ -32,12 +37,25 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
     loop {
+        let size = terminal.size()?;
+        app.observe_terminal(size.width, size.height);
         terminal.draw(|f| ui::draw(f, app))?;
-        if event::poll(Duration::from_millis(200))?
-            && let Event::Key(k) = event::read()?
-            && app.handle_key(k)
-        {
-            break;
+        if event::poll(Duration::from_millis(200))? {
+            match event::read()? {
+                Event::Key(k) => {
+                    if app.handle_key(k) {
+                        break;
+                    }
+                }
+                Event::Mouse(m) => {
+                    app.handle_mouse(m);
+                }
+                Event::Resize(_, _) => {
+                    // El siguiente ciclo recalcula el viewport con el nuevo
+                    // tamaño y respeta la posición o el follow.
+                }
+                _ => {}
+            }
         }
         app.tick();
     }

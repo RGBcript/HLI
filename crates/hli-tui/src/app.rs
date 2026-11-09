@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
+
+use crate::viewport::{TranscriptViewport, wheel_speed_from_env, wrapped_lines};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -115,6 +117,9 @@ fn summarize_output(ok: bool, text: &str) -> String {
 pub enum TuiMode {
     Agent,
     Inspector,
+    /// Revisión de la conversación a pantalla completa, separada del
+    /// Inspector (que administra runs, contexto y memoria).
+    Transcript,
 }
 
 impl TuiMode {
@@ -206,6 +211,7 @@ pub struct AgentState {
     pub ref_items: Vec<Vec<RefItem>>,
     pub ref_start: usize,
     pub preflight: Option<Preflight>,
+    pub viewport: TranscriptViewport,
     pub plan: Option<PlanView>,
     pub perm: Option<PermissionView>,
     pub reject_open: bool,
@@ -273,6 +279,16 @@ pub fn classify_branch_revision(expected: Option<i64>, head: i64) -> Option<&'st
         Some(rev) if rev != head => Some("revision mismatch"),
         _ => None,
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TranscriptReview {
+    pub scroll: usize,
+    pub query: String,
+    pub search_open: bool,
+    pub matches: Vec<usize>,
+    pub match_index: usize,
+    pub saved_scroll: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -793,6 +809,10 @@ impl Default for AgentState {
             ref_items: vec![Vec::new(); 5],
             ref_start: 0,
             preflight: None,
+            viewport: TranscriptViewport {
+                wheel_speed: wheel_speed_from_env(),
+                ..TranscriptViewport::default()
+            },
             plan: None,
             perm: None,
             reject_open: false,
@@ -825,6 +845,9 @@ impl AgentState {
     }
 
     fn note_push(&mut self) {
+        // El modelo cuenta las novedades sólo cuando el usuario está revisando
+        // historia; con follow activo la ventana baja sola.
+        self.viewport.on_content(1);
         if self.scroll_top.is_some() {
             self.new_activity += 1;
         }
@@ -870,6 +893,9 @@ pub struct App {
     pub feedback_ttl: Duration,
     pub mode: TuiMode,
     pub agent: AgentState,
+    pub transcript: TranscriptReview,
+    pub transcript_width: usize,
+    pub transcript_height: usize,
     pub help: bool,
     pub filter: Option<String>,
     pub history: Vec<String>,
@@ -919,6 +945,9 @@ impl App {
             feedback_ttl: Duration::from_secs(5),
             mode: TuiMode::Inspector,
             agent: AgentState::default(),
+            transcript: TranscriptReview::default(),
+            transcript_width: 80,
+            transcript_height: 20,
             help: false,
             filter: None,
             history: vec![],
@@ -992,6 +1021,9 @@ impl App {
             feedback_ttl: Duration::from_secs(5),
             mode: TuiMode::Inspector,
             agent: AgentState::default(),
+            transcript: TranscriptReview::default(),
+            transcript_width: 80,
+            transcript_height: 20,
             help: false,
             filter: None,
             history: vec![],
@@ -1271,6 +1303,9 @@ impl App {
         if !matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return false;
         }
+        if self.mode == TuiMode::Transcript {
+            return self.transcript_key(k);
+        }
         if self.mode == TuiMode::Agent {
             return self.handle_agent_key(k);
         }
@@ -1335,6 +1370,9 @@ impl App {
         match k.code {
             KeyCode::Char('o') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.toggle_mode();
+            }
+            KeyCode::Char('i') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mode = TuiMode::Agent;
             }
             KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Char('q') => {
@@ -3007,6 +3045,266 @@ impl App {
         }
     }
 
+
+
+    // -----------------------------------------------------------------------
+    // Transcript Mode
+    // -----------------------------------------------------------------------
+
+    pub fn open_transcript(&mut self) {
+        self.transcript.saved_scroll = self.agent.scroll_top;
+        self.transcript.search_open = false;
+        self.transcript.query.clear();
+        self.transcript.matches.clear();
+        self.transcript.match_index = 0;
+        self.transcript.scroll = 0;
+        self.mode = TuiMode::Transcript;
+    }
+
+    pub fn close_transcript(&mut self) {
+        self.transcript.search_open = false;
+        self.mode = TuiMode::Agent;
+    }
+
+    /// Líneas del transcript con su índice de origen y si son un prompt.
+    pub fn transcript_lines(&self, width: usize) -> Vec<(usize, String, bool)> {
+        let mut out = Vec::new();
+        for (idx, line) in self.agent.lines.iter().enumerate() {
+            let is_user = line.kind == AgentKind::User;
+            let tag = match line.kind {
+                AgentKind::User => "You",
+                AgentKind::Hli => "HLI",
+                AgentKind::Tool => "·",
+                AgentKind::Error => "×",
+                AgentKind::Info => "·",
+            };
+            let mut text = format!("{tag} {}", line.text.replace('\n', " "));
+            if let Some(d) = &line.detail {
+                text.push_str(&format!(" · {} · {}", d.kind, d.status));
+            }
+            // Se envuelve para que el modelo de scroll sea el mismo que el
+            // del render (no hay offsets fuera de rango).
+            let chunks = wrapped_lines(&text, width).max(1);
+            for c in 0..chunks {
+                out.push((idx, text.clone(), is_user && c == 0));
+            }
+        }
+        if out.is_empty() {
+            out.push((0, String::new(), false));
+        }
+        out
+    }
+
+    fn apply_transcript_search(&mut self, width: usize, height: usize) {
+        let q = self.transcript.query.to_lowercase();
+        self.transcript.matches = if q.is_empty() {
+            Vec::new()
+        } else {
+            self.transcript_lines(width)
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, text, _))| text.to_lowercase().contains(&q))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        self.transcript.match_index = 0;
+        if let Some(first) = self.transcript.matches.first().copied() {
+            self.transcript.scroll = first.saturating_sub(height / 3);
+        }
+    }
+
+    pub fn transcript_key(&mut self, k: KeyEvent) -> bool {
+        if self.transcript.search_open {
+            match k.code {
+                KeyCode::Enter => {
+                    self.transcript.search_open = false;
+                    let (w, h) = (self.transcript_width, self.transcript_height);
+                    self.apply_transcript_search(w, h);
+                    return false;
+                }
+                KeyCode::Esc => {
+                    self.transcript.search_open = false;
+                    self.transcript.query.clear();
+                    self.transcript.matches.clear();
+                    if let Some(s) = self.transcript.saved_scroll {
+                        self.transcript.scroll = s;
+                    }
+                    return false;
+                }
+                KeyCode::Backspace => {
+                    self.transcript.query.pop();
+                }
+                KeyCode::Char(c) => self.transcript.query.push(c),
+                _ => {}
+            }
+            return false;
+        }
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.close_transcript(),
+            KeyCode::Char('o') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.close_transcript()
+            }
+            KeyCode::Char('/') => {
+                self.transcript.saved_scroll = Some(self.transcript.scroll);
+                self.transcript.search_open = true;
+                self.transcript.query.clear();
+            }
+            KeyCode::Char('n') => {
+                if !self.transcript.matches.is_empty() {
+                    self.transcript.match_index =
+                        (self.transcript.match_index + 1) % self.transcript.matches.len();
+                    self.transcript.scroll = self.transcript.matches[self.transcript.match_index]
+                        .saturating_sub(self.transcript_height / 3);
+                }
+            }
+            KeyCode::Char('N') => {
+                if !self.transcript.matches.is_empty() {
+                    let len = self.transcript.matches.len();
+                    self.transcript.match_index = (self.transcript.match_index + len - 1) % len;
+                    self.transcript.scroll = self.transcript.matches[self.transcript.match_index]
+                        .saturating_sub(self.transcript_height / 3);
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.transcript.scroll += 1,
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.transcript.scroll = self.transcript.scroll.saturating_sub(1)
+            }
+            KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.transcript.scroll += 10
+            }
+            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.transcript.scroll = self.transcript.scroll.saturating_sub(10)
+            }
+            KeyCode::Char('f') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.transcript.scroll += self.transcript_height
+            }
+            KeyCode::Char('b') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.transcript.scroll = self.transcript.scroll.saturating_sub(self.transcript_height)
+            }
+            KeyCode::PageDown => self.transcript.scroll += self.transcript_height / 2,
+            KeyCode::PageUp => {
+                self.transcript.scroll = self
+                    .transcript
+                    .scroll
+                    .saturating_sub(self.transcript_height / 2)
+            }
+            KeyCode::Char('g') => self.transcript.scroll = 0,
+            KeyCode::Char('G') => {
+                self.transcript.scroll = self
+                    .transcript_lines(self.transcript_width)
+                    .len()
+                    .saturating_sub(self.transcript_height)
+            }
+            KeyCode::Char('}') | KeyCode::Char('{') => {
+                let lines = self.transcript_lines(self.transcript_width);
+                let forward = k.code == KeyCode::Char('}');
+                let candidates: Vec<usize> = lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, _, user))| *user)
+                    .map(|(i, _)| i)
+                    .collect();
+                let target = if forward {
+                    candidates
+                        .into_iter()
+                        .find(|i| *i > self.transcript.scroll)
+                } else {
+                    candidates
+                        .into_iter()
+                        .filter(|i| *i < self.transcript.scroll)
+                        .next_back()
+                };
+                if let Some(t) = target {
+                    self.transcript.scroll = t;
+                }
+            }
+            _ => {}
+        }
+        let total = self.transcript_lines(self.transcript_width).len();
+        self.transcript.scroll = self
+            .transcript
+            .scroll
+            .min(total.saturating_sub(self.transcript_height));
+        false
+    }
+
+    /// Área aproximada del transcript: cabecera (3), compositor (3) y estado (1)
+    /// quedan fuera del área desplazable.
+    pub fn observe_terminal(&mut self, width: u16, height: u16) {
+        let inner_w = width.saturating_sub(2).max(20) as usize;
+        let height = height.saturating_sub(9).max(1) as usize;
+        self.transcript_width = inner_w;
+        self.transcript_height = height;
+        let total = self.rendered_line_count(inner_w);
+        self.agent.viewport.sync(total, height);
+        self.sync_scroll_top();
+    }
+
+    /// Líneas renderizadas (con wrapping) del transcript actual.
+    pub fn rendered_line_count(&self, width: usize) -> usize {
+        let mut total = 0;
+        for line in &self.agent.lines {
+            total += wrapped_lines(&line.text, width);
+            if line.expanded
+                && let Some(d) = &line.detail
+            {
+                total += 6;
+                total += wrapped_lines(&d.output, width);
+            }
+        }
+        total.max(1)
+    }
+
+    fn sync_scroll_top(&mut self) {
+        self.agent.scroll_top = if self.agent.viewport.at_bottom() {
+            None
+        } else {
+            Some(self.agent.viewport.first_visible_line)
+        };
+    }
+
+    pub fn viewport_scroll(&mut self, delta: isize) {
+        self.agent.viewport.scroll(delta);
+        self.sync_scroll_top();
+    }
+
+    pub fn viewport_page(&mut self, direction: i8) {
+        self.agent.viewport.page(direction);
+        self.sync_scroll_top();
+    }
+
+    pub fn viewport_start(&mut self) {
+        self.agent.viewport.to_start();
+        self.sync_scroll_top();
+        self.agent.new_activity = 0;
+    }
+
+    pub fn viewport_bottom(&mut self) {
+        self.agent.viewport.to_bottom();
+        self.sync_scroll_top();
+        self.agent.new_activity = 0;
+    }
+
+    /// Rueda del mouse o trackpad traducido a wheel por Windows Terminal.
+    pub fn handle_mouse(&mut self, m: MouseEvent) -> bool {
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                if self.mode == TuiMode::Agent {
+                    let step = self.agent.viewport.wheel_speed as isize;
+                    self.viewport_scroll(-step);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.mode == TuiMode::Agent {
+                    let step = self.agent.viewport.wheel_speed as isize;
+                    self.viewport_scroll(step);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// Regla única del compositor: sólo un `run.start` aceptado lo vacía.
     pub fn apply_submission_outcome(&mut self, accepted: bool, text: &str) {
         if accepted {
@@ -3439,15 +3737,24 @@ impl App {
         }
     }
 
+    /// `Ctrl+O` abre el Transcript Mode; en Inspector vuelve a Agent.
     pub fn toggle_mode(&mut self) {
-        self.mode = match self.mode {
+        match self.mode {
             TuiMode::Agent => {
                 self.agent.palette = false;
                 self.help = false;
-                TuiMode::Inspector
+                self.open_transcript();
             }
-            TuiMode::Inspector => TuiMode::Agent,
-        };
+            TuiMode::Transcript => self.close_transcript(),
+            TuiMode::Inspector => self.mode = TuiMode::Agent,
+        }
+    }
+
+    /// Inspector: administración de runs, contexto, memoria y artefactos.
+    pub fn open_inspector(&mut self) {
+        self.agent.palette = false;
+        self.help = false;
+        self.mode = TuiMode::Inspector;
     }
 
     pub fn palette_items(&self) -> Vec<&'static str> {
@@ -3479,7 +3786,7 @@ impl App {
                 let s = self.agent_status_line();
                 self.agent.push(AgentKind::Info, s);
             }
-            "inspect" => self.toggle_mode(),
+            "inspect" => self.open_inspector(),
             "context" => {
                 self.mode = TuiMode::Inspector;
                 self.tab = 2;
@@ -3747,7 +4054,8 @@ impl App {
             && perm.pending()
         {
             match k.code {
-                KeyCode::Char('o') if ctrl => self.toggle_mode(),
+                KeyCode::Char('o') if ctrl => self.open_transcript(),
+                KeyCode::Char('i') if ctrl => self.open_inspector(),
                 KeyCode::Char('y') => self.approve_permission("once"),
                 KeyCode::Char('a') => self.approve_permission("run"),
                 KeyCode::Char('w') => self.approve_permission("workspace"),
@@ -3768,7 +4076,8 @@ impl App {
         {
             // El overlay consume el teclado: el compositor no envía prompts.
             match k.code {
-                KeyCode::Char('o') if ctrl => self.toggle_mode(),
+                KeyCode::Char('o') if ctrl => self.open_transcript(),
+                KeyCode::Char('i') if ctrl => self.open_inspector(),
                 KeyCode::Char('y') => self.approve_plan("once"),
                 KeyCode::Char('a') => self.approve_plan("run"),
                 KeyCode::Char('w') => self.approve_plan("workspace"),
@@ -3788,6 +4097,27 @@ impl App {
             }
             return false;
         }
+        // Desplazamiento del transcript. Home/End simples pertenecen al
+        // compositor; sólo con Ctrl mueven el transcript.
+        match k.code {
+            KeyCode::PageUp => {
+                self.viewport_page(-1);
+                return false;
+            }
+            KeyCode::PageDown => {
+                self.viewport_page(1);
+                return false;
+            }
+            KeyCode::Home if ctrl => {
+                self.viewport_start();
+                return false;
+            }
+            KeyCode::End if ctrl => {
+                self.viewport_bottom();
+                return false;
+            }
+            _ => {}
+        }
         match k.code {
             KeyCode::Char('c') if ctrl => {
                 if is_active(&self.agent.run_state) && self.agent.last_run.is_some() {
@@ -3804,6 +4134,7 @@ impl App {
                 }
             }
             KeyCode::Char('o') if ctrl => self.toggle_mode(),
+            KeyCode::Char('i') if ctrl => self.open_inspector(),
             KeyCode::Char('j') if ctrl => self.agent.composer.push('\n'),
             KeyCode::Enter if shift => self.agent.composer.push('\n'),
             KeyCode::Enter => {
