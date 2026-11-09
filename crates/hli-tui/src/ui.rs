@@ -1252,7 +1252,14 @@ fn draw_model(f: &mut Frame, area: Rect, app: &App) {
     )));
     lines.push(Line::from(""));
     if app.agent.providers.is_empty() {
-        lines.push(Line::from("  (ningún proveedor configurado)"));
+        lines.push(Line::from(Span::styled(
+            if app.agent.model_loading {
+                "  cargando proveedores…"
+            } else {
+                "  (ningún proveedor configurado)"
+            },
+            Style::default().fg(t.artifact),
+        )));
     }
     for (i, p) in app.agent.providers.iter().enumerate() {
         let name = p["name"].as_str().unwrap_or("-");

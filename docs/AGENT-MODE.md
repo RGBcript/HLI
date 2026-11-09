@@ -364,3 +364,10 @@ Ambos abren el selector de proveedores reales del daemon (`provider.list`), con
 `↑↓`, `Enter` y `Esc`. Al aplicar, el proveedor y el modelo de la sesión cambian
 y son los que se envían en `run.start`; la cabecera y la barra de estado lo
 reflejan. Sin proveedores configurados, el selector muestra `sim`.
+
+### El daemon no bloquea el dibujo
+
+`daemon_async` ejecuta `provider.list` en un hilo propio: el selector `/model`
+se abre al instante, muestra `cargando proveedores…` y se rellena cuando llega
+la respuesta. El resto de lecturas que ocurren mientras se dibuja usan
+`client::call_ui`, con 4 s de techo; las tareas y aprobaciones conservan 10 s.

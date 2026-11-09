@@ -1,6 +1,7 @@
 pub mod app;
 pub mod classic;
 pub mod client;
+pub mod daemon_async;
 pub mod layout;
 pub mod terminal;
 pub mod ui;

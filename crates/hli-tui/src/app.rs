@@ -201,6 +201,7 @@ pub struct AgentState {
     pub thread_sel: usize,
     pub model_open: bool,
     pub model_sel: usize,
+    pub model_loading: bool,
     pub providers: Vec<Value>,
     pub offer: Offer,
     pub pending: Option<String>,
@@ -806,6 +807,7 @@ impl Default for AgentState {
             thread_sel: 0,
             model_open: false,
             model_sel: 0,
+            model_loading: false,
             providers: Vec::new(),
             offer: Offer::None,
             pending: None,
@@ -900,6 +902,7 @@ pub struct App {
     pub focus: FocusArea,
     pub workspaces: Vec<Value>,
     pub threads: Vec<Value>,
+    pub daemon_async: crate::daemon_async::AsyncDaemon,
     pub branches: Vec<Value>,
     pub runs: Vec<Value>,
     pub events: Vec<Value>,
@@ -968,6 +971,7 @@ impl App {
             focus: FocusArea::Navigation,
             workspaces: vec![],
             threads: vec![],
+            daemon_async: crate::daemon_async::AsyncDaemon::new(),
             branches: vec![],
             runs: vec![],
             events: vec![],
@@ -1035,6 +1039,7 @@ impl App {
             focus: FocusArea::Navigation,
             workspaces: vec![json!({"id": "ws_demo", "name": "HLI-Core"})],
             threads: vec![json!({"id": "thr_demo", "title": "Architecture"})],
+            daemon_async: crate::daemon_async::AsyncDaemon::new(),
             branches: vec![
                 json!({"id": "br_main", "name": "main", "head_sequence": 5}),
                 json!({"id": "br_adapt", "name": "adaptive-k", "head_sequence": 9}),
@@ -1188,6 +1193,7 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.drain_daemon();
         if self.last_runs.elapsed() >= Duration::from_millis(500) {
             self.refresh_runs();
         }
@@ -4264,10 +4270,19 @@ impl App {
 
     /// `/model`: proveedores reales del daemon, no una lista inventada.
     pub fn open_model_picker(&mut self) {
-        let v = client::call_ui("provider.list", json!({})).unwrap_or(Value::Null);
-        self.agent.providers = v["providers"].as_array().cloned().unwrap_or_default();
-        // HLI sabe hablar con estos tres; si no están configurados se ofrecen
-        // igualmente para que el selector no parezca vacío.
+        // No bloquea: abre el selector vacío y pide los proveedores al worker.
+        self.agent.providers.clear();
+        self.agent.model_sel = 0;
+        self.agent.model_loading = true;
+        self.agent.model_open = true;
+        self.agent.palette = false;
+        self.agent.composer.clear();
+        self.daemon_async
+            .request(crate::daemon_async::Request::Providers);
+    }
+
+    /// Los tres que HLI sabe usar; se ofrecen aunque no estén configurados.
+    fn ensure_known_providers(&mut self) {
         for (name, kind, model) in [
             ("sim", "sim", "sim-1"),
             ("ollama", "ollama", "llama3.1:8b"),
@@ -4287,15 +4302,44 @@ impl App {
                 }));
             }
         }
-        self.agent.model_sel = self
-            .agent
-            .providers
-            .iter()
-            .position(|p| p["name"].as_str() == Some(self.agent.provider.as_str()))
-            .unwrap_or(0);
-        self.agent.model_open = true;
-        self.agent.palette = false;
-        self.agent.composer.clear();
+    }
+
+    fn apply_daemon_reply(&mut self, reply: crate::daemon_async::Reply) {
+        match reply {
+            crate::daemon_async::Reply::Providers(result) => {
+                if let Ok(v) = result {
+                    self.agent.providers = v["providers"].as_array().cloned().unwrap_or_default();
+                }
+                self.ensure_known_providers();
+                self.agent.model_loading = false;
+                self.agent.model_sel = self
+                    .agent
+                    .providers
+                    .iter()
+                    .position(|p| p["name"].as_str() == Some(self.agent.provider.as_str()))
+                    .unwrap_or(0);
+            }
+        }
+    }
+
+    /// Aplica lo que el worker haya terminado. Sin esperas.
+    pub fn drain_daemon(&mut self) {
+        while let Some(reply) = self.daemon_async.try_recv() {
+            self.apply_daemon_reply(reply);
+        }
+    }
+
+    /// Solo para tests: espera el resultado con un techo.
+    pub fn pump_daemon(&mut self) {
+        if let Some(reply) = self
+            .daemon_async
+            .recv_timeout(std::time::Duration::from_secs(2))
+        {
+            self.apply_daemon_reply(reply);
+        } else {
+            self.ensure_known_providers();
+            self.agent.model_loading = false;
+        }
     }
 
     pub fn apply_model(&mut self) {

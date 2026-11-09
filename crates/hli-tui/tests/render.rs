@@ -2833,9 +2833,21 @@ fn model_picker_falls_back_to_sim_without_daemon() {
     let mut app = App::demo();
     app.agent.model_open = false;
     app.open_model_picker();
+    app.pump_daemon();
     assert!(app.agent.model_open);
     assert!(!app.agent.providers.is_empty());
     assert_eq!(app.agent.providers[0]["name"], "sim");
+}
+
+#[test]
+fn model_picker_returns_immediately() {
+    // El worker hace la llamada; abrir el selector no espera al daemon.
+    let mut app = App::demo();
+    let start = std::time::Instant::now();
+    app.open_model_picker();
+    assert!(start.elapsed() < std::time::Duration::from_millis(100));
+    assert!(app.agent.model_open);
+    assert!(app.agent.model_loading);
 }
 
 #[test]
