@@ -124,7 +124,7 @@ fn draw_transcript(f: &mut Frame, app: &App) {
         app.transcript_lines(app.transcript_width).len()
     );
     f.render_widget(
-        Paragraph::new(head).block(Block::default().borders(Borders::ALL).title(" transcript ")),
+        Paragraph::new(head).block(Block::default().borders(Borders::TOP).title(" transcript ")),
         parts[0],
     );
 
@@ -948,7 +948,7 @@ fn draw_agent_list(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     }
     f.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(Block::default().borders(Borders::TOP).title(title))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -960,7 +960,7 @@ fn draw_agent(f: &mut Frame, app: &App) {
         draw_too_small(f, area);
         return;
     }
-    let heights = if app.agent.offer != Offer::None { 5 } else { 3 };
+    let heights = if app.agent.offer != Offer::None { 6 } else { 4 };
     let parts = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1042,7 +1042,7 @@ fn draw_agent(f: &mut Frame, app: &App) {
         let hint = "↑↓ mover · ↵ entrar · n nuevo · Tab cambiar · Esc volver a Chat";
         f.render_widget(
             Paragraph::new(Line::from(hint))
-                .block(Block::default().borders(Borders::ALL).title(" ayuda ")),
+                .block(Block::default().borders(Borders::TOP).title(" atajos ")),
             parts[2],
         );
         f.render_widget(
@@ -1055,7 +1055,7 @@ fn draw_agent(f: &mut Frame, app: &App) {
         return;
     }
 
-    let inner_h = parts[1].height.saturating_sub(2) as usize;
+    let inner_h = parts[1].height.saturating_sub(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
     for l in &app.agent.lines {
         let (tag, color) = match l.kind {
@@ -1134,7 +1134,7 @@ fn draw_agent(f: &mut Frame, app: &App) {
     };
     f.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(" transcript "))
+            .block(Block::default().borders(Borders::TOP).title(" transcript "))
             .wrap(Wrap { trim: false }),
         parts[1],
     );
@@ -1152,15 +1152,23 @@ fn draw_agent(f: &mut Frame, app: &App) {
 
     match app.agent.offer.clone() {
         Offer::None => {
-            let block = Block::default().borders(Borders::ALL).title(" compose ");
+            let block = Block::default().borders(Borders::TOP).title(" compose ");
             let mut text: Vec<Line> = Vec::new();
-            for (i, l) in app.agent.composer.split('\n').enumerate() {
-                let prefix = if i == 0 { "> " } else { "  " };
-                text.push(Line::from(format!("{prefix}{l}")));
+            if app.agent.composer.is_empty() {
+                text.push(Line::from(vec![
+                    Span::styled("❯ ", Style::default().fg(t.primary)),
+                    Span::styled("escribe una tarea…", Style::default().fg(t.artifact)),
+                ]));
+            } else {
+                for (i, l) in app.agent.composer.split('\n').enumerate() {
+                    let prefix = if i == 0 { "❯ " } else { "  " };
+                    text.push(Line::from(format!("{prefix}{l}")));
+                }
             }
-            if text.is_empty() {
-                text.push(Line::from("> "));
-            }
+            text.push(Line::from(Span::styled(
+                "  ⏎ enviar · ⇧⏎ línea · / comandos · @ archivo",
+                Style::default().fg(t.artifact),
+            )));
             f.render_widget(Paragraph::new(text).block(block), parts[2]);
         }
         Offer::CreateWorkspace { name } => {
@@ -1478,35 +1486,63 @@ fn draw_resume(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
-    let w = area.width.min(50);
-    let h = area.height.min(12);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let t = Theme::for_app(app);
+    let items = app.palette_items();
+    let w = 66.min(area.width);
+    let max_h = area.height.saturating_sub(4).max(3);
+    let h = ((items.len() as u16) + 3).min(max_h);
+    let visible = h.saturating_sub(3) as usize;
+    let sel = app.agent.palette_index.min(items.len().saturating_sub(1));
+    let offset = (sel + 1).saturating_sub(visible);
+    // Anclado justo encima del compositor, como el menú de Claude Code: no
+    // cruza reglas ni tapa la entrada.
     let rect = Rect {
-        x,
-        y,
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + area.height.saturating_sub(5 + h),
         width: w,
         height: h,
     };
     f.render_widget(Clear, rect);
-    let items = app.palette_items();
-    let mut lines = Vec::new();
-    for (i, cmd) in items.iter().enumerate() {
-        let mark = if i == 0 { "▸ " } else { "  " };
-        lines.push(Line::from(format!("{mark}/{cmd}")));
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (name, desc)) in items.iter().enumerate().skip(offset).take(visible) {
+        let active = i == sel;
+        lines.push(Line::from(vec![
+            Span::styled(
+                if active { " ▸ " } else { "   " },
+                Style::default().fg(t.primary),
+            ),
+            Span::styled(
+                format!("/{name:<12}"),
+                if active {
+                    Style::default().fg(t.primary).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.memory)
+                },
+            ),
+            Span::styled(*desc, Style::default().fg(t.artifact)),
+        ]));
     }
-    if lines.is_empty() {
-        lines.push(Line::from("  (sin coincidencias)"));
+    if items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No commands match",
+            Style::default().fg(t.error),
+        )));
     }
+    lines.push(Line::from(Span::styled(
+        "↑↓ elegir · ↵ ejecutar · esc cerrar",
+        Style::default().fg(t.artifact),
+    )));
+    let title = format!(" / · {} ", items.len());
     f.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" commands ")),
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
         rect,
     );
 }
 
 fn draw_help(f: &mut Frame, area: Rect, _app: &App) {
-    let w = area.width.min(60);
-    let h = area.height.min(18);
+    let w = area.width.min(72);
+    let h = area.height.min(17);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     let rect = Rect {
@@ -1517,22 +1553,23 @@ fn draw_help(f: &mut Frame, area: Rect, _app: &App) {
     };
     f.render_widget(Clear, rect);
     let text = vec![
-        Line::from("HLI help"),
+        Line::from("HLI · ayuda"),
         Line::from(""),
-        Line::from("Navigation  Tab / Shift+Tab panel · arrows move · Enter open"),
-        Line::from("Tabs        ←→ o 1..6 · [activa]"),
-        Line::from("Command     : opens · Enter runs · Esc cancels · arrows history"),
-        Line::from(
-            "States      ● active · ✓ completed · ◌ paused · ! approval · × failed · ↻ running",
-        ),
-        Line::from("Symbols     * OK RUN X in ASCII mode"),
+        Line::from("Pestañas   1/2/3 · Tab / Shift+Tab · clic en la barra"),
+        Line::from("Listas     ↑↓ mover · ↵ entrar · n nuevo · Esc volver al chat"),
+        Line::from("Comandos   / abre el menú · ↑↓ elegir · ↵ ejecutar · Esc cerrar"),
+        Line::from("Chat       ↵ enviar · ⇧↵ línea · @ archivo · Esc cancela"),
+        Line::from("Vista      rueda · PgUp/PgDn · Ctrl+Home/End"),
+        Line::from("Paneles    Ctrl+O transcript · Ctrl+I inspector · Ctrl+E detalles"),
+        Line::from("Estados    ● activo · ✓ hecho · ◌ pausa · ! aprobación · × fallo"),
+        Line::from("Modelo     /model elige proveedor y modelo de la sesión"),
         Line::from(""),
-        Line::from("Esc, ? or q closes this help"),
+        Line::from("Esc, ? o q cierran esta ayuda"),
     ];
     f.render_widget(
         Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title(" ? "))
-            .wrap(Wrap { trim: true }),
+            .block(Block::default().borders(Borders::ALL).title(" ayuda "))
+            .wrap(Wrap { trim: false }),
         rect,
     );
 }

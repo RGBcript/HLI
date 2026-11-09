@@ -2625,32 +2625,30 @@ impl App {
 // Agent Mode
 // ---------------------------------------------------------------------------
 
-pub const SLASH_COMMANDS: [&str; 21] = [
-    "help",
-    "status",
-    "inspect",
-    "context",
-    "memory",
-    "artifacts",
-    "mch",
-    "branch",
-    "model",
-    "provider",
-    "workspace",
-    "sessions",
-    "new",
-    "resume",
-    "details",
-    "cancel",
-    "model",
-    "provider",
-    "export",
-    "clear",
-    "exit",
+pub const SLASH_COMMANDS: [(&str, &str); 19] = [
+    ("help", "comandos y atajos"),
+    ("status", "estado de la sesión"),
+    ("model", "elegir proveedor y modelo"),
+    ("provider", "proveedores configurados"),
+    ("workspace", "elegir o crear workspace"),
+    ("sessions", "sesiones del workspace"),
+    ("new", "sesión nueva"),
+    ("resume", "reanudar un thread"),
+    ("branch", "crear o cambiar de rama"),
+    ("inspect", "abrir el Inspector"),
+    ("context", "contexto enviado al modelo"),
+    ("memory", "memoria del workspace"),
+    ("artifacts", "artefactos del run"),
+    ("mch", "procesos MCH"),
+    ("details", "expandir detalles"),
+    ("cancel", "cancelar el run activo"),
+    ("clear", "limpiar el transcript"),
+    ("export", "exportar la conversación"),
+    ("exit", "salir de HLI"),
 ];
 
 pub fn available_commands() -> Vec<&'static str> {
-    SLASH_COMMANDS.to_vec()
+    SLASH_COMMANDS.iter().map(|(name, _)| *name).collect()
 }
 
 pub fn format_providers(list: &[Value], current: &str) -> Vec<String> {
@@ -3410,7 +3408,7 @@ impl App {
         self.transcript_width = inner_w;
         self.transcript_height = height;
         self.terminal_width = width as usize;
-        self.transcript_top = 3;
+        self.transcript_top = 4;
         let mut rows: Vec<(usize, usize)> = Vec::new();
         let mut y = 0usize;
         for (idx, line) in self.agent.lines.iter().enumerate() {
@@ -4124,12 +4122,12 @@ impl App {
         self.mode = TuiMode::Inspector;
     }
 
-    pub fn palette_items(&self) -> Vec<&'static str> {
+    pub fn palette_items(&self) -> Vec<(&'static str, &'static str)> {
         let needle = self.agent.composer.trim_start_matches('/').to_lowercase();
         SLASH_COMMANDS
             .iter()
             .copied()
-            .filter(|c| needle.is_empty() || c.starts_with(&needle))
+            .filter(|(name, _)| needle.is_empty() || name.starts_with(&needle))
             .collect()
     }
 
@@ -4363,6 +4361,11 @@ impl App {
                 ),
             ),
         }
+        // La respuesta del comando tiene que verse: seguir el final.
+        self.agent.scroll_top = None;
+        self.agent.viewport.follow_mode = true;
+        self.agent.viewport.unseen_activity_count = 0;
+        self.agent.palette_index = 0;
         false
     }
 
@@ -4672,7 +4675,13 @@ impl App {
                 if self.agent.offer != Offer::None {
                     self.accept_offer();
                 } else if self.agent.palette {
-                    let line = self.agent.composer.clone();
+                    // Enter ejecuta la opción seleccionada del menú, no solo
+                    // lo que se haya escrito.
+                    let items = self.palette_items();
+                    let line = match items.get(self.agent.palette_index) {
+                        Some((name, _)) => format!("/{name}"),
+                        None => self.agent.composer.clone(),
+                    };
                     return self.run_slash(&line);
                 } else {
                     self.submit_prompt();
@@ -4697,6 +4706,15 @@ impl App {
             KeyCode::End => self.scroll_end(),
             KeyCode::Up if ctrl => self.scroll_lines(-3),
             KeyCode::Down if ctrl => self.scroll_lines(3),
+            KeyCode::Up if self.agent.palette => {
+                self.agent.palette_index = self.agent.palette_index.saturating_sub(1);
+            }
+            KeyCode::Down if self.agent.palette => {
+                let n = self.palette_items().len();
+                if n > 0 && self.agent.palette_index + 1 < n {
+                    self.agent.palette_index += 1;
+                }
+            }
             KeyCode::Up => {
                 if !self.agent.palette && self.agent.composer.is_empty() {
                     self.agent_history_up();
@@ -4728,7 +4746,12 @@ impl App {
                     self.agent.palette = false;
                 }
             }
-            KeyCode::Char(c) => self.agent.composer.push(c),
+            KeyCode::Char(c) => {
+                self.agent.composer.push(c);
+                if self.agent.palette {
+                    self.agent.palette_index = 0;
+                }
+            }
             _ => {}
         }
         false

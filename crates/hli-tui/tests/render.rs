@@ -149,10 +149,10 @@ fn help_overlay_opens_and_closes() {
     let mut app = App::demo();
     app.open_help();
     let text = render(&app, 120, 40);
-    assert!(text.contains("HLI help"));
+    assert!(text.contains("HLI · ayuda"));
     app.close_help();
     let text = render(&app, 120, 40);
-    assert!(!text.contains("HLI help"));
+    assert!(!text.contains("HLI · ayuda"));
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn question_mark_does_not_open_and_close_help() {
     let mut app = App::demo();
     tap(&mut app, KeyCode::Char('?'));
     assert!(app.help);
-    assert!(render(&app, 120, 40).contains("HLI help"));
+    assert!(render(&app, 120, 40).contains("HLI · ayuda"));
 }
 
 #[test]
@@ -467,7 +467,7 @@ fn agent_mode_initial_focus_is_composer() {
     let app = agent_app();
     let text = render(&app, 120, 30);
     assert!(text.contains("compose"));
-    assert!(text.contains("> "));
+    assert!(text.contains("❯") || text.contains("> "));
 }
 
 #[test]
@@ -1241,7 +1241,7 @@ fn long_transcript_keeps_composer_visible() {
     }
     let text = render(&app, 120, 30);
     assert!(text.contains("compose"), "composer no visible");
-    assert!(text.contains("> "));
+    assert!(text.contains("❯") || text.contains("> "));
 }
 
 #[test]
