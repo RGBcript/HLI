@@ -250,6 +250,22 @@ fn thousand_activity_lines_keep_the_viewport_consistent() {
 }
 
 #[test]
+fn huge_transcript_stays_consistent() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    for i in 0..100_000 {
+        app.agent
+            .push(hli_tui::app::AgentKind::Info, format!("l{i}"));
+    }
+    app.observe_terminal(120, 40);
+    assert!(app.agent.viewport.follow_mode);
+    assert!(app.agent.viewport.max_scroll() >= 99_000);
+    app.viewport_scroll(isize::MIN);
+    assert_eq!(app.agent.viewport.first_visible_line, 0);
+    assert!(draw_no_panic(&app, 120, 40));
+}
+
+#[test]
 fn empty_workspace_and_thread_selection_is_safe() {
     let mut app = App::demo();
     app.workspaces.clear();

@@ -34,6 +34,17 @@ pub fn call_with_timeout(
         .map_err(|_| "daemon no está en marcha".to_string())?;
     let v: Value = serde_json::from_str(&info).map_err(|e| e.to_string())?;
     let port = v["port"].as_u64().ok_or("daemon.json sin puerto")? as u16;
+    call_at(port, cmd, args, timeout)
+}
+
+/// Igual que `call_with_timeout`, pero contra un puerto explícito. Permite
+/// probar el protocolo con un daemon falso sin tocar `HLI_HOME`.
+pub fn call_at(
+    port: u16,
+    cmd: &str,
+    args: Value,
+    timeout: std::time::Duration,
+) -> Result<Value, String> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut s = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500))
         .map_err(|e| e.to_string())?;
