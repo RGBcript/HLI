@@ -1221,6 +1221,27 @@ impl App {
         self.agent.status = self.agent_status_line();
     }
 
+    /// Referencias estructuradas que se envían al daemon (identidad estable,
+    /// no el token visible).
+    pub fn explicit_reference_args(&self) -> Vec<Value> {
+        self.agent
+            .references
+            .iter()
+            .map(|r| {
+                json!({
+                    "reference_type": r.kind.label(),
+                    "stable_id": r.stable_id,
+                    "display_text": r.display,
+                    "selected_at": r.selected_at.to_string(),
+                    "selection_reason": "user_selected",
+                    "content_hash": r.content_hash,
+                    "revision": r.revision,
+                    "source_scope": "workspace",
+                })
+            })
+            .collect()
+    }
+
     pub fn history_matches(&self) -> Vec<String> {
         let q = self.agent.history_query.to_lowercase();
         self.agent
@@ -2186,6 +2207,9 @@ impl App {
         if !self.agent.provider.is_empty() {
             args["provider"] = json!(self.agent.provider);
             args["model"] = json!(self.agent.model);
+        }
+        if !self.agent.references.is_empty() {
+            args["explicit_references"] = json!(self.explicit_reference_args());
         }
         if self.agent.provider == "sim"
             && let Ok(ms) = std::env::var("HLI_SIM_DELAY_MS")

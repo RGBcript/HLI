@@ -1279,3 +1279,53 @@ fn slash_commands_never_expose_secrets() {
     assert!(!joined.contains("sk-should-not-appear"));
     assert!(!joined.contains("secret"));
 }
+
+#[test]
+fn selected_references_are_sent_structurally() {
+    let mut app = agent_app();
+    app.agent.references = vec![
+        Reference {
+            kind: RefKind::File,
+            stable_id: "Cargo.toml".into(),
+            display: "Cargo.toml".into(),
+            content_hash: Some("sha256:aa".into()),
+            revision: None,
+            size: Some(10),
+            selected_at: 1700000000,
+        },
+        Reference {
+            kind: RefKind::Memory,
+            stable_id: "mem_018".into(),
+            display: "la fuente".into(),
+            content_hash: None,
+            revision: None,
+            size: None,
+            selected_at: 1700000001,
+        },
+    ];
+    let args = app.explicit_reference_args();
+    assert_eq!(args.len(), 2);
+    assert_eq!(args[0]["reference_type"], "file");
+    assert_eq!(args[0]["stable_id"], "Cargo.toml");
+    assert_eq!(args[0]["content_hash"], "sha256:aa");
+    assert_eq!(args[1]["reference_type"], "memory");
+    assert_eq!(args[1]["stable_id"], "mem_018");
+    assert_eq!(args[0]["selection_reason"], "user_selected");
+}
+
+#[test]
+fn visible_reference_token_is_not_used_as_identity() {
+    let mut app = agent_app();
+    app.agent.references = vec![Reference {
+        kind: RefKind::File,
+        stable_id: "crates/x.rs".into(),
+        display: "archivo renombrado.rs".into(),
+        content_hash: Some("sha256:bb".into()),
+        revision: None,
+        size: None,
+        selected_at: 1,
+    }];
+    let args = app.explicit_reference_args();
+    assert_eq!(args[0]["stable_id"], "crates/x.rs");
+    assert_eq!(args[0]["display_text"], "archivo renombrado.rs");
+}
