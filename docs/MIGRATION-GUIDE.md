@@ -2,6 +2,18 @@
 
 **Estado:** migraciones versionadas y transaccionales implementadas.
 
+## Referencias explícitas (context/v1.1)
+
+- **No database migration required.** El manifiesto vive en
+  `context_manifests.body_json` y `explicit_references` es un campo nuevo con
+  `serde(default)`.
+- Los manifiestos históricos deserializan con `explicit_references: []`.
+- Los `payload_hash` históricos no se recalculan.
+- `DATABASE_SCHEMA_VERSION` no cambia; el contrato de contexto sube a
+  `context/v1.1-explicit-references`.
+- Export/import conserva referencias, orden, estados de validación y
+  procedencia del receipt.
+
 ## Versiones independientes
 
 | Versión | Constante | Dónde se persiste |

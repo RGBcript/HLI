@@ -111,6 +111,25 @@ primer poll: es correcto.
 
 ---
 
+## 1f. Referencias explícitas: preflight y procedencia (Slice 3b)
+
+| # | Acción | Qué debe verse |
+|---|---|---|
+| 45 | Seleccionar `@file` sobre `Cargo.toml` | El compositor incluye `@file:Cargo.toml` |
+| 46 | Modificar `Cargo.toml` fuera de la TUI | — |
+| 47 | Enviar el prompt | Overlay `references`: `1 reference(s) require attention` |
+| 48 | Comprobar el overlay | `changed`, `Selected:` y `Current:` con hashes distintos |
+| 49 | `r` (Refresh) | La referencia se actualiza y el run inicia |
+| 50 | Repetir con `c` (Cancel) | No se crea run; el compositor conserva el texto |
+| 51 | `@memory` activa | La referencia aparece en Context y en el manifiesto |
+| 52 | Ver receipt | `used_explicit_reference_ids` contiene la memoria y el archivo |
+| 53 | `resume` | La conversación conserva el transcript y el receipt |
+| 54 | Referencia `missing` | Solo Cancel; no se ofrece Keep |
+| 55 | Memoria superseded | El run se rechaza antes del provider |
+| 56 | `hli export` y `import` | Manifiesto y receipt conservan referencias y orden |
+
+---
+
 ## 2. Criterio de aceptación
 
 - No hay pánico ni corrupción de pantalla.
@@ -132,7 +151,7 @@ Commit evaluado:
 Dimensiones probadas:
 Fecha:
 Paso 0 (teclado):       OK / REGRESIÓN
-Pasos ejecutados:       44 / 44
+Pasos ejecutados:       56 / 56
 Resultado:              PENDIENTE / PASA / FALLA
 Observaciones:
 Firma:

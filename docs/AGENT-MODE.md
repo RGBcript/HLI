@@ -102,9 +102,17 @@ Escribir `@` abre un selector con cinco categorías: **Files**, **Artifacts**,
   `stable_id`, hash o revisión, `selected_at`, `selection_reason`), no solo con el
   token visible. El daemon las valida y materializa en `ContextManifest`; el
   `payload_hash` cubre orden, identidad, hash y contenido materializado.
-- **Overlay r/k/c**: todavía no existe. Hoy, un archivo cambiado bloquea el run y
-  el error aparece en el transcript; Refresh/Keeper se harán en el bloque
-  siguiente.
+- **Preflight**: antes de crear el run, la TUI compara el hash actual de cada
+  archivo con el seleccionado. Si difieren o faltan, abre un overlay con
+  `[r] Refresh` y `[c] Cancel`; no se crea run hasta que todas las referencias
+  sean válidas. Refresh recalcula hash y tamaño y continúa; Cancel conserva el
+  compositor y no crea nada.
+- **Keep no está soportado**: no existen snapshots originales persistidos. Se
+  documenta como trabajo posterior.
+- **Procedencia**: el receipt registra `used_explicit_reference_ids` (solo las
+  incluidas en el payload) y `rejected_explicit_reference_ids`.
+- **Memorias**: `valid_from`/`valid_until` se parsean como ISO-8601 y se comparan
+  como instantes; una fecha inválida falla antes del provider.
 - **Artifacts**: se conserva el `sha256` del artifact. **Branches**: se guarda
   `head_sequence` como revisión.
 
