@@ -920,7 +920,11 @@ fn draw_agent_list(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     lines.push(Line::from(""));
     if items.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  (ninguno todavía)",
+            if app.agent.lists_loading {
+                "  cargando…"
+            } else {
+                "  (ninguno todavía)"
+            },
             Style::default().fg(t.artifact),
         )));
     }

@@ -13,11 +13,15 @@ use crate::client;
 #[derive(Debug)]
 pub enum Request {
     Providers,
+    Workspaces,
+    Threads(String),
 }
 
 #[derive(Debug)]
 pub enum Reply {
     Providers(Result<Value, String>),
+    Workspaces(Result<Value, String>),
+    Threads(Result<Value, String>),
 }
 
 pub struct AsyncDaemon {
@@ -35,6 +39,13 @@ impl AsyncDaemon {
                     Request::Providers => {
                         Reply::Providers(client::call_ui("provider.list", json!({})))
                     }
+                    Request::Workspaces => {
+                        Reply::Workspaces(client::call_ui("workspace.list", json!({})))
+                    }
+                    Request::Threads(workspace_id) => Reply::Threads(client::call_ui(
+                        "thread.list",
+                        json!({ "workspace_id": workspace_id }),
+                    )),
                 };
                 if replies.send(reply).is_err() {
                     break;

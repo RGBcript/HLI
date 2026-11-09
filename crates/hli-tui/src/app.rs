@@ -202,6 +202,7 @@ pub struct AgentState {
     pub model_open: bool,
     pub model_sel: usize,
     pub model_loading: bool,
+    pub lists_loading: bool,
     pub providers: Vec<Value>,
     pub offer: Offer,
     pub pending: Option<String>,
@@ -808,6 +809,7 @@ impl Default for AgentState {
             model_open: false,
             model_sel: 0,
             model_loading: false,
+            lists_loading: false,
             providers: Vec::new(),
             offer: Offer::None,
             pending: None,
@@ -2932,14 +2934,12 @@ impl App {
     }
 
     pub fn load_threads(&mut self) {
-        let Some(ws) = self.agent.workspace.clone() else {
+        let Some(ws) = self.agent.workspace.as_ref().and_then(|w| w["id"].as_str()) else {
             return;
         };
-        let id = ws["id"].as_str().unwrap_or("").to_string();
-        let list =
-            client::call_ui("thread.list", json!({ "workspace_id": id })).unwrap_or(Value::Null);
-        self.threads = list.as_array().cloned().unwrap_or_default();
-        self.workspaces = vec![ws];
+        self.agent.lists_loading = true;
+        self.daemon_async
+            .request(crate::daemon_async::Request::Threads(ws.to_string()));
     }
 
     pub fn pick_last_thread(&mut self) {
@@ -4174,19 +4174,9 @@ impl App {
     }
 
     pub fn refresh_workspaces(&mut self) {
-        let list = client::call_ui("workspace.list", json!({})).unwrap_or(Value::Null);
-        self.workspaces = list.as_array().cloned().unwrap_or_default();
-        let current = self
-            .agent
-            .workspace
-            .as_ref()
-            .and_then(|w| w["id"].as_str())
-            .map(str::to_string);
-        self.agent.ws_sel = self
-            .workspaces
-            .iter()
-            .position(|w| w["id"].as_str().map(str::to_string) == current)
-            .unwrap_or(0);
+        self.agent.lists_loading = true;
+        self.daemon_async
+            .request(crate::daemon_async::Request::Workspaces);
     }
 
     /// Enter en la pestaña Workspace: vincula y pasa a sesiones.
@@ -4197,13 +4187,9 @@ impl App {
         self.agent.workspace = Some(ws);
         self.agent.thread = None;
         self.agent.branch = None;
+        // Las sesiones llegan por el worker; se eligen cuando estén.
+        self.agent.lists_loading = true;
         self.load_threads();
-        self.agent.thread_sel = self.threads.len().saturating_sub(1);
-        if let Some(t) = self.threads.get(self.agent.thread_sel).cloned() {
-            self.agent.thread = Some(t);
-            self.load_branches();
-            self.pick_last_branch();
-        }
         self.agent.agent_tab = AgentTab::Session;
     }
 
@@ -4319,6 +4305,30 @@ impl App {
                     .position(|p| p["name"].as_str() == Some(self.agent.provider.as_str()))
                     .unwrap_or(0);
             }
+            crate::daemon_async::Reply::Workspaces(result) => {
+                if let Ok(v) = result {
+                    self.workspaces = v.as_array().cloned().unwrap_or_default();
+                }
+                let current = self
+                    .agent
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| w["id"].as_str())
+                    .map(str::to_string);
+                self.agent.ws_sel = self
+                    .workspaces
+                    .iter()
+                    .position(|w| w["id"].as_str().map(str::to_string) == current)
+                    .unwrap_or(0);
+                self.agent.lists_loading = false;
+            }
+            crate::daemon_async::Reply::Threads(result) => {
+                if let Ok(v) = result {
+                    self.threads = v.as_array().cloned().unwrap_or_default();
+                }
+                self.agent.thread_sel = self.threads.len().saturating_sub(1);
+                self.agent.lists_loading = false;
+            }
         }
     }
 
@@ -4331,14 +4341,23 @@ impl App {
 
     /// Solo para tests: espera el resultado con un techo.
     pub fn pump_daemon(&mut self) {
-        if let Some(reply) = self
-            .daemon_async
-            .recv_timeout(std::time::Duration::from_secs(2))
-        {
-            self.apply_daemon_reply(reply);
-        } else {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut got = false;
+        while std::time::Instant::now() < deadline {
+            if let Some(reply) = self.daemon_async.try_recv() {
+                self.apply_daemon_reply(reply);
+                got = true;
+                continue;
+            }
+            if got {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !got {
             self.ensure_known_providers();
             self.agent.model_loading = false;
+            self.agent.lists_loading = false;
         }
     }
 

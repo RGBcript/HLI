@@ -2840,6 +2840,17 @@ fn model_picker_falls_back_to_sim_without_daemon() {
 }
 
 #[test]
+fn list_refresh_does_not_block_the_ui() {
+    let mut app = App::demo();
+    let start = std::time::Instant::now();
+    app.refresh_workspaces();
+    assert!(start.elapsed() < std::time::Duration::from_millis(100));
+    assert!(app.agent.lists_loading);
+    app.pump_daemon();
+    assert!(!app.agent.lists_loading);
+}
+
+#[test]
 fn model_picker_returns_immediately() {
     // El worker hace la llamada; abrir el selector no espera al daemon.
     let mut app = App::demo();
