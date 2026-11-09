@@ -62,6 +62,16 @@ function Invoke-HliDaemon([string]$Action) {
         if (Test-Path $log) { $detail = Get-Content -Raw $log }
         throw "daemon $Action falló: $detail"
     }
+    if ($Action -eq "stop") {
+        # Windows no permite borrar un .exe en uso: esperar a que el proceso
+        # muera y, si se resiste, terminarlo antes de desinstalar.
+        for ($i = 0; $i -lt 40; $i++) {
+            if (-not (Get-Process hli-daemon -ErrorAction SilentlyContinue)) { break }
+            Start-Sleep -Milliseconds 250
+        }
+        Get-Process hli-daemon -ErrorAction SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Milliseconds 400
+    }
 }
 
 function Wait-Daemon {
