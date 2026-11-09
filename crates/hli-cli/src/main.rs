@@ -82,7 +82,10 @@ fn run(args: &[String]) -> Result<(), String> {
         return launch_tui("inspect", &[]);
     }
     if args[0] == "resume" {
-        return launch_tui("agent", &[]);
+        if args.iter().any(|a| a == "--last") {
+            return launch_tui("agent", &[]);
+        }
+        return launch_tui("agent", &["--resume"]);
     }
     if args[0] == "run" && args.get(1).is_some_and(|a| !is_run_subcommand(a)) {
         return run_task(&args[1..], output);
