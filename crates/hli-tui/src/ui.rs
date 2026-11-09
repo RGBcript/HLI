@@ -815,6 +815,37 @@ fn draw_agent(f: &mut Frame, app: &App) {
     if app.agent.ref_open {
         draw_reference(f, area, app);
     }
+    if let Some(pf) = &app.agent.preflight {
+        draw_preflight(f, area, pf);
+    }
+}
+
+fn draw_preflight(f: &mut Frame, area: Rect, pf: &crate::app::Preflight) {
+    let rect = overlay_rect(area, 90, 16);
+    f.render_widget(Clear, rect);
+    let mut lines = vec![Line::from(format!(
+        "{} reference(s) require attention",
+        pf.issues.len()
+    ))];
+    for issue in &pf.issues {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "{} · {}",
+            issue.stable_id, issue.reason
+        )));
+        if let Some(sel) = &issue.selected_hash {
+            lines.push(Line::from(format!("  Selected: {sel}")));
+        }
+        if let Some(cur) = &issue.current_hash {
+            lines.push(Line::from(format!("  Current:  {cur}")));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("[r] Refresh   [c] Cancel"));
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" references ")),
+        rect,
+    );
 }
 
 fn draw_reference(f: &mut Frame, area: Rect, app: &App) {

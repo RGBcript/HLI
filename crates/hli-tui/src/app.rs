@@ -205,6 +205,22 @@ pub struct AgentState {
     pub ref_category: usize,
     pub ref_items: Vec<Vec<RefItem>>,
     pub ref_start: usize,
+    pub preflight: Option<Preflight>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreflightIssue {
+    pub index: usize,
+    pub stable_id: String,
+    pub reason: String,
+    pub selected_hash: Option<String>,
+    pub current_hash: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Preflight {
+    pub prompt: String,
+    pub issues: Vec<PreflightIssue>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +334,7 @@ impl Default for AgentState {
             ref_category: 0,
             ref_items: vec![Vec::new(); 5],
             ref_start: 0,
+            preflight: None,
         }
     }
 }
@@ -1623,6 +1640,88 @@ impl App {
             .collect()
     }
 
+    fn reference_root(&self) -> Option<std::path::PathBuf> {
+        self.agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["root_path"].as_str())
+            .map(std::path::PathBuf::from)
+    }
+
+    /// Referencias de archivo que no pueden usarse tal como se seleccionaron.
+    pub fn preflight_issues(&self) -> Vec<PreflightIssue> {
+        let root = self.reference_root();
+        let mut out = Vec::new();
+        for (index, r) in self.agent.references.iter().enumerate() {
+            if r.kind != RefKind::File {
+                continue;
+            }
+            let Some(root) = root.as_ref() else {
+                continue;
+            };
+            let current = file_hash(&root.join(&r.stable_id));
+            match (&r.content_hash, current) {
+                (_, None) => out.push(PreflightIssue {
+                    index,
+                    stable_id: r.stable_id.clone(),
+                    reason: "missing".into(),
+                    selected_hash: r.content_hash.clone(),
+                    current_hash: None,
+                }),
+                (Some(sel), Some(cur)) if sel != &cur => out.push(PreflightIssue {
+                    index,
+                    stable_id: r.stable_id.clone(),
+                    reason: "changed".into(),
+                    selected_hash: Some(sel.clone()),
+                    current_hash: Some(cur),
+                }),
+                (None, Some(cur)) => out.push(PreflightIssue {
+                    index,
+                    stable_id: r.stable_id.clone(),
+                    reason: "changed".into(),
+                    selected_hash: None,
+                    current_hash: Some(cur),
+                }),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    pub fn cancel_preflight(&mut self) {
+        self.agent.preflight = None;
+    }
+
+    pub fn refresh_preflight(&mut self) {
+        let Some(pf) = self.agent.preflight.take() else {
+            return;
+        };
+        let root = self.reference_root();
+        for issue in &pf.issues {
+            let Some(root) = root.as_ref() else { break };
+            if let Some(r) = self.agent.references.get_mut(issue.index) {
+                let path = root.join(&r.stable_id);
+                if let Some(h) = file_hash(&path) {
+                    r.content_hash = Some(h);
+                    r.size = std::fs::metadata(&path).ok().map(|m| m.len());
+                }
+            }
+        }
+        let remaining = self.preflight_issues();
+        if remaining.is_empty() {
+            self.agent.composer.clear();
+            self.agent.history.push(pf.prompt.clone());
+            self.agent.history_index = None;
+            self.agent.push(AgentKind::User, pf.prompt.clone());
+            self.run_prompt(&pf.prompt);
+        } else {
+            self.agent.preflight = Some(Preflight {
+                prompt: pf.prompt,
+                issues: remaining,
+            });
+        }
+    }
+
     pub fn reference_insert(&mut self) {
         let picked = self
             .ref_filtered()
@@ -2115,6 +2214,14 @@ impl App {
                         .unwrap_or_else(|| "workspace".into()),
                 };
             }
+            return false;
+        }
+        let issues = self.preflight_issues();
+        if !issues.is_empty() {
+            self.agent.preflight = Some(Preflight {
+                prompt: text,
+                issues,
+            });
             return false;
         }
         self.agent.history.push(text.clone());
@@ -2624,6 +2731,14 @@ impl App {
 
     pub fn handle_agent_key(&mut self, k: KeyEvent) -> bool {
         if !matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return false;
+        }
+        if self.agent.preflight.is_some() {
+            match k.code {
+                KeyCode::Char('r') => self.refresh_preflight(),
+                KeyCode::Char('c') | KeyCode::Esc => self.cancel_preflight(),
+                _ => {}
+            }
             return false;
         }
         if self.agent.ref_open {

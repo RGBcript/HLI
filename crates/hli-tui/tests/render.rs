@@ -1329,3 +1329,98 @@ fn visible_reference_token_is_not_used_as_identity() {
     assert_eq!(args[0]["stable_id"], "crates/x.rs");
     assert_eq!(args[0]["display_text"], "archivo renombrado.rs");
 }
+
+// --- Preflight de referencias cambiadas -------------------------------------
+
+fn file_ref_at(id: &str, hash: &str) -> Reference {
+    Reference {
+        kind: RefKind::File,
+        stable_id: id.into(),
+        display: id.into(),
+        content_hash: Some(hash.into()),
+        revision: None,
+        size: None,
+        selected_at: 1,
+    }
+}
+
+#[test]
+fn changed_reference_opens_preflight() {
+    let root = tmp_dir("preflight-changed");
+    let path = root.join("a.txt");
+    std::fs::write(&path, "uno").unwrap();
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![file_ref_at("a.txt", &sha_of(&path))];
+    std::fs::write(&path, "dos").unwrap();
+    app.agent.composer = "usa el archivo".into();
+    app.submit_prompt();
+    let pf = app.agent.preflight.as_ref().expect("preflight");
+    assert_eq!(pf.issues.len(), 1);
+    assert_eq!(pf.issues[0].reason, "changed");
+    assert!(app.agent.last_run.is_none());
+}
+
+#[test]
+fn cancel_preserves_composer_and_does_not_create_run() {
+    let root = tmp_dir("preflight-cancel");
+    let path = root.join("a.txt");
+    std::fs::write(&path, "uno").unwrap();
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![file_ref_at("a.txt", &sha_of(&path))];
+    std::fs::write(&path, "dos").unwrap();
+    app.agent.composer = "usa el archivo".into();
+    app.submit_prompt();
+    app.handle_key(key(KeyCode::Char('c'), KeyEventKind::Press));
+    assert!(app.agent.preflight.is_none());
+    assert_eq!(app.agent.composer, "usa el archivo");
+    assert!(app.agent.last_run.is_none());
+}
+
+#[test]
+fn refresh_updates_hash() {
+    let root = tmp_dir("preflight-refresh");
+    let path = root.join("a.txt");
+    std::fs::write(&path, "uno").unwrap();
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![file_ref_at("a.txt", &sha_of(&path))];
+    std::fs::write(&path, "dos").unwrap();
+    app.agent.composer = "usa el archivo".into();
+    app.submit_prompt();
+    app.handle_key(key(KeyCode::Char('r'), KeyEventKind::Press));
+    assert_eq!(
+        app.agent.references[0].content_hash.as_deref(),
+        Some(sha_of(&path).as_str())
+    );
+    assert!(app.agent.preflight.is_none());
+}
+
+#[test]
+fn multiple_invalid_references_are_grouped() {
+    let root = tmp_dir("preflight-multi");
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(root.join(name), "uno").unwrap();
+    }
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![
+        file_ref_at("a.txt", &sha_of(&root.join("a.txt"))),
+        file_ref_at("b.txt", &sha_of(&root.join("b.txt"))),
+    ];
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(root.join(name), "dos").unwrap();
+    }
+    app.agent.composer = "usa ambos".into();
+    app.submit_prompt();
+    assert_eq!(app.agent.preflight.as_ref().unwrap().issues.len(), 2);
+}
+
+#[test]
+fn run_starts_only_after_all_references_are_valid() {
+    let root = tmp_dir("preflight-valid");
+    let path = root.join("a.txt");
+    std::fs::write(&path, "uno").unwrap();
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![file_ref_at("a.txt", &sha_of(&path))];
+    app.agent.composer = "usa el archivo".into();
+    app.submit_prompt();
+    assert!(app.agent.preflight.is_none());
+}
