@@ -912,9 +912,22 @@ fn draw_agent(f: &mut Frame, app: &App) {
         .as_ref()
         .and_then(|w| w["name"].as_str())
         .unwrap_or("no-branch");
+    let spinner = app.spinner();
+    let kind = match app.agent.approval_kind.as_deref() {
+        Some("plan") => " · plan",
+        Some("tool") => " · tool",
+        _ => "",
+    };
+    let sp = if spinner.is_empty() {
+        String::new()
+    } else {
+        format!("{spinner} ")
+    };
     let head = format!(
-        "HLI │ {ws}/{th}/{br} │ {}/{} │ {}",
-        app.agent.provider, app.agent.model, app.agent.run_state
+        "HLI │ {ws}/{th}/{br} │ {p}/{m} │ {sp}{state}{kind}",
+        p = app.agent.provider,
+        m = app.agent.model,
+        state = app.agent.run_state.replace('_', " "),
     );
     f.render_widget(
         Paragraph::new(head).block(Block::default().borders(Borders::ALL).title(" HLI ")),
@@ -936,12 +949,17 @@ fn draw_agent(f: &mut Frame, app: &App) {
         } else {
             Style::default().fg(color)
         };
-        lines.push(Line::from(Span::styled(
-            format!("{tag} "),
-            style.add_modifier(Modifier::BOLD),
-        )));
-        for part in l.text.split('\n') {
-            lines.push(Line::from(format!("  {part}")));
+        // El tag comparte línea con la primera línea del mensaje; las
+        // siguientes van indentadas. Así el transcript se lee como una
+        // conversación y no como dos columnas de etiquetas.
+        let mut parts = l.text.split('\n');
+        let first = parts.next().unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(format!("{tag:<3} "), style.add_modifier(Modifier::BOLD)),
+            Span::raw(first.to_string()),
+        ]));
+        for part in parts {
+            lines.push(Line::from(format!("    {part}")));
         }
         if l.expanded
             && let Some(d) = &l.detail
@@ -972,7 +990,11 @@ fn draw_agent(f: &mut Frame, app: &App) {
                 lines.push(Line::from(format!("    error:     {err}")));
             }
         }
-        lines.push(Line::from(""));
+        // Separación sólo entre turnos; los eventos de log van seguidos como
+        // en Claude Code.
+        if matches!(l.kind, AgentKind::User | AgentKind::Hli) {
+            lines.push(Line::from(""));
+        }
     }
     let total = lines.len();
     lines = match app.agent.scroll_top {
@@ -1054,6 +1076,11 @@ fn draw_agent(f: &mut Frame, app: &App) {
             " {} · ↓ {unseen} new activity · Ctrl+End para volver al final",
             app.agent.status
         )
+    } else if !app.agent.busy && !crate::app::is_active(&app.agent.run_state) {
+        format!(
+            " {} · ? atajos · Ctrl+O transcript · Ctrl+I inspector · Ctrl+E detalles · rueda/PgUp",
+            app.agent.status
+        )
     } else {
         format!(" {}", app.agent.status)
     };
@@ -1089,7 +1116,9 @@ fn draw_agent(f: &mut Frame, app: &App) {
 
 fn draw_permission(f: &mut Frame, area: Rect, perm: &crate::app::PermissionView) {
     let height = (perm.overlay_lines().len() as u16 + 2).min(area.height.saturating_sub(2));
-    let rect = overlay_rect(area, 92, height);
+    // Ancho completo con margen: el modal no deja texto del transcript a los
+    // lados, que se lee como suciedad.
+    let rect = overlay_rect(area, area.width, height);
     f.render_widget(Clear, rect);
     let lines: Vec<Line> = perm.overlay_lines().into_iter().map(Line::from).collect();
     f.render_widget(
@@ -1106,7 +1135,7 @@ fn draw_permission(f: &mut Frame, area: Rect, perm: &crate::app::PermissionView)
 
 fn draw_plan(f: &mut Frame, area: Rect, plan: &crate::app::PlanView) {
     let height = (plan.overlay_lines().len() as u16 + 2).min(area.height.saturating_sub(2));
-    let rect = overlay_rect(area, 92, height);
+    let rect = overlay_rect(area, area.width, height);
     f.render_widget(Clear, rect);
     let lines: Vec<Line> = plan.overlay_lines().into_iter().map(Line::from).collect();
     let title = if plan.invalidated() {

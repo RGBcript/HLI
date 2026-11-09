@@ -214,6 +214,7 @@ pub struct AgentState {
     pub ref_start: usize,
     pub preflight: Option<Preflight>,
     pub viewport: TranscriptViewport,
+    pub approval_kind: Option<String>,
     pub plan: Option<PlanView>,
     pub perm: Option<PermissionView>,
     pub reject_open: bool,
@@ -815,6 +816,7 @@ impl Default for AgentState {
                 wheel_speed: wheel_speed_from_env(),
                 ..TranscriptViewport::default()
             },
+            approval_kind: None,
             plan: None,
             perm: None,
             reject_open: false,
@@ -900,6 +902,7 @@ pub struct App {
     /// Salida del comando de statusline configurado en `HLI_HOME/ui.toml`.
     pub statusline_cache: Option<String>,
     pub statusline_at: Instant,
+    pub spinner_at: Instant,
     pub terminal_width: usize,
     pub transcript_top: usize,
     /// Filas renderizadas → índice de línea lógica.
@@ -965,6 +968,7 @@ impl App {
             mouse_enabled: crate::terminal::mouse_enabled_from_env(),
             statusline_cache: None,
             statusline_at: Instant::now() - Duration::from_secs(60),
+            spinner_at: Instant::now(),
             terminal_width: 80,
             transcript_top: 3,
             hit_rows: Vec::new(),
@@ -1051,6 +1055,7 @@ impl App {
             mouse_enabled: crate::terminal::mouse_enabled_from_env(),
             statusline_cache: None,
             statusline_at: Instant::now() - Duration::from_secs(60),
+            spinner_at: Instant::now(),
             terminal_width: 80,
             transcript_top: 3,
             hit_rows: Vec::new(),
@@ -2846,6 +2851,22 @@ impl App {
         self.agent.status = self.agent_status_line();
     }
 
+    /// Indicador de trabajo: spinner animado con cuentagotas ASCII si el
+    /// terminal es plano.
+    pub fn spinner(&self) -> &'static str {
+        if !is_active(&self.agent.run_state) {
+            return "";
+        }
+        let idx = (self.spinner_at.elapsed().as_millis() / 100) as usize;
+        if self.ascii {
+            const ASCII: [&str; 4] = ["|", "/", "-", "\\"];
+            ASCII[idx % ASCII.len()]
+        } else {
+            const BRAILLE: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            BRAILLE[idx % BRAILLE.len()]
+        }
+    }
+
     pub fn agent_status_line(&self) -> String {
         let ws = self
             .agent
@@ -2867,7 +2888,9 @@ impl App {
             .unwrap_or("no-branch");
         let base = format!(
             "{ws}/{th}/{br} │ {}/{} │ {} │ ctx - │ tools 0 │ unpriced",
-            self.agent.provider, self.agent.model, self.agent.run_state
+            self.agent.provider,
+            self.agent.model,
+            self.agent.run_state.replace('_', " ")
         );
         match &self.statusline_cache {
             Some(extra) => format!("{base} │ {extra}"),
@@ -3680,6 +3703,7 @@ impl App {
         }
         let changed = state != self.agent.run_state;
         self.agent.run_state = state.clone();
+        self.agent.approval_kind = run["approval_kind"].as_str().map(str::to_string);
         if changed {
             let text = if state == "planning" {
                 "↻ Preparing plan".to_string()
