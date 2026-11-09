@@ -1,4 +1,4 @@
-# HLI — Hierarchical Layered Intelligence
+# HLI
 
 > **Beta privada · 0.9.0-beta.1**
 >
@@ -18,13 +18,15 @@
 > versión estable ni paquete publicado. Si necesitas algo que puedas desplegar sin
 > supervisión, esto no es.
 
-HLI es un **runtime agéntico local**: ejecuta turnos con contexto, memoria,
-eventos verificables, módulos y procesos especializados, todo sobre un almacén
-local.
+HLI es un **agent harness local de peso medio, CLI-first, MCP-native y autónomo**.
+Convierte sesiones, modelos, herramientas y proveedores heterogéneos en
+workspaces persistentes, ramificables y reutilizables. El mismo núcleo se expone
+por CLI, MCP y, opcionalmente, ACP.
 
 - **MCH**: instancia especializada administrada por HLI (proceso persistente con
   lifecycle, health y límite de reinicios).
 - **MCP**: protocolo de interoperabilidad para clientes externos.
+- **ACP**: adaptador opcional como agente para editores y hosts (experimental).
 - **CLI**: interfaz textual (`hli`), cliente del daemon.
 - **Module**: capacidad instalable (`.hlimod`, firma Ed25519 opcional).
 

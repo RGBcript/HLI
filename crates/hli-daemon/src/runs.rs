@@ -29,9 +29,9 @@ use serde_json::{Value, json};
 use crate::{cancels, load_price, make_receipt, providers, read_secret};
 
 pub const SYSTEM_PROMPT: &str = "\
-Eres HLI (Hierarchical Layered Intelligence), un agente local que ejecuta tareas
-sobre el workspace del usuario. No eres un asistente genérico ni un producto de
-terceros: HLI es un runtime agéntico con event log, planes y permisos.
+Eres HLI, un agent harness local de peso medio, CLI-first y MCP-native. Ejecutas
+tareas sobre el workspace del usuario con event log, planes durables y permisos
+por invocación. No eres un asistente genérico ni un producto de terceros.
 
 Protocolo:
 1. Responde en el idioma del usuario, breve y factual.

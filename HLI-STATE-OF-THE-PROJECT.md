@@ -12,10 +12,11 @@ y lo que falta, con la fuente de cada afirmación.
 
 ## 1. Objetivo
 
-HLI (Hierarchical Layered Intelligence) es un **runtime agéntico local**: ejecuta
-turnos de un modelo con contexto trazable, memoria con autoridad y supersesión,
-event log verificable, artefactos con hash, módulos instalables y procesos
-especializados supervisados (MCH). Todo vive en un almacén local SQLite y se
+HLI es un **agent harness local de peso medio, CLI-first, MCP-native y autónomo**.
+Convierte sesiones, modelos, herramientas y proveedores heterogéneos en
+workspaces persistentes, ramificables y reutilizables: contexto trazable, memoria
+con autoridad y supersesión, event log verificable, artefactos con hash, módulos
+instalables y procesos especializados supervisados (MCH). Todo vive en un almacén local SQLite y se
 expone por tres superficies: CLI, TUI y MCP.
 
 El objetivo de la Beta 0.9 es ser **instalable y auditable**: paquete Windows,
