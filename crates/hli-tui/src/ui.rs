@@ -1374,7 +1374,10 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
     let rows = app.settings_rows();
     let mut body: Vec<Line> = Vec::new();
     body.push(Line::from(Span::styled(
-        App::SETTINGS_CATEGORIES[app.agent.settings_cat],
+        App::SETTINGS_CATEGORIES[app
+            .agent
+            .settings_cat
+            .min(App::SETTINGS_CATEGORIES.len() - 1)],
         Style::default().fg(t.artifact).add_modifier(Modifier::BOLD),
     )));
     body.push(Line::from(""));

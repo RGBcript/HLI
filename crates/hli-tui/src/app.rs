@@ -3552,7 +3552,9 @@ impl App {
                 }
                 // Listas de workspace/sesión: clic selecciona, segundo clic entra.
                 if self.mode == TuiMode::Agent && self.agent.agent_tab != AgentTab::Chat {
-                    let idx = m.row.saturating_sub(3) as usize;
+                    // La primera fila de contenido está en `transcript_top`,
+                    // no en la 3 (cabecera + regla).
+                    let idx = m.row.saturating_sub(self.transcript_top as u16) as usize;
                     match self.agent.agent_tab {
                         AgentTab::Workspace if idx < self.workspaces.len() => {
                             if self.agent.ws_sel == idx {

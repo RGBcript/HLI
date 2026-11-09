@@ -26,11 +26,14 @@ pub fn detail_rows(input: &str, output: &str, artifacts: bool, error: bool, widt
 }
 
 pub fn wrapped_lines(text: &str, width: usize) -> usize {
+    use unicode_width::UnicodeWidthStr;
     let width = width.max(MIN_WIDTH);
     text.split('\n')
         .map(|line| {
-            let chars = line.chars().count();
-            if chars == 0 { 1 } else { chars.div_ceil(width) }
+            // Ancho de pantalla, no número de caracteres: CJK y emoji ocupan
+            // dos columnas y los combinantes cero.
+            let cols = line.width();
+            if cols == 0 { 1 } else { cols.div_ceil(width) }
         })
         .sum()
 }
