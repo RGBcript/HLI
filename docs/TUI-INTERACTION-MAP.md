@@ -91,3 +91,15 @@ Regla: exactamente un foco. `q` no sale si el command bar tiene el foco.
 | Transcript | `/`, `n`/`N` | búsqueda y coincidencias |
 | Transcript | `{`/`}` | prompt anterior / siguiente |
 | Transcript | `Esc`/`q`/`Ctrl+O` | volver |
+
+## Paridad adicional (0.9)
+
+| Contexto | Entrada | Acción |
+|---|---|---|
+| Transcript | `[` | volcar al scrollback nativo |
+| Transcript | `v` | exportar a archivo |
+| Agent Mode | clic en scrollbar | salto proporcional |
+| Agent Mode | clic en actividad | expandir / colapsar |
+| Agent Mode | arrastrar | seleccionar líneas y copiar |
+| Arranque | `--classic` / `HLI_DISABLE_ALTERNATE_SCREEN` | renderer clásico |
+| Arranque | `HLI_SCREEN_READER=1` | texto plano |

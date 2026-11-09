@@ -120,3 +120,14 @@ y ASCII.
 quedan fuera del área desplazable. La scrollbar se deriva de `max_scroll` y no es
 decorativa. Los overlays de Plan y Permission se dibujan sobre el viewport sin
 moverlo.
+
+## Renderer clásico y ratón (0.9)
+
+`classic.rs` es otra superficie, no otro motor: usa el mismo daemon y las mismas
+operaciones. `TranscriptReview` y `TranscriptViewport` son independientes del
+renderer.
+
+Ratón: `Down/Drag/Up` sobre el transcript. La scrollbar ocupa las tres últimas
+columnas; el clic salta proporcionalmente. El arrastre selecciona líneas
+completas y copia con `clip`/`wl-copy`/`xclip`. `Shift` sigue disponible para la
+selección nativa cuando el terminal lo permite.

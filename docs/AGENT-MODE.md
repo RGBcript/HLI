@@ -330,3 +330,16 @@ permiso). Plan approval y tool permission siguen siendo fronteras separadas.
   pasa a `Ctrl+I`.
 - `HLI_DISABLE_MOUSE=1` no captura el ratón: Windows Terminal recupera su
   selección nativa y el scroll por teclado sigue funcionando.
+
+### Renderer clásico y paridad con la terminal
+
+- `hli --classic` (o `HLI_DISABLE_ALTERNATE_SCREEN=1`) escribe la conversación
+  en el scrollback nativo, sin alternate screen ni captura de ratón. Es el
+  equivalente al renderer classic de Claude Code.
+- `HLI_SCREEN_READER=1` usa ese mismo renderer de texto plano.
+- En Transcript Mode, `[` vuelca la conversación al scrollback y `v` la exporta
+  a `HLI_HOME/transcripts/`.
+- `HLI_HOME/ui.toml` admite `statusline = "comando"`; el comando recibe JSON por
+  stdin y su salida se añade a la barra de estado.
+- Ratón: rueda, clic en la scrollbar, clic para expandir/colapsar actividad y
+  arrastre para seleccionar líneas (copia al portapapeles).
