@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use hli_tui::app::{
     ActivityDetail, AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, PermissionView,
@@ -1874,6 +1874,158 @@ fn inspector_displays_permission_request() {
     assert!(text.contains("Tool permission"), "{text}");
     assert!(text.contains("Arguments hash"), "{text}");
     assert!(text.contains("perm_1"), "{text}");
+}
+
+// --- K4: orden causal del transcript ---------------------------------------
+
+fn run_with_terminal() -> Value {
+    json!({
+        "id": "run_k4", "state": "completed", "prompt": "tarea",
+        "started_at": "2026-11-09T00:00:00Z",
+        "result": {"text": "respuesta"},
+        "receipt": {
+            "provider": "sim", "model": "sim-1", "usage": {}, "cost": {"total": 0.0},
+            "result_hash": "sha256:r", "terminal_event": "evt_9"
+        }
+    })
+}
+
+fn sorted_max_seq() -> i64 {
+    k4_events()
+        .iter()
+        .filter_map(|e| e["sequence"].as_i64())
+        .max()
+        .unwrap_or(0)
+}
+
+fn k4_events() -> Vec<Value> {
+    vec![
+        json!({"sequence": 5, "type": "run.completed", "run_id": "run_k4", "payload": {"state": "completed"}}),
+        json!({"sequence": 2, "type": "run.queued", "run_id": "run_k4", "payload": {}}),
+        json!({"sequence": 4, "type": "tool.completed", "run_id": "run_k4", "payload": {"tool": "filesystem.write"}}),
+        json!({"sequence": 1, "type": "plan.created", "run_id": "run_k4", "payload": {"revision": 1}}),
+        json!({"sequence": 3, "type": "run.planning", "run_id": "run_k4", "payload": {}}),
+    ]
+}
+
+#[test]
+fn transcript_orders_run_events_by_sequence() {
+    let lines = project_thread(&[run_with_terminal()], &k4_events());
+    let kinds: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
+    // prompt, plan.created, run.queued, run.planning, tool.completed, respuesta,
+    // run.completed, resumen.
+    let pos = |needle: &str| kinds.iter().position(|t| t.contains(needle)).unwrap();
+    assert!(pos("Plan created") < pos("run.queued"));
+    assert!(pos("run.queued") < pos("run.planning"));
+    assert!(pos("run.planning") < pos("tool.completed"));
+    assert!(pos("tool.completed") < pos("run.completed"));
+}
+
+#[test]
+fn terminal_summary_follows_terminal_event() {
+    let lines = project_thread(&[run_with_terminal()], &k4_events());
+    let last = lines.last().unwrap();
+    assert!(last.text.contains("completed"), "último: {}", last.text);
+    let terminal = lines
+        .iter()
+        .position(|l| l.text == "run.completed")
+        .expect("evento terminal");
+    assert_eq!(
+        terminal + 1,
+        lines.len() - 1,
+        "resumen justo tras el terminal"
+    );
+}
+
+#[test]
+fn plan_is_rendered_before_execution_events() {
+    let lines = project_thread(&[run_with_terminal()], &k4_events());
+    let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+    let plan = texts
+        .iter()
+        .position(|t| t.contains("Plan created"))
+        .unwrap();
+    let exec = texts
+        .iter()
+        .position(|t| t.contains("tool.completed"))
+        .unwrap();
+    assert!(plan < exec);
+}
+
+#[test]
+fn polling_and_projection_produce_same_order() {
+    let runs = vec![run_with_terminal()];
+    let events = k4_events();
+    let projected = project_thread(&runs, &events);
+    let mut app = App::demo();
+    app.agent.lines = projected.clone();
+    app.agent.last_seq = sorted_max_seq();
+    app.agent.last_run = Some("run_k4".into());
+    let mut sorted = events.clone();
+    sorted.sort_by_key(|e| e["sequence"].as_i64().unwrap_or(0));
+    // La ingesta en vivo de los mismos eventos no altera el orden proyectado.
+    app.ingest_events(&sorted);
+    let a: Vec<String> = projected.iter().map(|l| l.text.clone()).collect();
+    let b: Vec<String> = app.agent.lines.iter().map(|l| l.text.clone()).collect();
+    assert_eq!(a, b);
+}
+
+#[test]
+fn resume_preserves_identical_event_order() {
+    let a = project_thread(&[run_with_terminal()], &k4_events());
+    let b = project_thread(&[run_with_terminal()], &k4_events());
+    assert_eq!(
+        a.iter().map(|l| l.text.clone()).collect::<Vec<_>>(),
+        b.iter().map(|l| l.text.clone()).collect::<Vec<_>>()
+    );
+}
+
+// --- K5: compositor -------------------------------------------------------
+
+#[test]
+fn accepted_prompt_clears_composer() {
+    let mut app = App::demo();
+    app.agent.composer = "hola".into();
+    app.apply_submission_outcome(true, "hola");
+    assert!(app.agent.composer.is_empty());
+}
+
+#[test]
+fn failed_prompt_submission_preserves_composer() {
+    let mut app = App::demo();
+    app.agent.composer = "hola".into();
+    app.apply_submission_outcome(false, "hola");
+    assert_eq!(app.agent.composer, "hola");
+}
+
+#[test]
+fn failed_submit_without_daemon_keeps_the_prompt() {
+    let mut app = App::demo();
+    app.agent.workspace = Some(json!({"id": "ws_demo"}));
+    app.agent.thread = Some(json!({"id": "thr_demo"}));
+    app.agent.branch = Some(json!({"id": "br_main"}));
+    app.agent.composer = "no se pierde".into();
+    assert!(!app.submit_prompt());
+    assert_eq!(app.agent.composer, "no se pierde");
+}
+
+#[test]
+fn followup_starts_with_empty_composer() {
+    let mut app = App::demo();
+    app.agent.composer = "uno".into();
+    app.apply_submission_outcome(true, "uno");
+    assert!(app.agent.composer.is_empty());
+    app.agent.composer.push_str("dos");
+    assert_eq!(app.agent.composer, "dos");
+}
+
+#[test]
+fn resume_does_not_restore_last_prompt_into_composer() {
+    let mut app = App::demo();
+    app.agent.prompts = vec!["prompt viejo".into()];
+    app.agent.composer.clear();
+    app.load_transcript();
+    assert!(app.agent.composer.is_empty());
 }
 
 #[test]

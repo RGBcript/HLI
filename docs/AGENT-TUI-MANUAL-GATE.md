@@ -35,8 +35,8 @@ Ejecutar en orden, marcando cada paso.
 | 2 | `Enter` para crearlo | aparece el workspace vinculado | |
 | 3 | Enviar `resume el directorio` | run read-only hasta completar | |
 | 4 | Observar la actividad | `↻ Preparing plan` y ejecución sin overlay | |
-| 5 | Leer la respuesta | texto del proveedor y receipt (provider, tokens, coste) | |
-| 6 | Enviar `tool:write manual.txt hola` | plan en `waiting_approval` | |
+| 5 | Leer la respuesta | eventos en orden causal (`run.queued` → plan → ejecución → `run.completed`) y el resumen terminal **después** del evento terminal | |
+| 6 | Enviar `tool:write manual.txt hola` | el compositor queda vacío; plan en `waiting_approval` | |
 | 7 | Revisar el overlay | pasos, efectos y `write · approval required` | |
 | 8 | `y` (once) | el plan se aprueba y el run continúa | |
 | 9 | Ver el resultado | overlay `Permission required` con tool y target | |
@@ -63,6 +63,12 @@ Ejecutar en orden, marcando cada paso.
 | 30 | Comprobar la terminal | cursor visible, pantalla y raw mode restaurados | |
 
 ---
+
+### Compositor
+
+Tras un envío aceptado, el compositor queda vacío. Si `run.start` falla antes de
+crear el run, el texto se conserva para reintentar. `resume` nunca reinyecta el
+último prompt en el compositor.
 
 ## Parte C — Layouts y accesibilidad
 
