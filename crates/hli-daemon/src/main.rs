@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use hli_core::{HliError, time::now_iso};
 mod providers;
+mod runs;
 mod supervisor;
 
-use hli_agent::{Permission, Provider, SimProvider, build_manifest, execute_tool, permission_for};
+use hli_agent::build_manifest;
 use hli_provider::{ChatProvider, ChatRequest, OllamaProvider, OpenAiProvider};
 use hli_store::{Reader, Store, Writer};
 use serde_json::{Value, json};
@@ -140,6 +141,20 @@ fn handle(
     Ok(())
 }
 
+/// Reconstruye el payload renderizado desde el manifiesto persistido. Se usa al
+/// reanudar una ejecución aprobada, donde el hilo original ya no existe.
+pub(crate) fn render_for(manifest: &hli_core::model::ContextManifest, r: &Reader) -> String {
+    let mut slices = Vec::new();
+    for sl in &manifest.artifact_slices {
+        if let Some(id) = sl["slice_id"].as_str()
+            && let Ok(pair) = r.slice(id)
+        {
+            slices.push(pair);
+        }
+    }
+    hli_agent::render_payload(manifest, &slices)
+}
+
 fn cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     static C: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
@@ -205,6 +220,15 @@ fn make_receipt(
         cost: cost.clone(),
         result_hash: hli_core::canon::hash_canonical(result),
         terminal_event: None,
+        plan_id: None,
+        plan_hash: None,
+        plan_origin: None,
+        plan_revision: None,
+        approval_status: None,
+        approval_scope: None,
+        approval_events: vec![],
+        approved_effects: vec![],
+        rejected_effects: vec![],
     }
 }
 
@@ -358,7 +382,7 @@ fn dispatch(
     cmd: &str,
     args: &Value,
     w: &Writer,
-    r: &Reader,
+    r: &Arc<Reader>,
     home: &std::path::Path,
 ) -> Result<Value, HliError> {
     match cmd {
@@ -736,7 +760,7 @@ fn dispatch(
                 .unwrap_or(256);
 
             let mut secret_handles: Vec<Value> = Vec::new();
-            let mut api_key = String::new();
+            let mut _api_key = String::new();
             if provider_name == "openai" {
                 let handle = entry
                     .as_ref()
@@ -748,7 +772,7 @@ fn dispatch(
                     })
                     .ok_or_else(|| HliError::invalid("openai requiere --secret o secret_handle"))?;
                 let (value, version) = read_secret(home, &handle)?;
-                api_key = value;
+                _api_key = value;
                 secret_handles.push(json!({"id": handle, "version": version}));
             }
 
@@ -883,7 +907,6 @@ fn dispatch(
                     "el payload no coincide con el manifiesto",
                 ));
             }
-            let rendered = hli_agent::render_payload(&manifest, &reloaded);
 
             let prev_provider = r.last_provider(&th).ok().flatten();
             if prev_provider.as_deref() != Some(provider_name.as_str()) {
@@ -896,7 +919,6 @@ fn dispatch(
                     }),
                 )?;
             }
-
             w.run_event(
                 &run.id,
                 "model.requested",
@@ -907,437 +929,59 @@ fn dispatch(
                 }),
             )?;
 
-            let is_async = args.get("async").and_then(|v| v.as_bool()).unwrap_or(false);
-            if is_async {
-                let cancel = Arc::new(AtomicBool::new(false));
-                cancels()
-                    .lock()
-                    .unwrap()
-                    .insert(run.id.clone(), cancel.clone());
-                let w2 = w.clone();
-                let run2 = run.clone();
-                let manifest2 = manifest.clone();
-                let prompt2 = prompt.clone();
-                let rendered2 = rendered.clone();
-                let provider2 = provider_name.clone();
-                let model2 = model.clone();
-                let base2 = base_url.clone();
-                let api2 = api_key.clone();
-                let secret2 = secret_handles.clone();
-                let cand2 = candidate_memory_ids.clone();
-                let system2 = "Eres HLI. Responde en español, breve y factual.".to_string();
-                let sim_delay_ms = args.get("sim_delay_ms").and_then(|v| v.as_u64());
-                std::thread::spawn(move || {
-                    let _ = w2.set_run_state(&run2.id, "running");
-                    let started = std::time::Instant::now();
-                    if provider2 == "sim"
-                        && let Some(ms) = sim_delay_ms
-                    {
-                        std::thread::sleep(Duration::from_millis(ms));
-                    }
-                    let call: Result<
-                        (String, hli_provider::Usage, String, String, String),
-                        HliError,
-                    > = match provider2.as_str() {
-                        "sim" => {
-                            let p = SimProvider;
-                            let pr = hli_agent::ProviderRequest {
-                                run_id: run2.id.clone(),
-                                prompt: prompt2,
-                                manifest: manifest2.clone(),
-                            };
-                            match p.complete(&pr) {
-                                Ok(resp) if resp.tool_call.is_none() => {
-                                    let u = hli_provider::Usage {
-                                        input_tokens: hli_provider::estimate_tokens(&system2)
-                                            + manifest2.estimated_tokens,
-                                        output_tokens: hli_provider::estimate_tokens(&resp.text),
-                                        cached_tokens: 0,
-                                        latency_first_token_ms: 0,
-                                        latency_total_ms: 0,
-                                        finish_reason: "stop".into(),
-                                        raw_usage_available: false,
-                                        usage_source: "estimated".into(),
-                                    };
-                                    Ok((resp.text, u, "sim".into(), "sim-1".into(), "0.2.0".into()))
-                                }
-                                Ok(_) => Err(HliError::internal(
-                                    "tool loop no soportado en runs asincronos",
-                                )),
-                                Err(e) => Err(e),
-                            }
-                        }
-                        "ollama" => {
-                            let p = hli_provider::OllamaProvider::new(&base2, &model2, timeout);
-                            let req = ChatRequest {
-                                system: &system2,
-                                user: &rendered2,
-                                temperature,
-                                max_tokens,
-                            };
-                            p.chat(&req)
-                                .map(|r| (r.text, r.usage, r.provider, r.model, r.adapter_version))
-                        }
-                        "openai" => {
-                            let p =
-                                hli_provider::OpenAiProvider::new(&base2, &model2, &api2, timeout);
-                            let req = ChatRequest {
-                                system: &system2,
-                                user: &rendered2,
-                                temperature,
-                                max_tokens,
-                            };
-                            p.chat(&req)
-                                .map(|r| (r.text, r.usage, r.provider, r.model, r.adapter_version))
-                        }
-                        other => Err(HliError::invalid(format!("proveedor desconocido: {other}"))),
-                    };
-                    let cancelled = cancel.load(Ordering::SeqCst);
-                    let usage_default = hli_provider::Usage::default();
-                    let (text, usage, up, um, adapter) = match call {
-                        Ok(v) => v,
-                        Err(e) => {
-                            let state = if e.message.contains("timeout")
-                                || e.message.contains("timed out")
-                            {
-                                "timed_out"
-                            } else {
-                                "failed"
-                            };
-                            let cost = hli_provider::cost_of(None, &usage_default);
-                            let receipt = make_receipt(
-                                &provider2,
-                                &model2,
-                                "error",
-                                &manifest2,
-                                &json!({"error": e.message}),
-                                &usage_default,
-                                &cost,
-                                secret2,
-                                vec![],
-                                vec![],
-                                vec![],
-                                cand2,
-                                vec![],
-                            );
-                            let _ = w2.finish_run(
-                                &run2.id,
-                                state,
-                                Some(json!({"error": e.message})),
-                                Some(receipt),
-                            );
-                            cancels().lock().unwrap().remove(&run2.id);
-                            return;
-                        }
-                    };
-                    let used_memory_ids: Vec<String> = manifest2
-                        .memories
-                        .iter()
-                        .filter_map(|m| m["id"].as_str().map(str::to_string))
-                        .collect();
-                    let used_slice_ids: Vec<String> = manifest2
-                        .artifact_slices
-                        .iter()
-                        .filter_map(|sl| sl["slice_id"].as_str().map(str::to_string))
-                        .collect();
-                    let used_event_ids: Vec<String> = manifest2
-                        .recent_events
-                        .iter()
-                        .filter_map(|ev| ev["event_id"].as_str().map(str::to_string))
-                        .collect();
-                    let rejected: Vec<String> = cand2
-                        .iter()
-                        .filter(|id| !used_memory_ids.contains(id))
-                        .cloned()
-                        .collect();
-                    let cost = hli_provider::cost_of(None, &usage);
-                    let receipt = make_receipt(
-                        &up,
-                        &um,
-                        &adapter,
-                        &manifest2,
-                        &json!({"text": text}),
-                        &usage,
-                        &cost,
-                        secret2,
-                        used_memory_ids,
-                        used_slice_ids,
-                        used_event_ids,
-                        cand2,
-                        rejected,
-                    );
-                    let timed_out = started.elapsed() > Duration::from_secs(timeout);
-                    let state = if cancelled {
-                        "cancelled"
-                    } else if timed_out {
-                        "timed_out"
-                    } else {
-                        "completed"
-                    };
-                    let _ =
-                        w2.finish_run(&run2.id, state, Some(json!({"text": text})), Some(receipt));
-                    cancels().lock().unwrap().remove(&run2.id);
-                });
-                return Ok(serde_json::to_value(run)?);
-            }
-
-            let system = "Eres HLI. Responde en español, breve y factual.";
-            let system_owned = system.to_string();
-            let req = hli_provider::ChatRequest {
-                system: &system_owned,
-                user: &rendered,
+            let prepared = runs::Prepared {
+                run,
+                manifest,
+                prompt,
+                provider_id: selected.unwrap_or_else(|| provider_name.clone()),
+                provider_kind: provider_name,
+                model,
+                base_url,
+                timeout_secs: timeout,
                 temperature,
                 max_tokens,
-            };
-
-            let mut tool_call = None;
-            let call_result: Result<
-                (String, hli_provider::Usage, String, String, String),
-                HliError,
-            > = match provider_name.as_str() {
-                "sim" => {
-                    let p = SimProvider;
-                    let pr = hli_agent::ProviderRequest {
-                        run_id: run.id.clone(),
-                        prompt: prompt.clone(),
-                        manifest: manifest.clone(),
-                    };
-                    match p.complete(&pr) {
-                        Ok(resp) => {
-                            tool_call = resp.tool_call;
-                            let u = hli_provider::Usage {
-                                input_tokens: hli_provider::estimate_tokens(&system_owned)
-                                    + manifest.estimated_tokens,
-                                output_tokens: hli_provider::estimate_tokens(&resp.text),
-                                cached_tokens: 0,
-                                latency_first_token_ms: 0,
-                                latency_total_ms: 0,
-                                finish_reason: "stop".into(),
-                                raw_usage_available: false,
-                                usage_source: "estimated".into(),
-                            };
-                            Ok((
-                                resp.text,
-                                u,
-                                "sim".to_string(),
-                                "sim-1".to_string(),
-                                "0.2.0".to_string(),
-                            ))
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-                "ollama" => {
-                    let p = hli_provider::OllamaProvider::new(&base_url, &model, timeout);
-                    p.chat(&req)
-                        .map(|r| (r.text, r.usage, r.provider, r.model, r.adapter_version))
-                }
-                "openai" => {
-                    let p = hli_provider::OpenAiProvider::new(&base_url, &model, &api_key, timeout);
-                    p.chat(&req)
-                        .map(|r| (r.text, r.usage, r.provider, r.model, r.adapter_version))
-                }
-                other => Err(HliError::invalid(format!("proveedor desconocido: {other}"))),
-            };
-            let (text, usage, used_provider, used_model, adapter) = match call_result {
-                Ok(v) => v,
-                Err(e) => {
-                    let usage = hli_provider::Usage::default();
-                    let cost = hli_provider::cost_of(None, &usage);
-                    let receipt = make_receipt(
-                        &provider_name,
-                        &model,
-                        "error",
-                        &manifest,
-                        &json!({"error": e.message}),
-                        &usage,
-                        &cost,
-                        secret_handles,
-                        vec![],
-                        vec![],
-                        vec![],
-                        candidate_memory_ids,
-                        vec![],
-                    );
-                    let done = w.finish_run(
-                        &run.id,
-                        "failed",
-                        Some(json!({"error": e.message})),
-                        Some(receipt),
-                    )?;
-                    return Ok(serde_json::to_value(done)?);
-                }
-            };
-
-            let price = load_price(home, &used_provider, &used_model);
-            let cost = hli_provider::cost_of(price.as_ref(), &usage);
-            w.run_event(
-                &run.id,
-                "model.responded",
-                json!({
-                    "run_id": run.id, "provider": used_provider, "model": used_model,
-                    "usage": usage, "cost": cost
-                }),
-            )?;
-
-            let mut result = json!({
-                "text": text, "manifest_id": manifest.manifest_id,
-                "provider": used_provider, "model": used_model
-            });
-            let mut state = "completed";
-
-            if let Some(call) = tool_call {
-                w.run_event(
-                    &run.id,
-                    "tool.requested",
-                    json!({
-                        "run_id": run.id, "tool": call.name, "arguments": call.arguments
-                    }),
-                )?;
-                match permission_for(&call.name) {
-                    Permission::Deny => {
-                        w.run_event(
-                            &run.id,
-                            "tool.denied",
-                            json!({"run_id": run.id, "tool": call.name}),
-                        )?;
-                        state = "failed";
-                        result["error"] = json!("herramienta denegada por política");
-                    }
-                    Permission::Ask => {
-                        state = "waiting_approval";
-                        result["pending_tool"] = serde_json::to_value(&call)?;
-                    }
-                    Permission::Allow => {
-                        let outcome = execute_tool(std::path::Path::new(&ws_obj.root_path), &call);
-                        w.run_event(
-                            &run.id,
-                            "tool.completed",
-                            json!({
-                                "run_id": run.id, "tool": outcome.tool, "status": outcome.status,
-                                "stdout": outcome.stdout, "changed_files": outcome.changed_files,
-                                "error": outcome.error
-                            }),
-                        )?;
-                        result["observation"] = serde_json::to_value(&outcome)?;
-                        if outcome.status != "success" {
-                            state = "failed";
-                        }
-                    }
-                }
-            }
-
-            let used_memory_ids: Vec<String> = manifest
-                .memories
-                .iter()
-                .filter_map(|m| m["id"].as_str().map(str::to_string))
-                .collect();
-            let used_slice_ids: Vec<String> = manifest
-                .artifact_slices
-                .iter()
-                .filter_map(|s| s["slice_id"].as_str().map(str::to_string))
-                .collect();
-            let used_event_ids: Vec<String> = manifest
-                .recent_events
-                .iter()
-                .filter_map(|e| e["event_id"].as_str().map(str::to_string))
-                .collect();
-            let rejected_memory_ids: Vec<String> = candidate_memory_ids
-                .iter()
-                .filter(|id| !used_memory_ids.contains(id))
-                .cloned()
-                .collect();
-            let receipt = make_receipt(
-                &used_provider,
-                &used_model,
-                &adapter,
-                &manifest,
-                &result,
-                &usage,
-                &cost,
+                budget_tokens: budget,
                 secret_handles,
-                used_memory_ids,
-                used_slice_ids,
-                used_event_ids,
                 candidate_memory_ids,
-                rejected_memory_ids,
-            );
-            let done = w.finish_run(&run.id, state, Some(result), Some(receipt))?;
-            Ok(serde_json::to_value(done)?)
+                is_async: args.get("async").and_then(|v| v.as_bool()).unwrap_or(false),
+                sim_delay_ms: args.get("sim_delay_ms").and_then(|v| v.as_u64()),
+            };
+            runs::plan_and_maybe_execute(home, w, r, prepared)
+        }
+
+        "run.plan" => {
+            let run_id = s(args, "run_id")?;
+            runs::plan_response(r, &run_id)
         }
         "run.approve" => {
             let run_id = s(args, "run_id")?;
-            let run = r.run(&run_id)?;
-            let pending = run
-                .result
-                .as_ref()
-                .and_then(|v| v.get("pending_tool"))
-                .cloned()
-                .ok_or_else(|| HliError::invalid("el run no tiene herramienta pendiente"))?;
-            let call: hli_core::model::ToolCall = serde_json::from_value(pending)?;
-            let ws_obj = r.workspace(&run.workspace_id)?;
-            let outcome = execute_tool(std::path::Path::new(&ws_obj.root_path), &call);
-            w.run_event(
-                &run_id,
-                "tool.completed",
-                json!({"run_id": run_id, "tool": outcome.tool, "status": outcome.status,
-                       "stdout": outcome.stdout, "changed_files": outcome.changed_files,
-                       "error": outcome.error}),
-            )?;
-            let manifest = r.manifest_for_run(&run_id)?;
-            let mut result = run.result.clone().unwrap_or_else(|| json!({}));
-            if let Some(o) = result.as_object_mut() {
-                o.remove("pending_tool");
+            let scope = o(args, "scope").unwrap_or_else(|| "once".into());
+            let actor = o(args, "actor").unwrap_or_else(|| "cli".into());
+            let expected = o(args, "plan_id");
+            match r.plan_for_run(&run_id) {
+                Ok(_) => runs::approve(home, w, r, &run_id, &scope, &actor, expected.as_deref()),
+                // Compatibilidad con runs anteriores al plan durable.
+                Err(_) => approve_legacy(w, r, &run_id),
             }
-            result["observation"] = serde_json::to_value(&outcome)?;
-            let usage = hli_provider::Usage {
-                input_tokens: manifest.estimated_tokens,
-                output_tokens: 0,
-                cached_tokens: 0,
-                latency_first_token_ms: 0,
-                latency_total_ms: 0,
-                finish_reason: "stop".into(),
-                raw_usage_available: false,
-                usage_source: "estimated".into(),
-            };
-            let cost = hli_provider::cost_of(None, &usage);
-            let used_memory_ids: Vec<String> = manifest
-                .memories
-                .iter()
-                .filter_map(|m| m["id"].as_str().map(str::to_string))
-                .collect();
-            let used_slice_ids: Vec<String> = manifest
-                .artifact_slices
-                .iter()
-                .filter_map(|s| s["slice_id"].as_str().map(str::to_string))
-                .collect();
-            let used_event_ids: Vec<String> = manifest
-                .recent_events
-                .iter()
-                .filter_map(|e| e["event_id"].as_str().map(str::to_string))
-                .collect();
-            let receipt = make_receipt(
-                "sim",
-                "sim-1",
-                "0.2.0",
-                &manifest,
-                &result,
-                &usage,
-                &cost,
-                vec![],
-                used_memory_ids,
-                used_slice_ids,
-                used_event_ids,
-                vec![],
-                vec![],
-            );
-            let state = if outcome.status == "success" {
-                "completed"
-            } else {
-                "failed"
-            };
-            let done = w.finish_run(&run_id, state, Some(result), Some(receipt))?;
-            Ok(serde_json::to_value(done)?)
+        }
+        "run.replan" => {
+            let run_id = s(args, "run_id")?;
+            let reasons: Vec<String> = args
+                .get("reasons")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            runs::replan(home, w, r, &run_id, reasons)
+        }
+        "run.reject" => {
+            let run_id = s(args, "run_id")?;
+            let reason = o(args, "reason").unwrap_or_else(|| "sin razón".into());
+            let actor = o(args, "actor").unwrap_or_else(|| "cli".into());
+            runs::reject(w, r, &run_id, &reason, &actor)
         }
         "run.get" => {
             let run_id = s(args, "run_id")?;
@@ -1359,7 +1003,9 @@ fn dispatch(
             let started = std::time::Instant::now();
             loop {
                 let run = r.run(&run_id)?;
-                if hli_core::model::run_is_terminal(&run.state) {
+                // waiting_approval es un punto de parada explícito: el cliente
+                // necesita verlo para aprobar o rechazar.
+                if hli_core::model::run_is_terminal(&run.state) || run.state == "waiting_approval" {
                     return Ok(json!({"run": run}));
                 }
                 if started.elapsed() >= Duration::from_secs(timeout) {
@@ -1374,9 +1020,23 @@ fn dispatch(
             if hli_core::model::run_is_terminal(&run.state) {
                 return Ok(json!({"run": run, "idempotent": true}));
             }
-            if run.state == "queued" {
-                let done =
-                    w.finish_run(&run_id, "cancelled", Some(json!({"cancelled": true})), None)?;
+            if run.state == "queued" || run.state == "waiting_approval" {
+                // Cancelar una espera de aprobación cierra también el plan.
+                if let Ok(plan) = r.plan_for_run(&run_id) {
+                    let _ = w.set_plan_status(
+                        &plan.plan_id,
+                        "cancelled",
+                        None,
+                        None,
+                        Some("cancelled_by_user".into()),
+                    );
+                }
+                let done = w.finish_run(
+                    &run_id,
+                    "cancelled",
+                    Some(json!({"cancelled": true, "terminal_reason": "cancelled"})),
+                    None,
+                )?;
                 return Ok(json!({"run": done}));
             }
             if let Some(flag) = cancels().lock().unwrap().get(&run_id).cloned() {
@@ -1699,6 +1359,83 @@ fn dispatch(
 
 /// Valida y materializa las referencias explícitas antes de construir el
 /// manifiesto. Cualquier referencia inválida falla el run antes del provider.
+
+/// Aprobación heredada (0.3–0.8): ejecuta una herramienta pendiente de un run
+/// sin plan durable. Se conserva para exportaciones históricas.
+fn approve_legacy(w: &Writer, r: &Reader, run_id: &str) -> Result<Value, HliError> {
+    let run = r.run(run_id)?;
+    let pending = run
+        .result
+        .as_ref()
+        .and_then(|v| v.get("pending_tool"))
+        .cloned()
+        .ok_or_else(|| HliError::invalid("el run no tiene herramienta pendiente"))?;
+    let call: hli_core::model::ToolCall = serde_json::from_value(pending)?;
+    let ws_obj = r.workspace(&run.workspace_id)?;
+    let outcome = hli_agent::execute_tool(std::path::Path::new(&ws_obj.root_path), &call);
+    w.run_event(
+        &run_id,
+        "tool.completed",
+        json!({"run_id": run_id, "tool": outcome.tool, "status": outcome.status,
+               "stdout": outcome.stdout, "changed_files": outcome.changed_files,
+               "error": outcome.error}),
+    )?;
+    let manifest = r.manifest_for_run(&run_id)?;
+    let mut result = run.result.clone().unwrap_or_else(|| json!({}));
+    if let Some(o) = result.as_object_mut() {
+        o.remove("pending_tool");
+    }
+    result["observation"] = serde_json::to_value(&outcome)?;
+    let usage = hli_provider::Usage {
+        input_tokens: manifest.estimated_tokens,
+        output_tokens: 0,
+        cached_tokens: 0,
+        latency_first_token_ms: 0,
+        latency_total_ms: 0,
+        finish_reason: "stop".into(),
+        raw_usage_available: false,
+        usage_source: "estimated".into(),
+    };
+    let cost = hli_provider::cost_of(None, &usage);
+    let used_memory_ids: Vec<String> = manifest
+        .memories
+        .iter()
+        .filter_map(|m| m["id"].as_str().map(str::to_string))
+        .collect();
+    let used_slice_ids: Vec<String> = manifest
+        .artifact_slices
+        .iter()
+        .filter_map(|s| s["slice_id"].as_str().map(str::to_string))
+        .collect();
+    let used_event_ids: Vec<String> = manifest
+        .recent_events
+        .iter()
+        .filter_map(|e| e["event_id"].as_str().map(str::to_string))
+        .collect();
+    let receipt = make_receipt(
+        "sim",
+        "sim-1",
+        "0.2.0",
+        &manifest,
+        &result,
+        &usage,
+        &cost,
+        vec![],
+        used_memory_ids,
+        used_slice_ids,
+        used_event_ids,
+        vec![],
+        vec![],
+    );
+    let state = if outcome.status == "success" {
+        "completed"
+    } else {
+        "failed"
+    };
+    let done = w.finish_run(&run_id, state, Some(result), Some(receipt))?;
+    Ok(serde_json::to_value(done)?)
+}
+
 fn materialize_references(
     r: &hli_store::reader::Reader,
     workspace_id: &str,

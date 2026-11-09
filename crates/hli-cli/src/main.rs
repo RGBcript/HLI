@@ -640,9 +640,47 @@ fn run(args: &[String]) -> Result<(), String> {
                 output,
             )
         }
+        ("run", Some("plan")) => {
+            let id = args.get(2).ok_or("falta run_id")?;
+            let v = call("run.plan", json!({"run_id": id}))?;
+            if output == "human" {
+                print_plan(&v);
+                Ok(())
+            } else {
+                print_value(&v, output)
+            }
+        }
         ("run", Some("approve")) => {
             let id = args.get(2).ok_or("falta run_id")?;
-            print_value(&call("run.approve", json!({"run_id": id}))?, output)
+            let scope = flag(args, "--scope").unwrap_or_else(|| "once".into());
+            let plan_id = flag(args, "--plan");
+            print_value(
+                &call(
+                    "run.approve",
+                    json!({"run_id": id, "scope": scope, "plan_id": plan_id}),
+                )?,
+                output,
+            )
+        }
+        ("run", Some("reject")) => {
+            let id = args.get(2).ok_or("falta run_id")?;
+            let reason = need_flag(args, "--reason")?;
+            print_value(
+                &call("run.reject", json!({"run_id": id, "reason": reason}))?,
+                output,
+            )
+        }
+        ("run", Some("replan")) => {
+            let id = args.get(2).ok_or("falta run_id")?;
+            let reasons: Vec<String> = args
+                .windows(2)
+                .filter(|w| w[0] == "--reason")
+                .map(|w| w[1].clone())
+                .collect();
+            print_value(
+                &call("run.replan", json!({"run_id": id, "reasons": reasons}))?,
+                output,
+            )
         }
         ("prices", Some("list")) => print_value(&call("prices.list", json!({}))?, output),
         ("manifest", Some("get")) => {
@@ -654,6 +692,43 @@ fn run(args: &[String]) -> Result<(), String> {
             print_value(&v, output)
         }
         _ => usage(),
+    }
+}
+
+/// Salida humana del plan durable: pasos, efectos y si requieren aprobación.
+fn print_plan(v: &Value) {
+    let plan = &v["plan"];
+    let run = &v["run"];
+    println!("Plan {}", plan["plan_id"].as_str().unwrap_or("-"));
+    println!("Run {}", run["id"].as_str().unwrap_or("-"));
+    println!("Origin {}", plan["origin"].as_str().unwrap_or("-"));
+    println!("Status {}", plan["status"].as_str().unwrap_or("-"));
+    println!("Revision {}", plan["revision"].as_i64().unwrap_or(1));
+    if let Some(prev) = plan["supersedes_plan_id"].as_str() {
+        println!("Supersedes {prev}");
+    }
+    println!();
+    if let Some(steps) = plan["steps"].as_array() {
+        for s in steps {
+            let n = s["order"].as_i64().unwrap_or(0);
+            let d = s["description"].as_str().unwrap_or("");
+            let e = s["effect"].as_str().unwrap_or("");
+            let text = if s["requires_approval"].as_bool().unwrap_or(false) {
+                format!("{e} · approval required")
+            } else {
+                e.to_string()
+            };
+            println!("{n}. {d:<38} {text}");
+        }
+    }
+    if let Some(summary) = plan["summary"].as_str() {
+        println!("\n{summary}");
+    }
+    if let Some(scope) = plan["approval_scope"].as_str() {
+        println!("Approval scope: {scope}");
+    }
+    if let Some(reason) = plan["rejection_reason"].as_str() {
+        println!("Nota: {reason}");
     }
 }
 
@@ -918,7 +993,16 @@ fn launch_tui(mode: &str, extra: &[&str]) -> Result<(), String> {
 fn is_run_subcommand(arg: &str) -> bool {
     matches!(
         arg,
-        "start" | "get" | "list" | "approve" | "cancel" | "status" | "wait"
+        "start"
+            | "get"
+            | "list"
+            | "approve"
+            | "reject"
+            | "plan"
+            | "replan"
+            | "cancel"
+            | "status"
+            | "wait"
     )
 }
 
@@ -1160,7 +1244,11 @@ fn usage() -> Result<(), String> {
   hli artifact put <file> --workspace <id> | list --workspace <id>
   hli artifact slice <artifact_id> --workspace <id> [--kind K] [--start N] [--end M] [--reason R]
   hli run start --workspace <id> --thread <id> --branch <id> --prompt PROMPT [--provider sim|ollama|openai] [--model M] [--base-url U] [--secret HANDLE] 
-  hli run get <run_id> | list --workspace <id> | approve <run_id>
+  hli run get <run_id> | list --workspace <id>
+  hli run plan <run_id>
+  hli run approve <run_id> [--scope once|run|workspace] [--plan plan_id]
+  hli run replan <run_id> [--reason TEXTO]...
+  hli run reject <run_id> --reason TEXTO
   hli manifest get <manifest_id>
   hli prices list
   hli module install <file.hlimod> | list | inspect <name> | test <name> | remove <name>

@@ -605,6 +605,111 @@ impl Reader {
         })
     }
 
+    pub fn plan_for_run(&self, run_id: &str) -> Result<RunPlan> {
+        self.with(|c| {
+            c.query_row(
+                &format!(
+                    "SELECT {} FROM run_plans WHERE run_id = ?1 ORDER BY revision DESC LIMIT 1",
+                    crate::writer::PLAN_COLS
+                ),
+                [run_id],
+                crate::writer::row_to_plan,
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("plan del run {run_id}")))
+        })
+    }
+
+    /// Todas las revisiones del plan de un run, de la más antigua a la vigente.
+    pub fn plan_revisions(&self, run_id: &str) -> Result<Vec<RunPlan>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {} FROM run_plans WHERE run_id = ?1 ORDER BY revision",
+                crate::writer::PLAN_COLS
+            ))?;
+            let rows = stmt.query_map([run_id], crate::writer::row_to_plan)?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn plan(&self, plan_id: &str) -> Result<RunPlan> {
+        self.with(|c| {
+            c.query_row(
+                &format!(
+                    "SELECT {} FROM run_plans WHERE plan_id = ?1",
+                    crate::writer::PLAN_COLS
+                ),
+                [plan_id],
+                crate::writer::row_to_plan,
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("plan {plan_id}")))
+        })
+    }
+
+    pub fn plans(&self, workspace_id: &str) -> Result<Vec<RunPlan>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {} FROM run_plans WHERE workspace_id = ?1 ORDER BY created_at",
+                crate::writer::PLAN_COLS
+            ))?;
+            let rows = stmt.query_map([workspace_id], crate::writer::row_to_plan)?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    /// Opciones persistidas para reanudar la ejecución aprobada.
+    pub fn plan_execution(&self, run_id: &str) -> Result<Option<Value>> {
+        self.with(|c| {
+            let raw: Option<Option<String>> = c
+                .query_row(
+                    "SELECT execution_json FROM run_plans WHERE run_id = ?1
+                     ORDER BY revision DESC LIMIT 1",
+                    [run_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(raw.flatten().and_then(|s| serde_json::from_str(&s).ok()))
+        })
+    }
+
+    /// Instantánea de una revisión concreta.
+    pub fn plan_execution_of(&self, plan_id: &str) -> Result<Option<Value>> {
+        self.with(|c| {
+            let raw: Option<Option<String>> = c
+                .query_row(
+                    "SELECT execution_json FROM run_plans WHERE plan_id = ?1",
+                    [plan_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(raw.flatten().and_then(|s| serde_json::from_str(&s).ok()))
+        })
+    }
+
+    pub fn grants(&self, workspace_id: &str) -> Result<Vec<PermissionGrant>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT grant_id, workspace_id, effect, scope, created_at, created_by, run_id
+                 FROM permission_grants WHERE workspace_id = ?1 ORDER BY effect",
+            )?;
+            let rows = stmt.query_map([workspace_id], crate::writer::row_to_grant)?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn has_grant(&self, workspace_id: &str, effect: &str) -> Result<bool> {
+        self.with(|c| {
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM permission_grants
+                 WHERE workspace_id = ?1 AND effect = ?2 AND scope = 'workspace'",
+                rusqlite::params![workspace_id, effect],
+                |r| r.get(0),
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     pub fn verify(&self, workspace_id: &str) -> Result<VerifyReport> {
         let events = self.events(workspace_id, None)?;
         let mut prev = zero_hash();

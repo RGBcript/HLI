@@ -195,6 +195,26 @@ pub struct Receipt {
     pub cost: Value,
     pub result_hash: String,
     pub terminal_event: Option<String>,
+    // Procedencia del plan (0.9). Opcionales para que los receipts históricos
+    // sigan siendo legibles sin migración.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_revision: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approval_events: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approved_effects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected_effects: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -359,7 +379,8 @@ pub struct ToolOutcome {
 pub fn run_transition_allowed(from: &str, to: &str) -> bool {
     matches!(
         (from, to),
-        ("queued", "running")
+        ("queued", "planning")
+            | ("queued", "running")
             | ("queued", "completed")
             | ("queued", "cancelled")
             | ("queued", "failed")
@@ -367,6 +388,11 @@ pub fn run_transition_allowed(from: &str, to: &str) -> bool {
             | ("queued", "interrupted")
             | ("queued", "waiting_approval")
             | ("queued", "paused")
+            | ("planning", "waiting_approval")
+            | ("planning", "running")
+            | ("planning", "failed")
+            | ("planning", "cancelled")
+            | ("planning", "interrupted")
             | ("running", "waiting_approval")
             | ("running", "paused")
             | ("running", "cancelling")
@@ -397,6 +423,329 @@ pub fn run_is_terminal(state: &str) -> bool {
         state,
         "completed" | "failed" | "cancelled" | "timed_out" | "interrupted"
     )
+}
+
+// ---------------------------------------------------------------------------
+// 0.9 — Plan durable, aprobación y grants
+// ---------------------------------------------------------------------------
+
+/// Versión del documento de plan (independiente del esquema de eventos).
+pub const PLAN_SCHEMA_VERSION: i64 = 1;
+
+/// Efectos que un plan puede declarar. `unknown` es el cierre seguro: si no se
+/// puede clasificar, se exige aprobación explícita.
+pub const PLAN_EFFECTS: [&str; 6] = [
+    "read",
+    "write",
+    "network",
+    "external_service",
+    "destructive",
+    "unknown",
+];
+
+/// Estados del plan.
+pub const PLAN_STATUSES: [&str; 8] = [
+    "draft",
+    "waiting_approval",
+    "approved",
+    "rejected",
+    "cancelled",
+    "executing",
+    "completed",
+    "failed",
+];
+
+/// Scopes de aprobación admitidos.
+pub const APPROVAL_SCOPES: [&str; 3] = ["once", "run", "workspace"];
+
+pub fn plan_effect_is_known(effect: &str) -> bool {
+    PLAN_EFFECTS.contains(&effect)
+}
+
+/// Sólo `read` avanza sin aprobación; el resto (incluido `unknown`) la exige.
+pub fn effect_requires_approval(effect: &str) -> bool {
+    effect != "read"
+}
+
+pub fn approval_scope_valid(scope: &str) -> bool {
+    APPROVAL_SCOPES.contains(&scope)
+}
+
+pub fn plan_status_valid(status: &str) -> bool {
+    PLAN_STATUSES.contains(&status)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PlanStep {
+    pub step_id: String,
+    pub order: i64,
+    pub description: String,
+    pub operation_class: String,
+    pub effect: String,
+    pub tool_name: Option<String>,
+    pub target: Option<String>,
+    pub requires_approval: bool,
+    pub status: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RunPlan {
+    pub plan_id: String,
+    /// Revisión del plan para este run: 1, 2, 3… Cada replan crea una nueva
+    /// revisión y conserva las anteriores.
+    pub revision: i64,
+    /// Revisión a la que sustituye, si esta nació de un replan.
+    pub supersedes_plan_id: Option<String>,
+    /// Motivos por los que la revisión anterior dejó de ser válida.
+    pub invalidation_reasons: Vec<String>,
+    pub run_id: String,
+    pub workspace_id: String,
+    pub thread_id: String,
+    pub branch_id: String,
+    pub branch_revision: i64,
+    pub context_manifest_id: String,
+    pub origin: String,
+    pub status: String,
+    pub summary: String,
+    pub steps: Vec<PlanStep>,
+    pub requested_effects: Vec<String>,
+    pub content_hash: String,
+    pub created_at: String,
+    pub approved_at: Option<String>,
+    pub rejected_at: Option<String>,
+    pub approved_by: Option<String>,
+    pub approval_scope: Option<String>,
+    pub rejection_reason: Option<String>,
+}
+
+impl RunPlan {
+    /// Sobre canónico del **contenido revisado**: pasos, efectos y vínculos.
+    /// Quedan fuera el estado y los metadatos de aprobación para que el hash
+    /// siga siendo el mismo antes y después de aprobar (es el hash que firma
+    /// la decisión y el que viaja en el receipt).
+    pub fn envelope(&self) -> Value {
+        json!({
+            "schema_version": PLAN_SCHEMA_VERSION,
+            "run_id": self.run_id,
+            "workspace_id": self.workspace_id,
+            "thread_id": self.thread_id,
+            "branch_id": self.branch_id,
+            "branch_revision": self.branch_revision,
+            "context_manifest_id": self.context_manifest_id,
+            "origin": self.origin,
+            "revision": self.revision,
+            "supersedes_plan_id": self.supersedes_plan_id,
+            "invalidation_reasons": self.invalidation_reasons,
+            "summary": self.summary,
+            "steps": self.steps.iter().map(PlanStep::canonical).collect::<Vec<_>>(),
+            "requested_effects": self.requested_effects
+        })
+    }
+
+    pub fn seal(&mut self) {
+        self.content_hash = hash_canonical(&self.envelope());
+    }
+
+    pub fn verify(&self) -> bool {
+        self.content_hash == hash_canonical(&self.envelope())
+    }
+
+    pub fn requires_approval(&self) -> bool {
+        self.steps.iter().any(|s| s.requires_approval)
+    }
+
+    pub fn effectful_requests(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in &self.steps {
+            if s.requires_approval && !out.contains(&s.effect) {
+                out.push(s.effect.clone());
+            }
+        }
+        out
+    }
+}
+
+impl PlanStep {
+    pub fn new(
+        order: i64,
+        description: &str,
+        operation_class: &str,
+        effect: &str,
+        tool_name: Option<&str>,
+        target: Option<&str>,
+    ) -> Self {
+        Self {
+            step_id: crate::ids::new_id("step"),
+            order,
+            description: description.to_string(),
+            operation_class: operation_class.to_string(),
+            effect: effect.to_string(),
+            tool_name: tool_name.map(str::to_string),
+            target: target.map(str::to_string),
+            requires_approval: effect_requires_approval(effect),
+            status: "pending".into(),
+        }
+    }
+
+    /// Campos que entran en el hash del plan: los `step_id` son identidad de
+    /// presentación y no deben alterar el hash de un plan equivalente.
+    pub fn canonical(&self) -> Value {
+        json!({
+            "order": self.order,
+            "description": self.description,
+            "operation_class": self.operation_class,
+            "effect": self.effect,
+            "tool_name": self.tool_name,
+            "target": self.target,
+            "requires_approval": self.requires_approval,
+            "status": self.status
+        })
+    }
+}
+
+/// Grant persistente del Permission Engine para un workspace.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PermissionGrant {
+    pub grant_id: String,
+    pub workspace_id: String,
+    pub effect: String,
+    pub scope: String,
+    pub created_at: String,
+    pub created_by: String,
+    pub run_id: Option<String>,
+}
+
+/// Transiciones válidas del documento de plan. Un plan terminal no revive.
+pub fn plan_transition_allowed(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("draft", "waiting_approval")
+            | ("draft", "approved")
+            | ("draft", "executing")
+            | ("draft", "cancelled")
+            | ("draft", "failed")
+            | ("waiting_approval", "approved")
+            | ("waiting_approval", "executing")
+            | ("waiting_approval", "rejected")
+            | ("waiting_approval", "cancelled")
+            | ("waiting_approval", "failed")
+            | ("approved", "executing")
+            | ("approved", "cancelled")
+            | ("approved", "failed")
+            | ("executing", "completed")
+            | ("executing", "failed")
+            | ("executing", "waiting_approval")
+            | ("executing", "cancelled")
+    )
+}
+
+pub fn plan_is_terminal(status: &str) -> bool {
+    matches!(status, "rejected" | "cancelled" | "completed" | "failed")
+}
+
+// ---------------------------------------------------------------------------
+// Instantánea durable de ejecución (separada del RunPlan público)
+// ---------------------------------------------------------------------------
+
+/// Versión del documento de instantánea.
+pub const EXEC_SNAPSHOT_VERSION: i64 = 1;
+
+/// Referencia versionada a un secreto. Nunca contiene el valor.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SecretHandleRef {
+    pub id: String,
+    pub version: String,
+}
+
+/// Módulo y versión que participaron en la planificación.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModuleVersion {
+    pub name: String,
+    pub version: String,
+}
+
+/// Instancia MCH relevante para la ejecución revisada.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExecMchInstance {
+    pub name: String,
+    pub profile: String,
+    pub module_name: String,
+    pub version: String,
+}
+
+/// Parámetros de muestreo fijados al planificar.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ExecSampling {
+    pub temperature: f64,
+    pub max_tokens: i64,
+    pub seed: i64,
+}
+
+/// Instantánea privada de las condiciones revisadas. Al aprobar se verifica su
+/// hash y su vigencia; si algo cambió, la aprobación se invalida en lugar de
+/// sustituir la configuración en silencio.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExecSnapshot {
+    pub snapshot_id: String,
+    pub snapshot_version: i64,
+    pub run_id: String,
+    pub plan_id: String,
+    pub provider_id: String,
+    pub provider_kind: String,
+    pub endpoint: String,
+    pub model: String,
+    pub adapter_version: String,
+    pub sampling: ExecSampling,
+    pub timeout_secs: u64,
+    pub budget_tokens: i64,
+    pub context_manifest_id: String,
+    pub context_manifest_hash: String,
+    pub branch_revision: i64,
+    /// tool → allow|ask|deny, ordenado para un hash estable.
+    pub tool_policy: std::collections::BTreeMap<String, String>,
+    pub module_versions: Vec<ModuleVersion>,
+    pub mch_instances: Vec<ExecMchInstance>,
+    pub secret_handles: Vec<SecretHandleRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_delay_ms: Option<u64>,
+    pub created_at: String,
+    pub content_hash: String,
+}
+
+impl ExecSnapshot {
+    /// Sobre canónico: todo el documento salvo `content_hash`. No incluye
+    /// valores de secreto, sólo identificadores y versiones.
+    pub fn envelope(&self) -> Value {
+        json!({
+            "snapshot_version": self.snapshot_version,
+            "run_id": self.run_id,
+            "plan_id": self.plan_id,
+            "provider_id": self.provider_id,
+            "provider_kind": self.provider_kind,
+            "endpoint": self.endpoint,
+            "model": self.model,
+            "adapter_version": self.adapter_version,
+            "sampling": self.sampling,
+            "timeout_secs": self.timeout_secs,
+            "budget_tokens": self.budget_tokens,
+            "context_manifest_id": self.context_manifest_id,
+            "context_manifest_hash": self.context_manifest_hash,
+            "branch_revision": self.branch_revision,
+            "tool_policy": self.tool_policy,
+            "module_versions": self.module_versions,
+            "mch_instances": self.mch_instances,
+            "secret_handles": self.secret_handles,
+            "created_at": self.created_at
+        })
+    }
+
+    pub fn seal(&mut self) {
+        self.content_hash = hash_canonical(&self.envelope());
+    }
+
+    pub fn verify(&self) -> bool {
+        self.content_hash == hash_canonical(&self.envelope())
+    }
 }
 
 #[cfg(test)]
@@ -452,5 +801,90 @@ mod tests {
         let before = e.integrity.event_hash.clone();
         e.integrity.previous_hash = "sha256:abc".into();
         assert_ne!(e.compute_hash(), before);
+    }
+
+    fn plan() -> RunPlan {
+        RunPlan {
+            plan_id: "plan_1".into(),
+            revision: 1,
+            supersedes_plan_id: None,
+            invalidation_reasons: vec![],
+            run_id: "run_1".into(),
+            workspace_id: "ws_1".into(),
+            thread_id: "thr_1".into(),
+            branch_id: "br_1".into(),
+            branch_revision: 4,
+            context_manifest_id: "ctx_1".into(),
+            origin: "runtime_generated".into(),
+            status: "waiting_approval".into(),
+            summary: "plan".into(),
+            steps: vec![PlanStep::new(
+                1,
+                "read",
+                "filesystem.read",
+                "read",
+                Some("filesystem.read"),
+                None,
+            )],
+            requested_effects: vec!["read".into()],
+            content_hash: String::new(),
+            created_at: "2026-11-09T00:00:00.000Z".into(),
+            approved_at: None,
+            rejected_at: None,
+            approved_by: None,
+            approval_scope: None,
+            rejection_reason: None,
+        }
+    }
+
+    #[test]
+    fn plan_hash_is_canonical_and_sensitive_to_steps() {
+        let mut a = plan();
+        let mut b = plan();
+        a.seal();
+        b.seal();
+        assert_eq!(a.content_hash, b.content_hash);
+        assert!(a.verify());
+        b.steps[0].description = "otra cosa".into();
+        b.seal();
+        assert_ne!(a.content_hash, b.content_hash);
+    }
+
+    #[test]
+    fn plan_hash_ignores_identifier_timestamps() {
+        let mut a = plan();
+        let mut b = plan();
+        a.seal();
+        b.seal();
+        // El hash cubre el contenido operativo, no la identidad del plan.
+        assert_eq!(a.content_hash, b.content_hash);
+        assert_ne!(a.plan_id, "otro".to_string());
+    }
+
+    #[test]
+    fn effect_policy_is_explicit() {
+        assert!(!effect_requires_approval("read"));
+        for e in [
+            "write",
+            "network",
+            "external_service",
+            "destructive",
+            "unknown",
+        ] {
+            assert!(effect_requires_approval(e));
+        }
+        assert!(approval_scope_valid("once"));
+        assert!(!approval_scope_valid("global"));
+    }
+
+    #[test]
+    fn terminal_plans_and_runs_are_terminal() {
+        assert!(plan_is_terminal("rejected"));
+        assert!(!plan_transition_allowed("rejected", "approved"));
+        assert!(!plan_transition_allowed("completed", "executing"));
+        assert!(run_transition_allowed("queued", "planning"));
+        assert!(run_transition_allowed("planning", "waiting_approval"));
+        assert!(run_transition_allowed("waiting_approval", "running"));
+        assert!(!run_transition_allowed("completed", "planning"));
     }
 }

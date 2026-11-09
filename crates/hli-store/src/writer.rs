@@ -130,6 +130,36 @@ pub enum WriteCmd {
         receipt: Option<Receipt>,
         reply: Reply<Run>,
     },
+    SavePlan {
+        plan: RunPlan,
+        execution: Option<Value>,
+        reply: Reply<RunPlan>,
+    },
+    RevisePlan {
+        plan: RunPlan,
+        execution: Option<Value>,
+        reply: Reply<RunPlan>,
+    },
+    UpdatePlan {
+        plan: RunPlan,
+        reply: Reply<RunPlan>,
+    },
+    SetPlanStatus {
+        plan_id: String,
+        status: String,
+        approval_scope: Option<String>,
+        approved_by: Option<String>,
+        rejection_reason: Option<String>,
+        reply: Reply<RunPlan>,
+    },
+    RecordGrant {
+        workspace_id: String,
+        effect: String,
+        scope: String,
+        created_by: String,
+        run_id: Option<String>,
+        reply: Reply<PermissionGrant>,
+    },
     CommitMemory {
         workspace_id: String,
         scope: String,
@@ -347,6 +377,63 @@ impl Writer {
             state: state.to_string(),
             result,
             receipt,
+            reply,
+        })
+    }
+
+    pub fn save_plan(&self, plan: RunPlan, execution: Option<Value>) -> Result<RunPlan> {
+        self.call(|reply| WriteCmd::SavePlan {
+            plan,
+            execution,
+            reply,
+        })
+    }
+
+    /// Inserta una **nueva revisión** del plan. La anterior se conserva intacta.
+    pub fn revise_plan(&self, plan: RunPlan, execution: Option<Value>) -> Result<RunPlan> {
+        self.call(|reply| WriteCmd::RevisePlan {
+            plan,
+            execution,
+            reply,
+        })
+    }
+
+    pub fn update_plan(&self, plan: RunPlan) -> Result<RunPlan> {
+        self.call(|reply| WriteCmd::UpdatePlan { plan, reply })
+    }
+
+    pub fn set_plan_status(
+        &self,
+        plan_id: &str,
+        status: &str,
+        approval_scope: Option<String>,
+        approved_by: Option<String>,
+        rejection_reason: Option<String>,
+    ) -> Result<RunPlan> {
+        self.call(|reply| WriteCmd::SetPlanStatus {
+            plan_id: plan_id.to_string(),
+            status: status.to_string(),
+            approval_scope,
+            approved_by,
+            rejection_reason,
+            reply,
+        })
+    }
+
+    pub fn record_grant(
+        &self,
+        workspace_id: &str,
+        effect: &str,
+        scope: &str,
+        created_by: &str,
+        run_id: Option<String>,
+    ) -> Result<PermissionGrant> {
+        self.call(|reply| WriteCmd::RecordGrant {
+            workspace_id: workspace_id.to_string(),
+            effect: effect.to_string(),
+            scope: scope.to_string(),
+            created_by: created_by.to_string(),
+            run_id,
             reply,
         })
     }
@@ -635,6 +722,55 @@ impl State {
                 reply,
             } => {
                 let _ = reply.send(self.finish_run(&run_id, &state, result, receipt));
+            }
+            WriteCmd::SavePlan {
+                plan,
+                execution,
+                reply,
+            } => {
+                let _ = reply.send(self.save_plan(plan, execution));
+            }
+            WriteCmd::RevisePlan {
+                plan,
+                execution,
+                reply,
+            } => {
+                let _ = reply.send(self.revise_plan(plan, execution));
+            }
+            WriteCmd::UpdatePlan { plan, reply } => {
+                let _ = reply.send(self.update_plan(plan));
+            }
+            WriteCmd::SetPlanStatus {
+                plan_id,
+                status,
+                approval_scope,
+                approved_by,
+                rejection_reason,
+                reply,
+            } => {
+                let _ = reply.send(self.set_plan_status(
+                    &plan_id,
+                    &status,
+                    approval_scope,
+                    approved_by,
+                    rejection_reason,
+                ));
+            }
+            WriteCmd::RecordGrant {
+                workspace_id,
+                effect,
+                scope,
+                created_by,
+                run_id,
+                reply,
+            } => {
+                let _ = reply.send(self.record_grant(
+                    &workspace_id,
+                    &effect,
+                    &scope,
+                    &created_by,
+                    run_id,
+                ));
             }
             WriteCmd::CommitMemory {
                 workspace_id,
@@ -1121,6 +1257,240 @@ impl State {
             out.receipt = Some(r);
         }
         Ok(out)
+    }
+
+    fn save_plan(&mut self, mut plan: RunPlan, execution: Option<Value>) -> Result<RunPlan> {
+        if !plan_status_valid(&plan.status) {
+            return Err(HliError::invalid(format!(
+                "estado de plan inválido: {}",
+                plan.status
+            )));
+        }
+        if plan.origin != "provider" && plan.origin != "runtime_generated" {
+            return Err(HliError::invalid(format!(
+                "origen de plan inválido: {}",
+                plan.origin
+            )));
+        }
+        plan.seal();
+        let tx = self.conn.transaction()?;
+        upsert_plan_row(&tx, &plan, execution.as_ref())?;
+        append_event(
+            &tx,
+            &plan.workspace_id,
+            Some(&plan.thread_id),
+            Some(&plan.branch_id),
+            "plan.created",
+            json!({"kind": "agent", "id": "hli"}),
+            json!({
+                "run_id": plan.run_id,
+                "plan_id": plan.plan_id,
+                "origin": plan.origin,
+                "status": plan.status,
+                "content_hash": plan.content_hash,
+                "requested_effects": plan.requested_effects,
+                "steps": plan.steps.len()
+            }),
+            vec![],
+            Some(&format!("plan.created:{}", plan.plan_id)),
+        )?;
+        tx.commit()?;
+        Ok(plan)
+    }
+
+    /// Nueva revisión del plan para el mismo run. No modifica la anterior y
+    /// exige que `supersedes_plan_id` apunte a la vigente.
+    fn revise_plan(&mut self, mut plan: RunPlan, execution: Option<Value>) -> Result<RunPlan> {
+        if plan.revision < 2 {
+            return Err(HliError::invalid(
+                "una revisión nueva debe tener revision >= 2",
+            ));
+        }
+        let Some(prev_id) = plan.supersedes_plan_id.clone() else {
+            return Err(HliError::invalid("falta supersedes_plan_id"));
+        };
+        let prev = load_plan(&self.conn, &prev_id)?
+            .ok_or_else(|| HliError::not_found(&format!("plan anterior {prev_id}")))?;
+        if prev.run_id != plan.run_id {
+            return Err(HliError::conflict("el plan anterior pertenece a otro run"));
+        }
+        if plan.revision != prev.revision + 1 {
+            return Err(HliError::conflict(format!(
+                "revisión no consecutiva: {} tras {}",
+                plan.revision, prev.revision
+            )));
+        }
+        if plan.status != "waiting_approval" {
+            return Err(HliError::invalid(
+                "una revisión replanificada nace en waiting_approval",
+            ));
+        }
+        plan.seal();
+        let tx = self.conn.transaction()?;
+        insert_plan_row(&tx, &plan, execution.as_ref())?;
+        append_event(
+            &tx,
+            &plan.workspace_id,
+            Some(&plan.thread_id),
+            Some(&plan.branch_id),
+            "plan.revised",
+            json!({"kind": "agent", "id": "hli"}),
+            json!({
+                "run_id": plan.run_id,
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "supersedes_plan_id": plan.supersedes_plan_id,
+                "invalidation_reasons": plan.invalidation_reasons,
+                "content_hash": plan.content_hash,
+                "status": plan.status
+            }),
+            vec![],
+            Some(&format!("plan.revised:{}", plan.plan_id)),
+        )?;
+        tx.commit()?;
+        Ok(plan)
+    }
+
+    fn update_plan(&mut self, mut plan: RunPlan) -> Result<RunPlan> {
+        plan.seal();
+        let tx = self.conn.transaction()?;
+        upsert_plan_row(&tx, &plan, None)?;
+        tx.commit()?;
+        Ok(plan)
+    }
+
+    fn set_plan_status(
+        &mut self,
+        plan_id: &str,
+        status: &str,
+        approval_scope: Option<String>,
+        approved_by: Option<String>,
+        rejection_reason: Option<String>,
+    ) -> Result<RunPlan> {
+        if !plan_status_valid(status) {
+            return Err(HliError::invalid(format!(
+                "estado de plan inválido: {status}"
+            )));
+        }
+        if let Some(scope) = &approval_scope
+            && !approval_scope_valid(scope)
+        {
+            return Err(HliError::invalid(format!(
+                "scope de aprobación inválido: {scope}"
+            )));
+        }
+        let mut plan = match load_plan(&self.conn, plan_id)? {
+            Some(p) => p,
+            None => return Err(HliError::not_found(&format!("plan {plan_id}"))),
+        };
+        // Idempotencia: repetir la misma transición devuelve el estado actual
+        // sin emitir un segundo evento.
+        if plan.status == status {
+            return Ok(plan);
+        }
+        if !plan_transition_allowed(&plan.status, status) {
+            return Err(HliError::conflict(format!(
+                "transición de plan inválida: {} -> {status}",
+                plan.status
+            )));
+        }
+        let now = now_iso();
+        plan.status = status.to_string();
+        match status {
+            "approved" => {
+                plan.approved_at = Some(now.clone());
+                plan.approved_by = approved_by.clone();
+                plan.approval_scope = approval_scope.clone();
+                plan.rejected_at = None;
+                plan.rejection_reason = None;
+            }
+            "rejected" => {
+                plan.rejected_at = Some(now.clone());
+                plan.rejection_reason = rejection_reason.clone();
+                plan.approval_scope = approval_scope.clone();
+            }
+            "cancelled" => {
+                plan.rejection_reason = rejection_reason.clone();
+            }
+            _ => {}
+        }
+        plan.seal();
+
+        let kind = match status {
+            "approved" => "plan.approved",
+            "rejected" => "plan.rejected",
+            "cancelled" => "run.approval_cancelled",
+            "executing" => "plan.execution_started",
+            "completed" => "plan.completed",
+            "failed" => "plan.failed",
+            _ => "plan.updated",
+        };
+        let mut payload = json!({
+            "run_id": plan.run_id,
+            "plan_id": plan.plan_id,
+            "status": plan.status,
+            "content_hash": plan.content_hash,
+            "timestamp": now
+        });
+        if let Some(scope) = &plan.approval_scope {
+            payload["scope"] = json!(scope);
+        }
+        if let Some(user) = &plan.approved_by {
+            payload["approved_by"] = json!(user);
+        }
+        if status == "approved" {
+            payload["approved_effects"] = json!(plan.effectful_requests());
+        }
+        if let Some(reason) = &plan.rejection_reason {
+            payload["reason"] = json!(reason);
+        }
+        if status == "rejected" {
+            payload["rejected_effects"] = json!(plan.effectful_requests());
+        }
+
+        let tx = self.conn.transaction()?;
+        upsert_plan_row(&tx, &plan, None)?;
+        append_event(
+            &tx,
+            &plan.workspace_id,
+            Some(&plan.thread_id),
+            Some(&plan.branch_id),
+            kind,
+            json!({"kind": "agent", "id": "hli"}),
+            payload,
+            vec![],
+            Some(&format!("{kind}:{}:{status}", plan.plan_id)),
+        )?;
+        tx.commit()?;
+        Ok(plan)
+    }
+
+    fn record_grant(
+        &mut self,
+        workspace_id: &str,
+        effect: &str,
+        scope: &str,
+        created_by: &str,
+        run_id: Option<String>,
+    ) -> Result<PermissionGrant> {
+        if !plan_effect_is_known(effect) {
+            return Err(HliError::invalid(format!("efecto inválido: {effect}")));
+        }
+        schema::require_workspace(&self.conn, workspace_id)?;
+        let now = now_iso();
+        self.conn.execute(
+            "INSERT INTO permission_grants(grant_id, workspace_id, effect, scope, created_at, created_by, run_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(workspace_id, effect, scope) DO NOTHING",
+            params![new_id("grant"), workspace_id, effect, scope, now, created_by, run_id],
+        )?;
+        let grant = self.conn.query_row(
+            "SELECT grant_id, workspace_id, effect, scope, created_at, created_by, run_id
+                 FROM permission_grants WHERE workspace_id = ?1 AND effect = ?2 AND scope = ?3",
+            params![workspace_id, effect, scope],
+            row_to_grant,
+        )?;
+        Ok(grant)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1696,6 +2066,28 @@ impl State {
             bytes: mem_nd.into_bytes(),
         });
 
+        let plans = load_plans(&self.conn, workspace_id)?;
+        let mut plans_nd = String::new();
+        for p in &plans {
+            plans_nd.push_str(&canonical_json(&serde_json::to_value(p)?));
+            plans_nd.push('\n');
+        }
+        files.push(ArchiveFile {
+            path: "plans.ndjson".into(),
+            bytes: plans_nd.into_bytes(),
+        });
+
+        let grants = load_grants(&self.conn, workspace_id)?;
+        let mut grants_nd = String::new();
+        for g in &grants {
+            grants_nd.push_str(&canonical_json(&serde_json::to_value(g)?));
+            grants_nd.push('\n');
+        }
+        files.push(ArchiveFile {
+            path: "grants.ndjson".into(),
+            bytes: grants_nd.into_bytes(),
+        });
+
         let mut stmt = self
             .conn
             .prepare("SELECT sha256 FROM artifacts WHERE workspace_id = ?1 ORDER BY sha256")?;
@@ -1747,7 +2139,9 @@ impl State {
                 "artifacts": shas.len(),
                 "runs": runs.len(),
                 "manifests": manifests.len(),
-                "memories": memories.len()
+                "memories": memories.len(),
+                "plans": plans.len(),
+                "grants": grants.len()
             },
             "files": file_meta,
             "redactions": {"secrets": "handles-only"}
@@ -1992,6 +2386,65 @@ impl State {
                 )?;
             }
         }
+        if let Some(f) = files.iter().find(|f| f.path == "plans.ndjson") {
+            let text = String::from_utf8_lossy(&f.bytes).to_string();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let p: RunPlan = serde_json::from_str(line)?;
+                let body = canonical_json(&serde_json::to_value(&p).unwrap_or(json!({})));
+                tx.execute(
+                    "INSERT OR IGNORE INTO run_plans(plan_id, run_id, revision, supersedes_plan_id,
+                        invalidation_reasons, workspace_id, thread_id, branch_id, branch_revision,
+                        context_manifest_id, origin, status, content_hash, body_json,
+                        execution_json, created_at, updated_at, approved_at, rejected_at,
+                        approved_by, approval_scope, rejection_reason)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL,
+                             ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                    params![
+                        p.plan_id,
+                        p.run_id,
+                        p.revision,
+                        p.supersedes_plan_id,
+                        canonical_json(&json!(p.invalidation_reasons)),
+                        p.workspace_id,
+                        p.thread_id,
+                        p.branch_id,
+                        p.branch_revision,
+                        p.context_manifest_id,
+                        p.origin,
+                        p.status,
+                        p.content_hash,
+                        body,
+                        p.created_at,
+                        p.created_at,
+                        p.approved_at,
+                        p.rejected_at,
+                        p.approved_by,
+                        p.approval_scope,
+                        p.rejection_reason
+                    ],
+                )?;
+            }
+        }
+        if let Some(f) = files.iter().find(|f| f.path == "grants.ndjson") {
+            let text = String::from_utf8_lossy(&f.bytes).to_string();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let g: PermissionGrant = serde_json::from_str(line)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO permission_grants(grant_id, workspace_id, effect, scope,
+                        created_at, created_by, run_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        g.grant_id,
+                        g.workspace_id,
+                        g.effect,
+                        g.scope,
+                        g.created_at,
+                        g.created_by,
+                        g.run_id
+                    ],
+                )?;
+            }
+        }
         if let Some(f) = files.iter().find(|f| f.path == "memories.ndjson") {
             let text = String::from_utf8_lossy(&f.bytes).to_string();
             for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -2231,6 +2684,123 @@ pub(crate) fn load_events(conn: &Connection, workspace_id: &str) -> Result<Vec<E
 
 pub(crate) const RUN_COLS: &str = "id, workspace_id, thread_id, branch_id, branch_revision, state,
     prompt, started_at, ended_at, result_json, receipt_json";
+
+pub(crate) const PLAN_COLS: &str = "plan_id, run_id, workspace_id, thread_id, branch_id,
+    branch_revision, context_manifest_id, origin, status, content_hash, body_json,
+    execution_json, created_at, updated_at, approved_at, rejected_at, approved_by,
+    approval_scope, rejection_reason, revision";
+
+pub(crate) fn row_to_plan(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunPlan> {
+    let body: String = r.get(10)?;
+    serde_json::from_str::<RunPlan>(&body).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
+
+pub(crate) fn load_plan(conn: &Connection, plan_id: &str) -> Result<Option<RunPlan>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {PLAN_COLS} FROM run_plans WHERE plan_id = ?1"),
+            [plan_id],
+            row_to_plan,
+        )
+        .optional()?)
+}
+
+fn upsert_plan_row(tx: &Transaction<'_>, plan: &RunPlan, execution: Option<&Value>) -> Result<()> {
+    let body = canonical_json(&serde_json::to_value(plan).unwrap_or(json!({})));
+    let exec = execution.map(canonical_json);
+    let reasons = canonical_json(&json!(plan.invalidation_reasons));
+    tx.execute(
+        "INSERT INTO run_plans(plan_id, run_id, revision, supersedes_plan_id, invalidation_reasons,
+                               workspace_id, thread_id, branch_id, branch_revision,
+                               context_manifest_id, origin, status, content_hash, body_json,
+                               execution_json, created_at, updated_at, approved_at, rejected_at,
+                               approved_by, approval_scope, rejection_reason)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                 ?18, ?19, ?20, ?21, ?22)
+         ON CONFLICT(plan_id) DO UPDATE SET
+           status = excluded.status,
+           content_hash = excluded.content_hash,
+           body_json = excluded.body_json,
+           execution_json = COALESCE(excluded.execution_json, run_plans.execution_json),
+           updated_at = excluded.updated_at,
+           approved_at = excluded.approved_at,
+           rejected_at = excluded.rejected_at,
+           approved_by = excluded.approved_by,
+           approval_scope = excluded.approval_scope,
+           rejection_reason = excluded.rejection_reason",
+        params![
+            plan.plan_id,
+            plan.run_id,
+            plan.revision,
+            plan.supersedes_plan_id,
+            reasons,
+            plan.workspace_id,
+            plan.thread_id,
+            plan.branch_id,
+            plan.branch_revision,
+            plan.context_manifest_id,
+            plan.origin,
+            plan.status,
+            plan.content_hash,
+            body,
+            exec,
+            plan.created_at,
+            now_iso(),
+            plan.approved_at,
+            plan.rejected_at,
+            plan.approved_by,
+            plan.approval_scope,
+            plan.rejection_reason
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_plan_row(tx: &Transaction<'_>, plan: &RunPlan, execution: Option<&Value>) -> Result<()> {
+    let n: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM run_plans WHERE plan_id = ?1",
+        [&plan.plan_id],
+        |r| r.get(0),
+    )?;
+    if n > 0 {
+        return Err(HliError::conflict(format!(
+            "la revisión {} ya existe",
+            plan.plan_id
+        )));
+    }
+    upsert_plan_row(tx, plan, execution)
+}
+
+pub(crate) fn row_to_grant(r: &rusqlite::Row<'_>) -> rusqlite::Result<PermissionGrant> {
+    Ok(PermissionGrant {
+        grant_id: r.get(0)?,
+        workspace_id: r.get(1)?,
+        effect: r.get(2)?,
+        scope: r.get(3)?,
+        created_at: r.get(4)?,
+        created_by: r.get(5)?,
+        run_id: r.get(6)?,
+    })
+}
+
+fn load_plans(conn: &Connection, workspace_id: &str) -> Result<Vec<RunPlan>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PLAN_COLS} FROM run_plans WHERE workspace_id = ?1 ORDER BY created_at"
+    ))?;
+    let rows = stmt.query_map([workspace_id], row_to_plan)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn load_grants(conn: &Connection, workspace_id: &str) -> Result<Vec<PermissionGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT grant_id, workspace_id, effect, scope, created_at, created_by, run_id
+         FROM permission_grants WHERE workspace_id = ?1 ORDER BY effect",
+    )?;
+    let rows = stmt.query_map([workspace_id], row_to_grant)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
 
 pub(crate) fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {

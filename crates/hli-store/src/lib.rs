@@ -36,8 +36,10 @@ impl Store {
         let mut conn = Connection::open(&db_path)?;
         migrations::ensure(&mut conn)?;
         migrations::verify_schema(&conn)?;
+        // Un run waiting_approval es durable: sobrevive al reinicio con su plan
+        // y su instantánea. Sólo los estados con worker vivo quedan huérfanos.
         let _ = conn.execute(
-            "UPDATE runs SET state = 'interrupted', ended_at = ?1              WHERE state IN ('queued','running','cancelling','waiting_approval')",
+            "UPDATE runs SET state = 'interrupted', ended_at = ?1              WHERE state IN ('queued','running','cancelling','planning')",
             rusqlite::params![hli_core::time::now_iso()],
         );
         let _ = conn.execute(

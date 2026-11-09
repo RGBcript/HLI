@@ -58,8 +58,8 @@ fn migration_applies_in_order() {
     let mut conn = Connection::open(home.db()).unwrap();
     let report = migrations::apply(&mut conn, migrations::DATABASE_SCHEMA_VERSION).unwrap();
     assert_eq!(report.from_version, 0);
-    assert_eq!(report.applied, vec![1, 2, 3, 4, 5, 6, 7]);
-    assert_eq!(versions(&home), vec![1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(report.applied, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(versions(&home), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn migration_is_not_reapplied() {
     migrations::apply(&mut conn, migrations::DATABASE_SCHEMA_VERSION).unwrap();
     let again = migrations::apply(&mut conn, migrations::DATABASE_SCHEMA_VERSION).unwrap();
     assert!(again.applied.is_empty());
-    assert_eq!(versions(&home).len(), 7);
+    assert_eq!(versions(&home).len(), 8);
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn backup_is_created_before_apply() {
 
     let (report, backup) = migrations::apply_path(&home.db(), &backups, true).unwrap();
     assert_eq!(report.from_version, 5);
-    assert_eq!(report.to_version, 7);
+    assert_eq!(report.to_version, 8);
     let backup = backup.expect("apply debe crear backup");
     assert!(backup.exists());
     let conn = Connection::open(&backup).unwrap();

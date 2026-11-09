@@ -1,6 +1,9 @@
 //! Agent runtime de HLI 0.2: manifiesto de contexto, proveedor determinista y
 //! ejecución de herramientas con permisos. Sin red y sin coste externo.
 
+pub mod plan;
+pub use plan::*;
+
 use std::path::{Path, PathBuf};
 
 use hli_core::{HliError, Result, canon::hash_canonical, ids::new_id, model::*, time::now_iso};

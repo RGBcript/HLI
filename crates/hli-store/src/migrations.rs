@@ -84,6 +84,11 @@ fn steps() -> &'static [Step] {
             name: "0007_module_signing",
             apply: m0007_module_signing,
         },
+        Step {
+            version: 8,
+            name: "0008_run_plans",
+            apply: m0008_run_plans,
+        },
     ]
 }
 
@@ -209,6 +214,8 @@ pub fn verify_schema(conn: &Connection) -> Result<()> {
         "modules",
         "mch_profiles",
         "mch_instances",
+        "run_plans",
+        "permission_grants",
     ] {
         if !table_exists(conn, table)? {
             return Err(HliError::conflict(format!(
@@ -620,6 +627,52 @@ CREATE TABLE IF NOT EXISTS module_signatures (
   payload_hash TEXT,
   signed_at    TEXT,
   PRIMARY KEY (module_name, version)
+);
+"#,
+    )?;
+    Ok(())
+}
+
+fn m0008_run_plans(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS run_plans (
+  plan_id               TEXT PRIMARY KEY,
+  run_id                TEXT NOT NULL,
+  revision              INTEGER NOT NULL,
+  supersedes_plan_id    TEXT,
+  invalidation_reasons  TEXT NOT NULL DEFAULT '[]',
+  workspace_id          TEXT NOT NULL REFERENCES workspaces(id),
+  thread_id             TEXT NOT NULL,
+  branch_id             TEXT NOT NULL,
+  branch_revision       INTEGER NOT NULL,
+  context_manifest_id   TEXT NOT NULL,
+  origin                TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  content_hash          TEXT NOT NULL,
+  body_json             TEXT NOT NULL,
+  execution_json        TEXT,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  approved_at           TEXT,
+  rejected_at           TEXT,
+  approved_by           TEXT,
+  approval_scope        TEXT,
+  rejection_reason      TEXT,
+  UNIQUE (run_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_run_plans_run    ON run_plans(run_id, revision);
+CREATE INDEX IF NOT EXISTS idx_run_plans_ws     ON run_plans(workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_run_plans_status ON run_plans(workspace_id, status);
+CREATE TABLE IF NOT EXISTS permission_grants (
+  grant_id     TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  effect       TEXT NOT NULL,
+  scope        TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  created_by   TEXT NOT NULL,
+  run_id       TEXT,
+  UNIQUE (workspace_id, effect, scope)
 );
 "#,
     )?;
