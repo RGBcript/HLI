@@ -6,7 +6,7 @@
 pub use crate::model::EVENT_SCHEMA_VERSION;
 
 /// Versión del esquema SQLite (ver `hli_store::migrations`).
-pub const DATABASE_SCHEMA_VERSION: i64 = 8;
+pub const DATABASE_SCHEMA_VERSION: i64 = 9;
 /// Versión de los archivos de configuración (`providers.toml`, trust store...).
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 /// Versión del contenedor `.hliar`.

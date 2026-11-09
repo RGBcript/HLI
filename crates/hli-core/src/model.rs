@@ -159,6 +159,10 @@ pub struct Run {
     pub branch_id: String,
     pub branch_revision: i64,
     pub state: String,
+    /// Distingue una espera de plan (`plan`) de una espera de permiso de tool
+    /// (`tool`); `None` fuera de `waiting_approval`.
+    #[serde(default)]
+    pub approval_kind: Option<String>,
     pub prompt: String,
     pub started_at: String,
     pub ended_at: Option<String>,
@@ -223,6 +227,18 @@ pub struct Receipt {
     pub superseded_plan_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invalidation_events: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_decisions: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_request_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tool_invocations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_tool_invocations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consumed_once_grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effective_workspace_grants: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -621,6 +637,108 @@ pub struct PermissionGrant {
     pub created_at: String,
     pub created_by: String,
     pub run_id: Option<String>,
+}
+
+
+// ---------------------------------------------------------------------------
+// Permisos por invocación (0.10)
+// ---------------------------------------------------------------------------
+
+pub const TOOL_REQUEST_STATUSES: [&str; 6] = [
+    "pending",
+    "approved",
+    "denied",
+    "cancelled",
+    "expired",
+    "superseded",
+];
+
+pub fn tool_request_status_valid(status: &str) -> bool {
+    TOOL_REQUEST_STATUSES.contains(&status)
+}
+
+/// Solicitud durable para autorizar **una invocación concreta**. No contiene
+/// argumentos completos: sólo su hash, un resumen sin secretos y el target
+/// normalizado.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ToolPermissionRequest {
+    pub request_id: String,
+    pub run_id: String,
+    pub plan_id: String,
+    pub plan_revision: i64,
+    pub workspace_id: String,
+    pub thread_id: String,
+    pub branch_id: String,
+    pub tool_name: String,
+    pub operation: String,
+    pub effect: String,
+    pub target: Option<String>,
+    pub arguments_hash: String,
+    pub arguments_summary: String,
+    pub reason: String,
+    pub requested_scope: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub decided_at: Option<String>,
+    pub decided_by: Option<String>,
+    pub decision: Option<String>,
+    pub decision_scope: Option<String>,
+    pub content_hash: String,
+}
+
+impl ToolPermissionRequest {
+    pub fn envelope(&self) -> Value {
+        json!({
+            "request_id": self.request_id,
+            "run_id": self.run_id,
+            "plan_id": self.plan_id,
+            "plan_revision": self.plan_revision,
+            "workspace_id": self.workspace_id,
+            "thread_id": self.thread_id,
+            "branch_id": self.branch_id,
+            "tool_name": self.tool_name,
+            "operation": self.operation,
+            "effect": self.effect,
+            "target": self.target,
+            "arguments_hash": self.arguments_hash,
+            "arguments_summary": self.arguments_summary,
+            "reason": self.reason,
+            "requested_scope": self.requested_scope,
+            "status": self.status,
+            "created_at": self.created_at,
+            "decided_at": self.decided_at,
+            "decided_by": self.decided_by,
+            "decision": self.decision,
+            "decision_scope": self.decision_scope
+        })
+    }
+
+    pub fn seal(&mut self) {
+        self.content_hash = hash_canonical(&self.envelope());
+    }
+
+    pub fn verify(&self) -> bool {
+        self.content_hash == hash_canonical(&self.envelope())
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.status.as_str(), "approved" | "denied" | "cancelled" | "expired" | "superseded")
+    }
+}
+
+/// Grant por invocación: `once` no se persiste (se consume al decidir);
+/// `run` dura hasta el estado terminal del run; `workspace` sobrevive.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ToolGrant {
+    pub grant_id: String,
+    pub workspace_id: String,
+    pub run_id: Option<String>,
+    pub effect: String,
+    pub tool_name: String,
+    pub target: Option<String>,
+    pub scope: String,
+    pub created_at: String,
+    pub created_by: String,
 }
 
 /// Transiciones válidas del documento de plan. Un plan terminal no revive.
