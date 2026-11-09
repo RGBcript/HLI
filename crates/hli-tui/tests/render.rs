@@ -698,9 +698,9 @@ fn transcript_projection_preserves_event_order() {
         "2026-11-08T10:00:00Z",
     )];
     let events = serde_json::json!([
-        {"run_id": "run_1", "sequence": 3, "type": "model.responded"},
-        {"run_id": "run_1", "sequence": 1, "type": "model.requested"},
-        {"run_id": "run_1", "sequence": 2, "type": "context.manifest.created"}
+        {"run_id": "run_1", "sequence": 3, "type": "tool.completed", "payload": {"tool": "filesystem.read"}},
+        {"run_id": "run_1", "sequence": 1, "type": "plan.created", "payload": {"revision": 1}},
+        {"run_id": "run_1", "sequence": 2, "type": "tool.requested", "payload": {"tool": "filesystem.read"}}
     ]);
     let lines = project_thread(&runs, events.as_array().unwrap());
     let tool: Vec<&str> = lines
@@ -708,14 +708,9 @@ fn transcript_projection_preserves_event_order() {
         .filter(|l| l.kind == AgentKind::Tool)
         .map(|l| l.text.as_str())
         .collect();
-    assert_eq!(
-        tool,
-        vec![
-            "model.requested",
-            "context.manifest.created",
-            "model.responded"
-        ]
-    );
+    let pos = |needle: &str| tool.iter().position(|t| t.contains(needle)).unwrap();
+    assert!(pos("Plan created") < pos("tool.requested"));
+    assert!(pos("tool.requested") < pos("tool.completed"));
 }
 
 #[test]
@@ -1913,13 +1908,12 @@ fn k4_events() -> Vec<Value> {
 fn transcript_orders_run_events_by_sequence() {
     let lines = project_thread(&[run_with_terminal()], &k4_events());
     let kinds: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
-    // prompt, plan.created, run.queued, run.planning, tool.completed, respuesta,
-    // run.completed, resumen.
+    // El transcript ya no muestra `run.queued` ni `run.planning`: solo hitos.
     let pos = |needle: &str| kinds.iter().position(|t| t.contains(needle)).unwrap();
-    assert!(pos("Plan created") < pos("run.queued"));
-    assert!(pos("run.queued") < pos("run.planning"));
-    assert!(pos("run.planning") < pos("tool.completed"));
+    assert!(pos("Plan created") < pos("tool.completed"));
     assert!(pos("tool.completed") < pos("run.completed"));
+    assert!(!kinds.iter().any(|t| t.contains("run.queued")));
+    assert!(!kinds.iter().any(|t| t.contains("run.planning")));
 }
 
 #[test]

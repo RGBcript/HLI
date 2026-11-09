@@ -82,7 +82,7 @@ impl ChatProvider for OllamaProvider {
                 {"role": "user", "content": req.user}
             ],
             "stream": false,
-            "options": {"temperature": req.temperature, "num_predict": req.max_tokens}
+            "think": false, "options": {"temperature": req.temperature, "num_predict": req.max_tokens}
         });
         let url = format!("{}/api/chat", self.base_url);
         let resp = ureq::post(&url)

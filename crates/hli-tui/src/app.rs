@@ -1798,6 +1798,18 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
         let answer = run["result"]["text"].as_str().unwrap_or("").trim();
         let mut answer_placed = false;
         for e in evs {
+            // En el transcript se oculta el ruido de máquina; el Inspector y
+            // `event_line` conservan todos los eventos.
+            if matches!(
+                e["type"].as_str().unwrap_or(""),
+                "run.queued"
+                    | "run.planning"
+                    | "run.running"
+                    | "model.requested"
+                    | "context.manifest.created"
+            ) {
+                continue;
+            }
             // La respuesta del proveedor se muestra antes del cierre del run,
             // nunca después del evento terminal.
             if is_terminal_event(e) && !answer_placed && !answer.is_empty() {
