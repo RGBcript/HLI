@@ -150,8 +150,8 @@ fn migration_cli_status_backup_apply_verify() {
 
     let status = ctx.json(&["migrate", "status"]);
     assert_eq!(status["current_version"].as_i64(), Some(5));
-    assert_eq!(status["target_version"].as_i64(), Some(7));
-    assert_eq!(status["pending"].as_array().map(Vec::len), Some(2));
+    assert_eq!(status["target_version"].as_i64(), Some(8));
+    assert_eq!(status["pending"].as_array().map(Vec::len), Some(3));
     assert_eq!(status["backup_required"].as_bool(), Some(true));
     assert_eq!(status["compatible"].as_bool(), Some(true));
 
@@ -160,8 +160,8 @@ fn migration_cli_status_backup_apply_verify() {
 
     let applied = ctx.json(&["migrate", "apply"]);
     assert_eq!(applied["from_version"].as_i64(), Some(5));
-    assert_eq!(applied["to_version"].as_i64(), Some(7));
-    assert_eq!(applied["applied"].as_array().map(Vec::len), Some(2));
+    assert_eq!(applied["to_version"].as_i64(), Some(8));
+    assert_eq!(applied["applied"].as_array().map(Vec::len), Some(3));
     assert!(applied["backup"].as_str().is_some());
 
     let verify = ctx.json(&["migrate", "verify"]);
@@ -171,7 +171,7 @@ fn migration_cli_status_backup_apply_verify() {
     assert_eq!(verify["events_checked"].as_i64(), Some(3));
 
     let status = ctx.json(&["migrate", "status"]);
-    assert_eq!(status["current_version"].as_i64(), Some(7));
+    assert_eq!(status["current_version"].as_i64(), Some(8));
     assert_eq!(status["pending"].as_array().map(Vec::len), Some(0));
     assert_eq!(status["backup_required"].as_bool(), Some(false));
 }

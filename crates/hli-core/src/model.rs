@@ -706,6 +706,10 @@ pub struct ExecSnapshot {
     pub module_versions: Vec<ModuleVersion>,
     pub mch_instances: Vec<ExecMchInstance>,
     pub secret_handles: Vec<SecretHandleRef>,
+    /// Candidatos de memoria que el retrieval propuso al planificar; permite
+    /// que el receipt conserve la procedencia tras la aprobación.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_memory_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_delay_ms: Option<u64>,
     pub created_at: String,
@@ -735,6 +739,7 @@ impl ExecSnapshot {
             "module_versions": self.module_versions,
             "mch_instances": self.mch_instances,
             "secret_handles": self.secret_handles,
+            "candidate_memory_ids": self.candidate_memory_ids,
             "created_at": self.created_at
         })
     }

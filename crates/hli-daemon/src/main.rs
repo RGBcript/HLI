@@ -1357,9 +1357,6 @@ fn dispatch(
     }
 }
 
-/// Valida y materializa las referencias explícitas antes de construir el
-/// manifiesto. Cualquier referencia inválida falla el run antes del provider.
-
 /// Aprobación heredada (0.3–0.8): ejecuta una herramienta pendiente de un run
 /// sin plan durable. Se conserva para exportaciones históricas.
 fn approve_legacy(w: &Writer, r: &Reader, run_id: &str) -> Result<Value, HliError> {
@@ -1374,13 +1371,13 @@ fn approve_legacy(w: &Writer, r: &Reader, run_id: &str) -> Result<Value, HliErro
     let ws_obj = r.workspace(&run.workspace_id)?;
     let outcome = hli_agent::execute_tool(std::path::Path::new(&ws_obj.root_path), &call);
     w.run_event(
-        &run_id,
+        run_id,
         "tool.completed",
         json!({"run_id": run_id, "tool": outcome.tool, "status": outcome.status,
                "stdout": outcome.stdout, "changed_files": outcome.changed_files,
                "error": outcome.error}),
     )?;
-    let manifest = r.manifest_for_run(&run_id)?;
+    let manifest = r.manifest_for_run(run_id)?;
     let mut result = run.result.clone().unwrap_or_else(|| json!({}));
     if let Some(o) = result.as_object_mut() {
         o.remove("pending_tool");
@@ -1432,7 +1429,7 @@ fn approve_legacy(w: &Writer, r: &Reader, run_id: &str) -> Result<Value, HliErro
     } else {
         "failed"
     };
-    let done = w.finish_run(&run_id, state, Some(result), Some(receipt))?;
+    let done = w.finish_run(run_id, state, Some(result), Some(receipt))?;
     Ok(serde_json::to_value(done)?)
 }
 

@@ -146,6 +146,7 @@ fn build_snapshot(
     max_tokens: i64,
     budget_tokens: i64,
     secret_handles: &[Value],
+    candidate_memory_ids: &[String],
     sim_delay_ms: Option<u64>,
 ) -> (ExecSnapshot, Vec<String>) {
     let (handles, problems) = secret_refs(home, secret_handles);
@@ -173,6 +174,7 @@ fn build_snapshot(
         module_versions: module_versions(r),
         mch_instances: mch_instances(r, &run.workspace_id),
         secret_handles: handles,
+        candidate_memory_ids: candidate_memory_ids.to_vec(),
         sim_delay_ms,
         created_at: now_iso(),
         content_hash: String::new(),
@@ -232,6 +234,7 @@ pub fn plan_and_maybe_execute(
         p.max_tokens,
         p.budget_tokens,
         &p.secret_handles,
+        &p.candidate_memory_ids,
         p.sim_delay_ms,
     );
 
@@ -416,6 +419,7 @@ pub fn execute_prepared_run(
         return r.run(run_id);
     }
 
+    let started = std::time::Instant::now();
     if snapshot.provider_kind == "sim"
         && let Some(ms) = snapshot.sim_delay_ms
     {
@@ -658,11 +662,14 @@ pub fn execute_prepared_run(
     }
 
     let cancelled = cancel.load(Ordering::SeqCst);
+    let timed_out = started.elapsed() > Duration::from_secs(snapshot.timeout_secs);
     if cancelled && state == "completed" {
         state = "cancelled";
+    } else if timed_out && state == "completed" {
+        state = "timed_out";
     }
 
-    let allowed_read = manifest
+    let allowed_read: Vec<String> = manifest
         .memories
         .iter()
         .filter_map(|m| m["id"].as_str().map(str::to_string))
@@ -719,6 +726,12 @@ pub fn execute_prepared_run(
         .unwrap_or(plan)
     };
 
+    let rejected_memories: Vec<String> = snapshot
+        .candidate_memory_ids
+        .iter()
+        .filter(|id| !allowed_read.contains(id))
+        .cloned()
+        .collect();
     let mut receipt = make_receipt(
         &used_provider,
         &used_model,
@@ -735,8 +748,8 @@ pub fn execute_prepared_run(
         allowed_read,
         used_slices,
         used_events,
-        vec![],
-        vec![],
+        snapshot.candidate_memory_ids.clone(),
+        rejected_memories,
     );
     attach_plan(&mut receipt, &plan, &snapshot, vec![]);
 
@@ -1151,6 +1164,10 @@ pub fn replan(
             .unwrap_or(256),
         prev_snap.as_ref().map(|s| s.budget_tokens).unwrap_or(2048),
         &secret_handles,
+        prev_snap
+            .as_ref()
+            .map(|s| s.candidate_memory_ids.as_slice())
+            .unwrap_or(&[]),
         prev_snap.as_ref().and_then(|s| s.sim_delay_ms),
     );
     if !problems.is_empty() {
@@ -1170,6 +1187,33 @@ pub fn replan(
         "previous_plan_id": prev.plan_id,
         "requires_approval": true
     }))
+}
+
+fn empty_manifest(run: &Run, manifest_id: &str) -> ContextManifest {
+    ContextManifest {
+        manifest_id: manifest_id.to_string(),
+        policy_version: String::new(),
+        workspace_id: run.workspace_id.clone(),
+        run_id: run.id.clone(),
+        branch_revision: run.branch_revision,
+        budget_tokens: 0,
+        user_input: hli_core::model::UserInput {
+            content: run.prompt.clone(),
+            content_hash: hli_core::canon::hash_canonical(&json!(run.prompt)),
+        },
+        instructions: vec![],
+        memories: vec![],
+        recent_events: vec![],
+        visible_event_ids: vec![],
+        summaries: vec![],
+        artifact_slices: vec![],
+        excluded: vec![],
+        explicit_references: vec![],
+        payload_hash: String::new(),
+        estimated_tokens: 0,
+        content_hash: String::new(),
+        created_at: now_iso(),
+    }
 }
 
 pub fn reject(
@@ -1197,18 +1241,46 @@ pub fn reject(
         Some(actor.to_string()),
         Some(reason.to_string()),
     )?;
-    let run = w.finish_run(
-        run_id,
-        "cancelled",
-        Some(json!({
-            "error": "approval_rejected",
-            "reason": reason,
-            "plan_id": plan.plan_id,
-            "plan_hash": plan.content_hash,
-            "rejected_effects": plan.effectful_requests()
-        })),
-        None,
-    )?;
+    let result = json!({
+        "error": "approval_rejected",
+        "reason": reason,
+        "plan_id": plan.plan_id,
+        "plan_hash": plan.content_hash,
+        "rejected_effects": plan.effectful_requests()
+    });
+    // Un run rechazado no tiene resumen de éxito, pero conserva procedencia.
+    let manifest = r
+        .manifest_for_run(run_id)
+        .unwrap_or_else(|_| empty_manifest(&run, &plan.context_manifest_id));
+    let snapshot: Option<ExecSnapshot> = r
+        .plan_execution_of(&plan.plan_id)?
+        .and_then(|v| serde_json::from_value(v).ok());
+    let usage = hli_provider::Usage::default();
+    let mut receipt = make_receipt(
+        "not_executed",
+        "not_executed",
+        "0",
+        &manifest,
+        &result,
+        &usage,
+        &hli_provider::cost_of(None, &usage),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
+    receipt.plan_id = Some(plan.plan_id.clone());
+    receipt.plan_hash = Some(plan.content_hash.clone());
+    receipt.plan_origin = Some(plan.origin.clone());
+    receipt.plan_revision = Some(plan.revision);
+    receipt.approval_status = Some(plan.status.clone());
+    receipt.rejected_effects = plan.effectful_requests();
+    if let Some(s) = &snapshot {
+        receipt.effective_permissions = json!(s.tool_policy);
+    }
+    let run = w.finish_run(run_id, "cancelled", Some(result), Some(receipt))?;
     Ok(json!({
         "run": run,
         "plan": plan,

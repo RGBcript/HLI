@@ -260,8 +260,12 @@ fn tool_write_requires_approval() {
     assert_eq!(run["state"].as_str(), Some("waiting_approval"));
     assert!(!ctx.root.join("out.txt").exists());
 
-    let approved = ctx.json(&["run", "approve", &run_id]);
-    assert_eq!(approved["state"].as_str(), Some("completed"));
+    let approved = ctx.json(&["run", "approve", &run_id, "--scope", "once"]);
+    assert_eq!(approved["run"]["state"].as_str(), Some("running"));
+    // La ejecución corre en un worker reanudable: el estado terminal llega
+    // por el store, no en la respuesta de approve.
+    let done = ctx.json(&["run", "wait", &run_id, "--timeout-secs", "10"]);
+    assert_eq!(done["run"]["state"].as_str(), Some("completed"));
     assert_eq!(
         std::fs::read_to_string(ctx.root.join("out.txt")).unwrap(),
         "hola mundo"

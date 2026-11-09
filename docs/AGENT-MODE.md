@@ -200,6 +200,59 @@ cuando existe.
 - `HLI_SIM_DELAY_MS` retrasa el proveedor `sim` (ayuda de prueba, no de
   producción) para poder observar la ejecución.
 
+## Planificación durable y aprobación
+
+Un run con efectos no se ejecuta al recibir el prompt: primero se planifica.
+
+```
+prompt → run queued → planning → plan durable
+      → waiting_approval (si hay efectos)  → run.approve / run.reject / run.replan
+      → running → estado terminal → receipt
+```
+
+- **Plan operativo, no razonamiento.** `RunPlan` guarda pasos mostrables
+  (descripción, clase de operación, efecto, herramienta, objetivo), efectos
+  declarados y un `content_hash`. No hay chain-of-thought ni campos privados; el
+  hash cubre sólo el contenido revisado (no el estado ni la aprobación).
+- **Origen.** `provider` cuando el proveedor entrega un plan estructurado;
+  `runtime_generated` en el resto. El plan runtime se construye sin inventar
+  archivos ni herramientas: inspección, lectura y, si el prompt lo pide,
+  un paso que *solicita* permiso de escritura.
+- **Efectos y política.** `read` avanza si la política efectiva lo permite;
+  `write`, `network`, `external_service`, `destructive` y `unknown` exigen
+  aprobación. `shell.execute` se deniega siempre en HLI 1.0. Un efecto no
+  clasificable se cierra como `unknown` (nunca como `read`).
+- **Instantánea de ejecución.** `execution_json` es privada, durable y hasheada:
+  proveedor, modelo, endpoint, sampling, timeout, manifiesto y su hash, revisión
+  de rama, política de herramientas, versiones de módulos, instancias MCH y
+  handles de secreto **versionados** (jamás valores). `run.approve` ejecuta esa
+  instantánea, no la configuración vigente.
+- **Aprobación ligada a la revisión mostrada.** `run.approve` acepta `plan_id`;
+  si no es la revisión vigente devuelve `plan_revision_changed`. Si la
+  instantánea ya no es válida (provider, modelo, módulo, permiso, secreto o
+  manifiesto cambiaron) se emite `plan.invalidated`, se conserva la revisión y
+  se exige `run.replan`; no se reescribe nada en silencio.
+- **Revisiones.** `run.replan` crea una nueva revisión (`revision`,
+  `supersedes_plan_id`, `invalidation_reasons`) y una instantánea nueva con las
+  condiciones actuales. El run sigue en `waiting_approval`: nunca se autoaprueba.
+- **Scopes.** `once` autoriza una transición; `run` cubre el run; `workspace`
+  crea un grant persistente del Permission Engine por efecto. Una aprobación no
+  cubre efectos no declarados: si aparece uno, se crea una revisión y se vuelve
+  a esperar.
+- **Permisos del plan ≠ permisos por herramienta.** Este bloque aprueba el plan
+  completo; los permisos interactivos por tool call no están implementados.
+- **Persistencia y reanudación.** Plan, instantánea y estado sobreviven al
+  reinicio del daemon. Un run `waiting_approval` sigue esperando; al aprobar, un
+  worker relee run, manifiesto, plan y snapshot, verifica hashes y ejecuta.
+- **JSONL y MCP.** El follow emite `plan.created`, `run.waiting_approval`,
+  `plan.approved`, `plan.revised` y el resto de eventos del run filtrados por
+  `run_id`; un segundo cliente puede aprobar mientras el primero sigue el
+  stream. MCP expone `run_plan`, `run_approve`, `run_reject` y `run_replan`.
+- **Receipt.** Incluye `plan_id`, `plan_hash`, `plan_origin`, `plan_revision`,
+  `approval_status`, `approval_scope`, `approval_events`, `approved_effects` y
+  `rejected_effects`. Un run rechazado conserva la procedencia y no tiene
+  resumen de éxito.
+
 ## Límites de este slice
 
 - La actividad es por polling, no streaming push del daemon.
