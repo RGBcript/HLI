@@ -39,7 +39,28 @@ fn daemon_info() -> Result<Value, String> {
     serde_json::from_str(&raw).map_err(|e| format!("daemon.json inválido: {e}"))
 }
 
+/// Cualquier comando arranca el daemon si no está en marcha, como `claude`
+/// abre la sesión sin pedir nada. Un solo intento por proceso.
 fn call(cmd: &str, args: Value) -> Result<Value, String> {
+    match call_raw(cmd, args.clone()) {
+        Ok(v) => Ok(v),
+        Err(e) if is_offline(&e) && !AUTO_START.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+            spawn_daemon()?;
+            call_raw(cmd, args)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+static AUTO_START: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn is_offline(e: &str) -> bool {
+    e.contains("daemon no está en marcha")
+        || e.contains("no se pudo conectar")
+        || e.contains("sin respuesta del daemon")
+}
+
+fn call_raw(cmd: &str, args: Value) -> Result<Value, String> {
     let info = daemon_info()?;
     let port = info["port"].as_u64().ok_or("daemon.json sin puerto")? as u16;
     let mut stream = TcpStream::connect(("127.0.0.1", port))
@@ -77,6 +98,12 @@ fn run(args: &[String]) -> Result<(), String> {
         return usage();
     }
     let output = output_mode(args);
+    if args[0] == "doctor" {
+        return doctor(args.iter().any(|a| a == "--json"));
+    }
+    if matches!(args[0].as_str(), "-p" | "--print") {
+        return print_task(&args[1..], output);
+    }
 
     if matches!(args[0].as_str(), "--classic" | "--no-fullscreen") {
         let rest: Vec<String> = args[1..].to_vec();
@@ -747,6 +774,8 @@ fn run(args: &[String]) -> Result<(), String> {
             let v = call("status", json!({}))?;
             print_value(&v, output)
         }
+        // Consulta libre: `hli explica este crate` equivale a `hli run "..."`.
+        _ if !args[0].starts_with('-') => run_task(args, output),
         _ => usage(),
     }
 }
@@ -936,8 +965,23 @@ fn restore_std_handle_inheritance(handles: &[isize]) {
 }
 
 fn daemon_start() -> Result<(), String> {
-    if call("daemon.ping", json!({})).is_ok() {
+    if call_raw("daemon.ping", json!({})).is_ok() {
         println!("{}", json!({"daemon": "already_running"}));
+        return Ok(());
+    }
+    spawn_daemon()?;
+    let info = daemon_info()?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({"daemon": "started", "info": info})).unwrap()
+    );
+    Ok(())
+}
+
+/// Arranca el proceso del daemon y espera a que responda. Silencioso: se usa
+/// tanto desde `daemon start` como desde cualquier comando.
+fn spawn_daemon() -> Result<(), String> {
+    if call_raw("daemon.ping", json!({})).is_ok() {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -974,12 +1018,7 @@ fn daemon_start() -> Result<(), String> {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(8) {
         std::thread::sleep(Duration::from_millis(80));
-        if call("daemon.ping", json!({})).is_ok() {
-            let info = daemon_info()?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({"daemon": "started", "info": info})).unwrap()
-            );
+        if call_raw("daemon.ping", json!({})).is_ok() {
             return Ok(());
         }
     }
@@ -987,7 +1026,7 @@ fn daemon_start() -> Result<(), String> {
 }
 
 fn daemon_stop() -> Result<(), String> {
-    match call("daemon.stop", json!({})) {
+    match call_raw("daemon.stop", json!({})) {
         Ok(_) => {
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(5) {
@@ -1008,7 +1047,7 @@ fn daemon_stop() -> Result<(), String> {
 }
 
 fn daemon_status() -> Result<(), String> {
-    match call("daemon.ping", json!({})) {
+    match call_raw("daemon.ping", json!({})) {
         Ok(v) => {
             let info = daemon_info().unwrap_or(json!({}));
             println!(
@@ -1026,6 +1065,11 @@ fn daemon_status() -> Result<(), String> {
 }
 
 fn launch_tui(mode: &str, extra: &[&str]) -> Result<(), String> {
+    // La TUI no arranca el daemon por sí misma: lo hace el CLI antes de ceder
+    // el terminal, para que `hli` funcione en una máquina recién instalada.
+    if call_raw("daemon.ping", json!({})).is_err() {
+        spawn_daemon()?;
+    }
     let tui = std::env::current_exe()
         .map_err(|e| e.to_string())?
         .with_file_name(if cfg!(windows) {
@@ -1077,15 +1121,22 @@ fn linked_workspace() -> Result<Option<Value>, String> {
     }))
 }
 
-fn run_task(args: &[String], output: &str) -> Result<(), String> {
-    let follow = args.iter().any(|a| a == "--follow");
-    let is_async = follow || args.iter().any(|a| a == "--async");
-    let task = args.first().cloned().unwrap_or_default();
-    if task.trim().is_empty() {
-        return Err("falta la tarea".into());
-    }
-    let Some(ws) = linked_workspace()? else {
-        return Err("no hay workspace vinculado a este directorio; ejecuta `hli`".into());
+/// Proyecto implícito del directorio actual: workspace, thread y branch se
+/// crean si faltan, igual que al abrir `claude` en una carpeta nueva.
+fn ensure_project() -> Result<(String, String, String), String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let ws = match linked_workspace()? {
+        Some(w) => w,
+        None => {
+            let name = cwd
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace");
+            call(
+                "workspace.create",
+                json!({ "name": name, "root": cwd.to_string_lossy() }),
+            )?
+        }
     };
     let ws_id = ws["id"].as_str().unwrap_or("").to_string();
     let threads = call("thread.list", json!({ "workspace_id": ws_id }))?;
@@ -1110,6 +1161,116 @@ fn run_task(args: &[String], output: &str) -> Result<(), String> {
             .unwrap_or("")
             .to_string(),
     };
+    Ok((ws_id, thread_id, branch_id))
+}
+
+/// `hli -p "tarea"` / `hli "tarea"`: una sola pasada, sin TUI. Con stdin
+/// redirigido, el contenido se antepone como contexto (`cat log | hli -p ...`).
+fn print_task(args: &[String], output: &str) -> Result<(), String> {
+    let mut parts: Vec<String> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .cloned()
+        .collect();
+    if !std::io::stdin().is_terminal() {
+        let mut piped = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut piped);
+        if !piped.trim().is_empty() {
+            parts.insert(0, piped.trim_end().to_string());
+        }
+    }
+    let task = parts.join(" ");
+    if task.trim().is_empty() {
+        return Err("falta la tarea (-p \"qué hacer\")".into());
+    }
+    run_task(&[task], output)
+}
+
+/// Diagnóstico read-only, como `claude doctor`.
+fn doctor(json_out: bool) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let siblings = ["hli-tui", "hli-daemon", "hli-mcp"]
+        .iter()
+        .map(|n| {
+            let file = dir.join(if cfg!(windows) {
+                format!("{n}.exe")
+            } else {
+                n.to_string()
+            });
+            json!({ "name": n, "path": file.display().to_string(), "present": file.exists() })
+        })
+        .collect::<Vec<_>>();
+    let ping = call_raw("daemon.ping", json!({})).ok();
+    let info = daemon_info().ok();
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let in_path = path_var
+        .split(if cfg!(windows) { ';' } else { ':' })
+        .any(|p| norm_path(p) == norm_path(&dir.to_string_lossy()));
+    // El daemon detenido no es un fallo: arranca solo al primer comando.
+    let ok = siblings.iter().all(|s| s["present"] == json!(true)) && in_path;
+    let report = json!({
+        "hli": env!("CARGO_PKG_VERSION"),
+        "exe": exe.display().to_string(),
+        "home": home().display().to_string(),
+        "platform": std::env::consts::OS,
+        "binaries": siblings,
+        "daemon": { "running": ping.is_some(), "info": info },
+        "path": { "directory": dir.display().to_string(), "present": in_path },
+        "ok": ok,
+    });
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!("hli {}", env!("CARGO_PKG_VERSION"));
+        println!("  ejecutable  {}", exe.display());
+        println!("  HLI_HOME    {}", home().display());
+        println!("  plataforma  {}", std::env::consts::OS);
+        println!(
+            "  daemon      {}",
+            match (&ping, &info) {
+                (Some(_), Some(i)) =>
+                    format!("en marcha · pid {} · puerto {}", i["pid"], i["port"]),
+                _ => "detenido (arranca solo al usar hli)".into(),
+            }
+        );
+        println!(
+            "  PATH        {}",
+            if in_path {
+                "sí"
+            } else {
+                "NO · añade la carpeta al PATH"
+            }
+        );
+        for s in &siblings {
+            println!(
+                "  {:<11} {} {}",
+                s["name"].as_str().unwrap_or(""),
+                if s["present"] == json!(true) {
+                    "ok "
+                } else {
+                    "FALTA"
+                },
+                s["path"].as_str().unwrap_or("")
+            );
+        }
+        println!("  estado      {}", if ok { "ok" } else { "revisar" });
+    }
+    if ok {
+        Ok(())
+    } else {
+        Err("diagnóstico: revisar los puntos marcados".into())
+    }
+}
+
+fn run_task(args: &[String], output: &str) -> Result<(), String> {
+    let follow = args.iter().any(|a| a == "--follow");
+    let is_async = follow || args.iter().any(|a| a == "--async");
+    let task = args.first().cloned().unwrap_or_default();
+    if task.trim().is_empty() {
+        return Err("falta la tarea".into());
+    }
+    let (ws_id, thread_id, branch_id) = ensure_project()?;
     let v = call(
         "run.start",
         json!({
@@ -1139,6 +1300,19 @@ fn run_task(args: &[String], output: &str) -> Result<(), String> {
             .and_then(|w| w[1].parse::<u64>().ok())
             .unwrap_or(10);
         return follow_run(&ws_id, &branch_id, &run_id, cancel_timeout);
+    }
+    if output == "human" {
+        // Igual que `claude -p`: la respuesta va sola a stdout para poder
+        // encadenarla en un pipe.
+        match v["result"]["text"].as_str() {
+            Some(text) => println!("{text}"),
+            None => println!(
+                "{} · {}",
+                v["id"].as_str().unwrap_or("run"),
+                v["state"].as_str().unwrap_or("?")
+            ),
+        }
+        return Ok(());
     }
     print_value(&v, output)
 }
@@ -1288,9 +1462,11 @@ fn usage() -> Result<(), String> {
         "hli {}
   hli                      Agent Mode sobre el directorio actual
   hli . | hli <ruta>       Agent Mode vinculado a esa ruta
+  hli \"<consulta>\"        ejecución directa en una pasada (como `claude -p`)
   hli inspect              Inspector Mode
   hli resume               reanudar el último thread del directorio
   hli run \"<tarea>\"      ejecución directa [--async] [--output jsonl] [--follow]
+  hli doctor               diagnóstico de instalación, PATH, binarios y daemon
   hli daemon start|stop|status
   hli workspace create <name> [--root PATH] | list | get <id>
   hli thread create <title> --workspace <id> | list --workspace <id>
@@ -1326,4 +1502,22 @@ Todas las salidas aceptan --output json|human",
         env!("CARGO_PKG_VERSION")
     );
     Err("uso".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offline_errors_trigger_auto_start() {
+        assert!(is_offline("daemon no está en marcha (falta daemon.json)"));
+        assert!(is_offline("no se pudo conectar al daemon: refused"));
+        assert!(is_offline("sin respuesta del daemon: timeout"));
+    }
+
+    #[test]
+    fn business_errors_do_not_restart_daemon() {
+        assert!(!is_offline("not_found: no existe el run"));
+        assert!(!is_offline("invalid: prompt vacío"));
+    }
 }
