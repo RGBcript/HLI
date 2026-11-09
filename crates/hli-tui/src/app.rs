@@ -2922,8 +2922,7 @@ pub fn event_line(e: &Value) -> Option<String> {
             format!("· {tool}")
         }),
         _ => None,
-    };
-    line
+    }
 }
 
 impl App {
