@@ -700,7 +700,9 @@ fn draw_agent(f: &mut Frame, app: &App) {
             format!("{tag} "),
             style.add_modifier(Modifier::BOLD),
         )));
-        lines.push(Line::from(format!("  {}", l.text)));
+        for part in l.text.split('\n') {
+            lines.push(Line::from(format!("  {part}")));
+        }
         lines.push(Line::from(""));
     }
     if lines.len() > inner_h {
@@ -755,6 +757,74 @@ fn draw_agent(f: &mut Frame, app: &App) {
     if app.agent.palette {
         draw_palette(f, area, app);
     }
+    if app.agent.history_open {
+        draw_history(f, area, app);
+    }
+    if app.agent.resume_open {
+        draw_resume(f, area, app);
+    }
+}
+
+fn overlay_rect(area: Rect, w: u16, h: u16) -> Rect {
+    let w = area.width.min(w);
+    let h = area.height.min(h);
+    Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+fn draw_history(f: &mut Frame, area: Rect, app: &App) {
+    let rect = overlay_rect(area, 70, 14);
+    f.render_widget(Clear, rect);
+    let matches = app.history_matches();
+    let mut lines = vec![Line::from(format!("> {}", app.agent.history_query))];
+    for (i, m) in matches.iter().take(9).enumerate() {
+        let mark = if i == app.agent.history_sel {
+            "▸ "
+        } else {
+            "  "
+        };
+        lines.push(Line::from(format!("{mark}{m}")));
+    }
+    if matches.is_empty() {
+        lines.push(Line::from("  (sin coincidencias)"));
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" history · ^R "),
+        ),
+        rect,
+    );
+}
+
+fn draw_resume(f: &mut Frame, area: Rect, app: &App) {
+    let rect = overlay_rect(area, 96, 18);
+    f.render_widget(Clear, rect);
+    let mut lines = Vec::new();
+    for (i, item) in app.agent.resume_items.iter().take(14).enumerate() {
+        let mark = if i == app.agent.resume_index {
+            "▸ "
+        } else {
+            "  "
+        };
+        let when: String = item.last_activity.chars().take(16).collect();
+        lines.push(Line::from(format!(
+            "{mark}{} · {}/{} · {} · {} · {}",
+            item.title, item.workspace_name, item.branch, item.state, item.model, when
+        )));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from("  (sin threads)"));
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" resume ")),
+        rect,
+    );
 }
 
 fn draw_palette(f: &mut Frame, area: Rect, app: &App) {

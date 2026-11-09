@@ -170,6 +170,25 @@ pub struct AgentState {
     pub last_seq: i64,
     pub receipt_shown: bool,
     pub poll_at: Instant,
+    pub prompts: Vec<String>,
+    pub history_open: bool,
+    pub history_query: String,
+    pub history_sel: usize,
+    pub resume_open: bool,
+    pub resume_index: usize,
+    pub resume_items: Vec<ResumeItem>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResumeItem {
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub thread_id: String,
+    pub title: String,
+    pub branch: String,
+    pub state: String,
+    pub model: String,
+    pub last_activity: String,
 }
 
 impl Default for AgentState {
@@ -196,6 +215,13 @@ impl Default for AgentState {
             last_seq: 0,
             receipt_shown: false,
             poll_at: Instant::now(),
+            prompts: Vec::new(),
+            history_open: false,
+            history_query: String::new(),
+            history_sel: 0,
+            resume_open: false,
+            resume_index: 0,
+            resume_items: Vec::new(),
         }
     }
 }
@@ -615,11 +641,12 @@ impl App {
     pub fn finish_command(&mut self, ok: bool, text: &str) {
         self.status_ok = ok;
         self.status = text.lines().next().unwrap_or("ok").to_string();
-        self.apply_feedback(ok, text);
         self.input.clear();
         self.focus = FocusArea::Navigation;
         self.refresh_lists();
         self.refresh_runs();
+        // El feedback se fija al final: un refresco lento no debe consumir su TTL.
+        self.apply_feedback(ok, text);
     }
 
     /// Procesa un evento de teclado. Devuelve `true` si la TUI debe cerrarse.
@@ -777,6 +804,372 @@ pub fn split_command(line: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Slice 3a: transcripción durable, resume e historial
+// ---------------------------------------------------------------------------
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+pub fn iso_to_secs(s: &str) -> Option<i64> {
+    if s.len() < 19 {
+        return None;
+    }
+    let y: i64 = s.get(0..4)?.parse().ok()?;
+    let m: i64 = s.get(5..7)?.parse().ok()?;
+    let d: i64 = s.get(8..10)?.parse().ok()?;
+    let h: i64 = s.get(11..13)?.parse().ok()?;
+    let mi: i64 = s.get(14..16)?.parse().ok()?;
+    let se: i64 = s.get(17..19)?.parse().ok()?;
+    Some(days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60 + se)
+}
+
+fn duration_secs(run: &Value) -> Option<f64> {
+    let a = iso_to_secs(run["started_at"].as_str()?)?;
+    let b = iso_to_secs(run["ended_at"].as_str()?)?;
+    Some((b - a).max(0) as f64)
+}
+
+/// Bloque de resultado terminal: estado, duración, provider, tokens, coste,
+/// receipt y artifacts. No usa la palabra "completed" si el estado no lo es.
+pub fn terminal_summary(run: &Value) -> String {
+    let state = run["state"].as_str().unwrap_or("?");
+    let mut lines = vec![match duration_secs(run) {
+        Some(d) => format!("{state} in {d:.1} s"),
+        None => state.to_string(),
+    }];
+    let r = &run["receipt"];
+    if r.is_object() {
+        lines.push(format!(
+            "Provider: {}/{}",
+            r["provider"].as_str().unwrap_or("-"),
+            r["model"].as_str().unwrap_or("-")
+        ));
+        let tin = r["usage"]["input_tokens"].as_i64().unwrap_or(0);
+        let tout = r["usage"]["output_tokens"].as_i64().unwrap_or(0);
+        lines.push(format!("Tokens: {tin} in / {tout} out"));
+        let total = r["cost"]["total"].as_f64().unwrap_or(0.0);
+        lines.push(if total > 0.0 {
+            format!("Cost: ${total:.6}")
+        } else {
+            "Cost: unpriced".to_string()
+        });
+        let hash = r["result_hash"].as_str().unwrap_or("-");
+        let short: String = hash.chars().take(16).collect();
+        lines.push(format!(
+            "Receipt: {short} · manifest {}",
+            r["context_manifest"].as_str().unwrap_or("-")
+        ));
+        let arts: Vec<String> = r["result_artifacts"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !arts.is_empty() {
+            lines.push(format!("Artifacts: {}", arts.join(", ")));
+        }
+    }
+    if let Some(err) = run["result"]["error"].as_str() {
+        lines.push(format!("Error: {err}"));
+    }
+    lines.join("\n")
+}
+
+/// Proyecta el transcript de un thread desde runs y eventos durables.
+///
+/// Orden: runs por `started_at`; dentro de cada run, eventos por `sequence`.
+/// Es puro y determinista: proyectar dos veces el mismo dato da lo mismo.
+pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
+    let mut ordered: Vec<&Value> = runs.iter().collect();
+    ordered.sort_by(|a, b| {
+        a["started_at"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["started_at"].as_str().unwrap_or(""))
+    });
+    let mut out = Vec::new();
+    for run in ordered {
+        let id = run["id"].as_str().unwrap_or("");
+        if let Some(prompt) = run["prompt"].as_str()
+            && !prompt.is_empty()
+        {
+            out.push(AgentLine {
+                kind: AgentKind::User,
+                text: prompt.to_string(),
+            });
+        }
+        let mut evs: Vec<&Value> = events
+            .iter()
+            .filter(|e| e["run_id"].as_str() == Some(id))
+            .collect();
+        evs.sort_by_key(|e| e["sequence"].as_i64().unwrap_or(0));
+        for e in evs {
+            if let Some(line) = event_line(e) {
+                out.push(AgentLine {
+                    kind: AgentKind::Tool,
+                    text: line,
+                });
+            }
+        }
+        if let Some(text) = run["result"]["text"].as_str()
+            && !text.trim().is_empty()
+        {
+            out.push(AgentLine {
+                kind: AgentKind::Hli,
+                text: text.to_string(),
+            });
+        }
+        let ok = run["state"].as_str() == Some("completed");
+        out.push(AgentLine {
+            kind: if ok {
+                AgentKind::Info
+            } else {
+                AgentKind::Error
+            },
+            text: terminal_summary(run),
+        });
+    }
+    out
+}
+
+impl App {
+    /// Reconstruye el transcript del thread activo desde el Event Store.
+    pub fn load_transcript(&mut self) {
+        let Some(ws) = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["id"].as_str())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let Some(th) = self
+            .agent
+            .thread
+            .as_ref()
+            .and_then(|t| t["id"].as_str())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let mut runs = client::call("run.list", json!({ "workspace_id": ws }))
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        runs.retain(|r| r["thread_id"].as_str() == Some(th.as_str()));
+        runs.sort_by(|a, b| {
+            a["started_at"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["started_at"].as_str().unwrap_or(""))
+        });
+        let mut args = json!({ "workspace_id": ws });
+        if let Some(br) = self.agent.branch.as_ref().and_then(|b| b["id"].as_str()) {
+            args["branch_id"] = json!(br);
+        }
+        let events = client::call("event.list", args)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        self.agent.prompts = runs
+            .iter()
+            .filter_map(|r| r["prompt"].as_str().map(str::to_string))
+            .collect();
+        self.agent.lines = project_thread(&runs, &events);
+        self.agent.last_seq = events
+            .iter()
+            .filter_map(|e| e["sequence"].as_i64())
+            .max()
+            .unwrap_or(0);
+    }
+
+    /// Carga los threads recientes (con su último run) para el selector.
+    pub fn open_resume(&mut self) {
+        self.agent.resume_items.clear();
+        self.agent.resume_index = 0;
+        self.agent.resume_open = true;
+        let Some(list) = client::call("workspace.list", json!({})).ok() else {
+            return;
+        };
+        for ws in list.as_array().cloned().unwrap_or_default().iter().take(5) {
+            let wid = ws["id"].as_str().unwrap_or("");
+            let wname = ws["name"].as_str().unwrap_or("-").to_string();
+            let threads = client::call("thread.list", json!({ "workspace_id": wid }))
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default();
+            let runs = client::call("run.list", json!({ "workspace_id": wid }))
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default();
+            for th in threads.iter().rev().take(8) {
+                let tid = th["id"].as_str().unwrap_or("").to_string();
+                let title = th["title"].as_str().unwrap_or("-").to_string();
+                let branches = client::call("branch.list", json!({ "thread_id": tid }))
+                    .ok()
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                let br = branches.last().cloned().unwrap_or(Value::Null);
+                let last = runs
+                    .iter()
+                    .filter(|r| r["thread_id"].as_str() == Some(tid.as_str()))
+                    .max_by_key(|r| r["started_at"].as_str().unwrap_or("").to_string());
+                let (state, model, activity) = match last {
+                    Some(r) => (
+                        r["state"].as_str().unwrap_or("-").to_string(),
+                        format!(
+                            "{}/{}",
+                            r["receipt"]["provider"].as_str().unwrap_or("-"),
+                            r["receipt"]["model"].as_str().unwrap_or("-")
+                        ),
+                        r["started_at"].as_str().unwrap_or("-").to_string(),
+                    ),
+                    None => ("-".into(), "-".into(), "-".into()),
+                };
+                self.agent.resume_items.push(ResumeItem {
+                    workspace_id: wid.to_string(),
+                    workspace_name: wname.clone(),
+                    thread_id: tid,
+                    title,
+                    branch: br["name"].as_str().unwrap_or("-").to_string(),
+                    state,
+                    model,
+                    last_activity: activity,
+                });
+            }
+        }
+        self.agent
+            .resume_items
+            .sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+    }
+
+    /// Recupera el thread seleccionado sin crear nada nuevo.
+    pub fn resume_select(&mut self) {
+        let Some(item) = self
+            .agent
+            .resume_items
+            .get(self.agent.resume_index)
+            .cloned()
+        else {
+            return;
+        };
+        self.agent.workspace = client::call(
+            "workspace.get",
+            json!({ "workspace_id": item.workspace_id }),
+        )
+        .ok();
+        self.agent.thread = None;
+        self.agent.branch = None;
+        self.load_threads();
+        if let Some(t) = self
+            .threads
+            .iter()
+            .find(|t| t["id"].as_str() == Some(item.thread_id.as_str()))
+            .cloned()
+        {
+            self.agent.thread = Some(t);
+            self.load_branches();
+            self.agent.branch = self
+                .branches
+                .iter()
+                .find(|b| b["name"].as_str() == Some(item.branch.as_str()))
+                .cloned()
+                .or_else(|| self.branches.last().cloned());
+            self.load_transcript();
+            self.agent.push(
+                AgentKind::Info,
+                format!("Resumed: {} · {}", item.workspace_name, item.title),
+            );
+        }
+        self.agent.resume_open = false;
+        self.mode = TuiMode::Agent;
+        self.agent.status = self.agent_status_line();
+    }
+
+    pub fn history_matches(&self) -> Vec<String> {
+        let q = self.agent.history_query.to_lowercase();
+        self.agent
+            .prompts
+            .iter()
+            .filter(|p| q.is_empty() || p.to_lowercase().contains(&q))
+            .cloned()
+            .collect()
+    }
+
+    pub fn history_choose(&mut self) {
+        let matches = self.history_matches();
+        if let Some(p) = matches.get(self.agent.history_sel).cloned() {
+            self.agent.composer = p;
+        }
+        self.agent.history_open = false;
+    }
+
+    #[allow(clippy::collapsible_match)]
+    fn handle_history_key(&mut self, k: KeyEvent) -> bool {
+        let n = self.history_matches().len();
+        match k.code {
+            KeyCode::Esc => {
+                self.agent.history_open = false;
+                self.agent.history_query.clear();
+            }
+            KeyCode::Enter => self.history_choose(),
+            KeyCode::Up => {
+                self.agent.history_sel = self.agent.history_sel.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if n > 0 && self.agent.history_sel + 1 < n {
+                    self.agent.history_sel += 1;
+                }
+            }
+            KeyCode::Char('r') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                if n > 0 {
+                    self.agent.history_sel = (self.agent.history_sel + 1) % n;
+                }
+            }
+            KeyCode::Backspace => {
+                self.agent.history_query.pop();
+                self.agent.history_sel = 0;
+            }
+            KeyCode::Char(c) => {
+                self.agent.history_query.push(c);
+                self.agent.history_sel = 0;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    #[allow(clippy::collapsible_match)]
+    fn handle_resume_key(&mut self, k: KeyEvent) -> bool {
+        let n = self.agent.resume_items.len();
+        match k.code {
+            KeyCode::Esc => self.agent.resume_open = false,
+            KeyCode::Enter => self.resume_select(),
+            KeyCode::Up => {
+                self.agent.resume_index = self.agent.resume_index.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if n > 0 && self.agent.resume_index + 1 < n {
+                    self.agent.resume_index += 1;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Agent Mode
 // ---------------------------------------------------------------------------
 
@@ -880,6 +1273,7 @@ impl App {
                     .push(AgentKind::Info, format!("Linked workspace: {name} ({id})"));
                 self.load_threads();
                 self.pick_last_thread();
+                self.load_transcript();
                 self.agent.offer = Offer::None;
             }
             None => {
@@ -1202,15 +1596,10 @@ impl App {
         }
         if is_terminal(&state) && !self.agent.receipt_shown {
             self.agent.receipt_shown = true;
-            let r = &run["receipt"];
-            let provider = r["provider"].as_str().unwrap_or("-");
-            let model = r["model"].as_str().unwrap_or("-");
-            let tin = r["usage"]["input_tokens"].as_i64().unwrap_or(0);
-            let tout = r["usage"]["output_tokens"].as_i64().unwrap_or(0);
-            let cost = r["cost"]["total"].as_f64().unwrap_or(0.0);
+            let ok = state == "completed";
             self.agent.push(
-                AgentKind::Hli,
-                format!("{state} · {provider}/{model} · {tin} in / {tout} out · ${cost:.6}"),
+                if ok { AgentKind::Hli } else { AgentKind::Error },
+                terminal_summary(run),
             );
         }
         self.agent.status = self.agent_status_line();
@@ -1418,6 +1807,12 @@ impl App {
         if !matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return false;
         }
+        if self.agent.resume_open {
+            return self.handle_resume_key(k);
+        }
+        if self.agent.history_open {
+            return self.handle_history_key(k);
+        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         match k.code {
@@ -1469,6 +1864,11 @@ impl App {
                 if !self.agent.palette && self.agent.composer.is_empty() {
                     self.agent_history_down();
                 }
+            }
+            KeyCode::Char('r') if ctrl => {
+                self.agent.history_open = true;
+                self.agent.history_query.clear();
+                self.agent.history_sel = 0;
             }
             KeyCode::Char('?') => self.help = !self.help,
             KeyCode::Char('/') => {

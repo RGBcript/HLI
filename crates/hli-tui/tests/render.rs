@@ -5,7 +5,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use hli_tui::app::{
-    AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, TuiMode, layout_mode, split_command,
+    AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, TuiMode, layout_mode,
+    project_thread, split_command, terminal_summary,
 };
 use hli_tui::ui;
 
@@ -660,4 +661,182 @@ fn event_lines_skip_unrelated_events() {
     ]);
     assert_eq!(app.ingest_events(events.as_array().unwrap()), 0);
     assert_eq!(app.agent.last_seq, 11);
+}
+
+// --- Slice 3a: transcript durable, resume, historial ------------------------
+
+fn run_json(id: &str, thread: &str, prompt: &str, state: &str, start: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "thread_id": thread, "prompt": prompt, "state": state,
+        "started_at": start, "ended_at": "2026-11-08T10:00:05Z",
+        "result": {"text": format!("respuesta de {id}")},
+        "receipt": {"provider": "sim", "model": "sim-1", "result_hash": "sha256:abcdef0123456789",
+                    "context_manifest": "ctx_1", "result_artifacts": ["art_091"],
+                    "usage": {"input_tokens": 10, "output_tokens": 2}, "cost": {"total": 0.0}}
+    })
+}
+
+#[test]
+fn transcript_projection_preserves_event_order() {
+    let runs = vec![run_json(
+        "run_1",
+        "thr_1",
+        "hola",
+        "completed",
+        "2026-11-08T10:00:00Z",
+    )];
+    let events = serde_json::json!([
+        {"run_id": "run_1", "sequence": 3, "type": "model.responded"},
+        {"run_id": "run_1", "sequence": 1, "type": "model.requested"},
+        {"run_id": "run_1", "sequence": 2, "type": "context.manifest.created"}
+    ]);
+    let lines = project_thread(&runs, events.as_array().unwrap());
+    let tool: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.kind == AgentKind::Tool)
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(
+        tool,
+        vec![
+            "model.requested",
+            "context.manifest.created",
+            "model.responded"
+        ]
+    );
+}
+
+#[test]
+fn resume_rebuilds_same_transcript() {
+    let runs = vec![run_json(
+        "run_1",
+        "thr_1",
+        "hola",
+        "completed",
+        "2026-11-08T10:00:00Z",
+    )];
+    let events = serde_json::json!([{"run_id": "run_1", "sequence": 1, "type": "model.requested"}]);
+    let a = project_thread(&runs, events.as_array().unwrap());
+    let b = project_thread(&runs, events.as_array().unwrap());
+    let ta: Vec<&str> = a.iter().map(|l| l.text.as_str()).collect();
+    let tb: Vec<&str> = b.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(ta, tb);
+}
+
+#[test]
+fn polling_does_not_duplicate_transcript_entries() {
+    let mut app = agent_app();
+    app.agent.last_run = Some("run_1".into());
+    let events = serde_json::json!([{"run_id": "run_1", "sequence": 4, "type": "model.requested"}]);
+    let before = app.agent.lines.len();
+    app.ingest_events(events.as_array().unwrap());
+    app.ingest_events(events.as_array().unwrap());
+    assert_eq!(app.agent.lines.len(), before + 1);
+}
+
+#[test]
+fn mode_switch_does_not_duplicate_messages() {
+    let mut app = agent_app();
+    app.agent.push(AgentKind::User, "hola");
+    let n = app.agent.lines.len();
+    app.toggle_mode();
+    app.toggle_mode();
+    assert_eq!(app.agent.lines.len(), n);
+}
+
+#[test]
+fn cancelled_run_is_rendered_as_cancelled() {
+    let run = run_json(
+        "run_1",
+        "thr_1",
+        "hola",
+        "cancelled",
+        "2026-11-08T10:00:00Z",
+    );
+    let text = terminal_summary(&run);
+    assert!(text.starts_with("cancelled"), "{text}");
+    assert!(!text.contains("completed"), "{text}");
+}
+
+#[test]
+fn failed_run_is_rendered_as_failed() {
+    let mut run = run_json("run_1", "thr_1", "hola", "failed", "2026-11-08T10:00:00Z");
+    run["result"] = serde_json::json!({"error": "provider timeout"});
+    let text = terminal_summary(&run);
+    assert!(text.starts_with("failed"), "{text}");
+    assert!(text.contains("Error: provider timeout"), "{text}");
+    assert!(!text.contains("completed"), "{text}");
+}
+
+#[test]
+fn completed_run_shows_artifacts() {
+    let run = run_json(
+        "run_1",
+        "thr_1",
+        "hola",
+        "completed",
+        "2026-11-08T10:00:00Z",
+    );
+    let text = terminal_summary(&run);
+    assert!(text.contains("Artifacts: art_091"), "{text}");
+    assert!(text.contains("Receipt: sha256:abcdef01"), "{text}");
+    assert!(text.contains("Tokens: 10 in / 2 out"), "{text}");
+}
+
+#[test]
+fn history_uses_durable_prompts() {
+    let mut app = agent_app();
+    app.agent.prompts = vec!["primera tarea".into(), "segunda tarea".into()];
+    app.agent.history_query.clear();
+    assert_eq!(app.history_matches().len(), 2);
+}
+
+#[test]
+fn history_search_filters_results() {
+    let mut app = agent_app();
+    app.agent.prompts = vec!["revisa el store".into(), "revisa la tui".into()];
+    app.agent.history_query = "tui".into();
+    let m = app.history_matches();
+    assert_eq!(m, vec!["revisa la tui".to_string()]);
+}
+
+#[test]
+fn history_selection_does_not_submit() {
+    let mut app = agent_app();
+    app.agent.prompts = vec!["tarea previa".into()];
+    app.agent.history_open = true;
+    let before = app.agent.lines.len();
+    app.history_choose();
+    assert_eq!(app.agent.composer, "tarea previa");
+    assert!(app.agent.last_run.is_none());
+    assert_eq!(app.agent.lines.len(), before);
+    assert!(!app.agent.history_open);
+}
+
+#[test]
+fn history_is_scoped_to_thread() {
+    let runs = vec![
+        run_json(
+            "run_1",
+            "thr_1",
+            "de uno",
+            "completed",
+            "2026-11-08T10:00:00Z",
+        ),
+        run_json(
+            "run_2",
+            "thr_2",
+            "de dos",
+            "completed",
+            "2026-11-08T10:01:00Z",
+        ),
+    ];
+    let only_one: Vec<serde_json::Value> = runs
+        .into_iter()
+        .filter(|r| r["thread_id"] == "thr_1")
+        .collect();
+    let lines = project_thread(&only_one, &[]);
+    let text: String = lines.iter().map(|l| l.text.clone()).collect();
+    assert!(text.contains("de uno"));
+    assert!(!text.contains("de dos"));
 }

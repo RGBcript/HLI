@@ -15,6 +15,9 @@ fn main() -> io::Result<()> {
     let mut app = App::new();
     if mode == TuiMode::Agent {
         app.begin_agent(root.map(std::path::PathBuf::from));
+        if args.iter().any(|a| a == "--resume") {
+            app.open_resume();
+        }
     }
     let res = run(&mut terminal, &mut app);
     ratatui::restore();

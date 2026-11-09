@@ -19,7 +19,9 @@ pub fn call(cmd: &str, args: Value) -> Result<Value, String> {
         .map_err(|_| "daemon no está en marcha".to_string())?;
     let v: Value = serde_json::from_str(&info).map_err(|e| e.to_string())?;
     let port = v["port"].as_u64().ok_or("daemon.json sin puerto")? as u16;
-    let mut s = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut s = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500))
+        .map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
     let req = json!({"id": "tui", "cmd": cmd, "args": args});
