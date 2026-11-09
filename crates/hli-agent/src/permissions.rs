@@ -97,7 +97,9 @@ const SENSITIVE_KEYS: [&str; 6] = [
 
 fn is_sensitive(key: &str) -> bool {
     let k = key.to_lowercase();
-    SENSITIVE_KEYS.iter().any(|s| k == *s || k.ends_with(&format!("_{s}")))
+    SENSITIVE_KEYS
+        .iter()
+        .any(|s| k == *s || k.ends_with(&format!("_{s}")))
 }
 
 /// Redacta valores sensibles antes de persistir o mostrar la invocación.
@@ -173,7 +175,13 @@ mod tests {
     #[test]
     fn deny_has_priority() {
         assert_eq!(
-            decide("shell.execute", "destructive", None, "run_1", &[grant("workspace", None, None)]),
+            decide(
+                "shell.execute",
+                "destructive",
+                None,
+                "run_1",
+                &[grant("workspace", None, None)]
+            ),
             ToolDecision::Deny
         );
     }
@@ -194,20 +202,44 @@ mod tests {
     fn grants_cover_only_their_scope_and_target() {
         let run_grant = grant("run", Some("run_1"), Some("a.txt"));
         assert_eq!(
-            decide("filesystem.write", "write", Some("a.txt"), "run_1", &[run_grant.clone()]),
+            decide(
+                "filesystem.write",
+                "write",
+                Some("a.txt"),
+                "run_1",
+                std::slice::from_ref(&run_grant)
+            ),
             ToolDecision::Allow
         );
         assert_eq!(
-            decide("filesystem.write", "write", Some("a.txt"), "run_2", &[run_grant.clone()]),
+            decide(
+                "filesystem.write",
+                "write",
+                Some("a.txt"),
+                "run_2",
+                std::slice::from_ref(&run_grant)
+            ),
             ToolDecision::Ask
         );
         assert_eq!(
-            decide("filesystem.write", "write", Some("b.txt"), "run_1", &[run_grant]),
+            decide(
+                "filesystem.write",
+                "write",
+                Some("b.txt"),
+                "run_1",
+                &[run_grant]
+            ),
             ToolDecision::Ask
         );
         let ws_grant = grant("workspace", None, None);
         assert_eq!(
-            decide("filesystem.write", "write", Some("b.txt"), "run_9", &[ws_grant]),
+            decide(
+                "filesystem.write",
+                "write",
+                Some("b.txt"),
+                "run_9",
+                &[ws_grant]
+            ),
             ToolDecision::Allow
         );
     }

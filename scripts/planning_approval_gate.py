@@ -95,6 +95,12 @@ def stop_daemon(env, proc):
         proc.kill()
 
 
+def approve_pending_permissions(env, run_id, scope="once"):
+    pending = jrun("permission", "list", "--run", run_id, "--status", "pending", env=env)
+    for req in pending:
+        jrun("permission", "approve", req["request_id"], "--scope", scope, env=env)
+
+
 def wait_state(env, run_id, state, timeout=10):
     deadline = time.time() + timeout
     last = None
@@ -102,6 +108,12 @@ def wait_state(env, run_id, state, timeout=10):
         last = jrun("run", "status", run_id, env=env)["run"]
         if last["state"] == state:
             return last
+        if (
+            last["state"] == "waiting_approval"
+            and last.get("approval_kind") == "tool"
+            and state != "waiting_approval"
+        ):
+            approve_pending_permissions(env, run_id)
         if last["state"] in ("failed", "cancelled", "timed_out", "interrupted"):
             return last
         time.sleep(0.1)
@@ -219,11 +231,15 @@ try:
     run_scope = jrun("run", "start", "--workspace", ws2, "--thread", th2, "--branch", br2,
                      "--prompt", "tool:write run.txt r", "--provider", "sim")
     jrun("run", "approve", run_scope["id"], "--scope", "run")
+    time.sleep(0.3)
+    approve_pending_permissions(ENV, run_scope["id"], "run")
     RESULT["approval_run"] = wait_state(ENV, run_scope["id"], "completed")["state"] == "completed"
 
     ws_scope = jrun("run", "start", "--workspace", ws2, "--thread", th2, "--branch", br2,
                     "--prompt", "tool:write ws.txt w", "--provider", "sim")
     jrun("run", "approve", ws_scope["id"], "--scope", "workspace")
+    time.sleep(0.3)
+    approve_pending_permissions(ENV, ws_scope["id"], "workspace")
     persisted = wait_state(ENV, ws_scope["id"], "completed")["state"] == "completed"
     after_grant = jrun("run", "start", "--workspace", ws2, "--thread", th2, "--branch", br2,
                        "--prompt", "tool:write ws2.txt w2", "--provider", "sim")

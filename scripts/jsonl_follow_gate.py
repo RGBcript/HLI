@@ -159,6 +159,18 @@ try:
         shown = jrun(["run", "plan", plan_run])
         jrun(["run", "approve", plan_run, "--scope", "once",
               "--plan", shown["plan"]["plan_id"]])
+        # El plan autoriza efectos; la invocación pide su propio permiso.
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            now = jrun(["run", "status", plan_run])["run"]
+            if now["state"] == "waiting_approval" and now.get("approval_kind") == "tool":
+                pending = jrun(["permission", "list", "--run", plan_run, "--status", "pending"])
+                for req in pending:
+                    jrun(["permission", "approve", req["request_id"], "--scope", "once"])
+                break
+            if now["state"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(0.1)
         tail = []
         while True:
             line = pf.stdout.readline()

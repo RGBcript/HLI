@@ -704,7 +704,10 @@ fn run(args: &[String]) -> Result<(), String> {
             let id = args.get(2).ok_or("falta request_id")?;
             let scope = flag(args, "--scope").unwrap_or_else(|| "once".into());
             print_value(
-                &call("permission.approve", json!({"request_id": id, "scope": scope}))?,
+                &call(
+                    "permission.approve",
+                    json!({"request_id": id, "scope": scope}),
+                )?,
                 output,
             )
         }
@@ -712,13 +715,19 @@ fn run(args: &[String]) -> Result<(), String> {
             let id = args.get(2).ok_or("falta request_id")?;
             let reason = flag(args, "--reason").unwrap_or_else(|| "denied".into());
             print_value(
-                &call("permission.deny", json!({"request_id": id, "reason": reason}))?,
+                &call(
+                    "permission.deny",
+                    json!({"request_id": id, "reason": reason}),
+                )?,
                 output,
             )
         }
         ("permission", Some("cancel")) => {
             let id = args.get(2).ok_or("falta request_id")?;
-            print_value(&call("permission.cancel", json!({"request_id": id}))?, output)
+            print_value(
+                &call("permission.cancel", json!({"request_id": id}))?,
+                output,
+            )
         }
         ("prices", Some("list")) => print_value(&call("prices.list", json!({}))?, output),
         ("manifest", Some("get")) => {

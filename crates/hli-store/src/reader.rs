@@ -647,7 +647,6 @@ impl Reader {
         })
     }
 
-
     pub fn tool_request(&self, request_id: &str) -> Result<ToolPermissionRequest> {
         self.with(|c| {
             c.query_row(
@@ -659,14 +658,13 @@ impl Reader {
                 crate::writer::row_to_tool_request,
             )
             .optional()?
-            .ok_or_else(|| {
-                HliError::new("permission_request_not_found", "solicitud inexistente")
-            })
+            .ok_or_else(|| HliError::new("permission_request_not_found", "solicitud inexistente"))
         })
     }
 
     pub fn pending_tool_request(&self, run_id: &str) -> Result<Option<ToolPermissionRequest>> {
-        self.with(|c| Ok(c.query_row(
+        self.with(|c| {
+            Ok(c.query_row(
                 &format!(
                     "SELECT {} FROM tool_permission_requests
                      WHERE run_id = ?1 AND status = 'pending'
@@ -676,7 +674,8 @@ impl Reader {
                 [run_id],
                 crate::writer::row_to_tool_request,
             )
-            .optional()?))
+            .optional()?)
+        })
     }
 
     pub fn tool_requests(

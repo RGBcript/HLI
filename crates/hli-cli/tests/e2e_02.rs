@@ -266,7 +266,14 @@ fn tool_write_requires_approval() {
     let waiting = ctx.json(&["run", "wait", &run_id, "--timeout-secs", "5"]);
     assert_eq!(waiting["run"]["state"].as_str(), Some("waiting_approval"));
     assert_eq!(waiting["run"]["approval_kind"].as_str(), Some("tool"));
-    let pending = ctx.json(&["permission", "list", "--run", &run_id, "--status", "pending"]);
+    let pending = ctx.json(&[
+        "permission",
+        "list",
+        "--run",
+        &run_id,
+        "--status",
+        "pending",
+    ]);
     let req = pending[0]["request_id"].as_str().unwrap().to_string();
     ctx.json(&["permission", "approve", &req, "--scope", "once"]);
     let done = ctx.json(&["run", "wait", &run_id, "--timeout-secs", "10"]);

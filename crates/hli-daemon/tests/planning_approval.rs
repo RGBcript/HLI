@@ -22,7 +22,6 @@ fn setup(c: &Ctx) -> (String, String, String, String) {
     (ws_id, th_id, br_id, root.to_string_lossy().to_string())
 }
 
-
 fn approve_pending(c: &Ctx, run_id: &str, scope: &str) {
     let pending = c.ok(
         "permission.list",
@@ -352,6 +351,9 @@ fn workspace_scope_persists_across_runs() {
     // el plan y no debe aparecer una solicitud de permiso.
     let done2 = c.ok("run.wait", json!({"run_id": r2["id"], "timeout_secs": 10}));
     assert_eq!(done2["run"]["state"], "completed");
-    let pending = c.ok("permission.list", json!({"run_id": r2["id"], "status": "pending"}));
+    let pending = c.ok(
+        "permission.list",
+        json!({"run_id": r2["id"], "status": "pending"}),
+    );
     assert!(pending.as_array().unwrap().is_empty());
 }

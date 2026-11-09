@@ -638,7 +638,6 @@ CREATE TABLE IF NOT EXISTS module_signatures (
     Ok(())
 }
 
-
 fn m0009_tool_permissions(tx: &Transaction<'_>) -> Result<()> {
     add_column(tx, "runs", "approval_kind", "TEXT")?;
     tx.execute_batch(

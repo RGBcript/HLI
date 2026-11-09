@@ -443,7 +443,6 @@ impl Writer {
         })
     }
 
-
     pub fn save_tool_request(
         &self,
         request: ToolPermissionRequest,
@@ -862,7 +861,8 @@ impl State {
                 actor,
                 reply,
             } => {
-                let _ = reply.send(self.decide_tool_request(&request_id, &decision, &scope, &actor));
+                let _ =
+                    reply.send(self.decide_tool_request(&request_id, &decision, &scope, &actor));
             }
             WriteCmd::CancelToolRequest {
                 request_id,
@@ -1366,7 +1366,6 @@ impl State {
         Ok(out)
     }
 
-
     fn set_approval_kind(&mut self, run_id: &str, kind: Option<&str>) -> Result<Run> {
         let run = load_run(&self.conn, run_id)?
             .ok_or_else(|| HliError::not_found(&format!("run {run_id}")))?;
@@ -1468,8 +1467,9 @@ impl State {
                 format!("scope inválido: {scope}"),
             ));
         }
-        let mut req = load_tool_request(&self.conn, request_id)?
-            .ok_or_else(|| HliError::new("permission_request_not_found", "solicitud inexistente"))?;
+        let mut req = load_tool_request(&self.conn, request_id)?.ok_or_else(|| {
+            HliError::new("permission_request_not_found", "solicitud inexistente")
+        })?;
         // Idempotencia: repetir la misma decisión devuelve el estado actual.
         if req.status == "approved" && req.decision.as_deref() == Some("allow")
             || req.status == "denied" && req.decision.as_deref() == Some("deny")
@@ -1483,7 +1483,12 @@ impl State {
             ));
         }
         let now = now_iso();
-        req.status = if decision == "allow" { "approved" } else { "denied" }.into();
+        req.status = if decision == "allow" {
+            "approved"
+        } else {
+            "denied"
+        }
+        .into();
         req.decision = Some(decision.to_string());
         req.decision_scope = if decision == "allow" {
             Some(scope.to_string())
@@ -1524,10 +1529,18 @@ impl State {
                 params![
                     new_id("tgrant"),
                     req.workspace_id,
-                    if scope == "run" { Some(req.run_id.clone()) } else { None },
+                    if scope == "run" {
+                        Some(req.run_id.clone())
+                    } else {
+                        None
+                    },
                     req.effect,
                     req.tool_name,
-                    if scope == "workspace" { None } else { req.target.clone() },
+                    if scope == "workspace" {
+                        None
+                    } else {
+                        req.target.clone()
+                    },
                     scope,
                     now,
                     actor
@@ -1556,9 +1569,14 @@ impl State {
         Ok(req)
     }
 
-    fn cancel_tool_request(&mut self, request_id: &str, actor: &str) -> Result<ToolPermissionRequest> {
-        let mut req = load_tool_request(&self.conn, request_id)?
-            .ok_or_else(|| HliError::new("permission_request_not_found", "solicitud inexistente"))?;
+    fn cancel_tool_request(
+        &mut self,
+        request_id: &str,
+        actor: &str,
+    ) -> Result<ToolPermissionRequest> {
+        let mut req = load_tool_request(&self.conn, request_id)?.ok_or_else(|| {
+            HliError::new("permission_request_not_found", "solicitud inexistente")
+        })?;
         if req.status == "cancelled" {
             return Ok(req);
         }
@@ -1577,7 +1595,13 @@ impl State {
         tx.execute(
             "UPDATE tool_permission_requests SET status = 'cancelled', decided_at = ?1,
                 decided_by = ?2, content_hash = ?3, body_json = ?4 WHERE request_id = ?5",
-            params![req.decided_at, req.decided_by, req.content_hash, body, request_id],
+            params![
+                req.decided_at,
+                req.decided_by,
+                req.content_hash,
+                body,
+                request_id
+            ],
         )?;
         append_event(
             &tx,
@@ -2418,6 +2442,27 @@ impl State {
             bytes: plans_nd.into_bytes(),
         });
 
+        let tool_requests = load_tool_requests(&self.conn, workspace_id)?;
+        let mut treq_nd = String::new();
+        for r in &tool_requests {
+            treq_nd.push_str(&canonical_json(&serde_json::to_value(r)?));
+            treq_nd.push('\n');
+        }
+        files.push(ArchiveFile {
+            path: "tool_permissions.ndjson".into(),
+            bytes: treq_nd.into_bytes(),
+        });
+        let tool_grants = load_tool_grants_all(&self.conn, workspace_id)?;
+        let mut tg_nd = String::new();
+        for g in &tool_grants {
+            tg_nd.push_str(&canonical_json(&serde_json::to_value(g)?));
+            tg_nd.push('\n');
+        }
+        files.push(ArchiveFile {
+            path: "tool_grants.ndjson".into(),
+            bytes: tg_nd.into_bytes(),
+        });
+
         let grants = load_grants(&self.conn, workspace_id)?;
         let mut grants_nd = String::new();
         for g in &grants {
@@ -2482,7 +2527,9 @@ impl State {
                 "manifests": manifests.len(),
                 "memories": memories.len(),
                 "plans": plans.len(),
-                "grants": grants.len()
+                "grants": grants.len(),
+                "tool_permissions": tool_requests.len(),
+                "tool_grants": tool_grants.len()
             },
             "files": file_meta,
             "redactions": {"secrets": "handles-only"}
@@ -2786,6 +2833,70 @@ impl State {
                 )?;
             }
         }
+        if let Some(f) = files.iter().find(|f| f.path == "tool_permissions.ndjson") {
+            let text = String::from_utf8_lossy(&f.bytes).to_string();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let r: ToolPermissionRequest = serde_json::from_str(line)?;
+                let body = canonical_json(&serde_json::to_value(&r).unwrap_or(json!({})));
+                tx.execute(
+                    "INSERT OR IGNORE INTO tool_permission_requests(request_id, run_id, plan_id,
+                        plan_revision, workspace_id, thread_id, branch_id, tool_name, operation,
+                        effect, target, arguments_hash, arguments_summary, reason,
+                        requested_scope, status, created_at, decided_at, decided_by, decision,
+                        decision_scope, content_hash, body_json, invocation_json,
+                        invocation_redacted)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, NULL, 1)",
+                    params![
+                        r.request_id,
+                        r.run_id,
+                        r.plan_id,
+                        r.plan_revision,
+                        r.workspace_id,
+                        r.thread_id,
+                        r.branch_id,
+                        r.tool_name,
+                        r.operation,
+                        r.effect,
+                        r.target,
+                        r.arguments_hash,
+                        r.arguments_summary,
+                        r.reason,
+                        r.requested_scope,
+                        r.status,
+                        r.created_at,
+                        r.decided_at,
+                        r.decided_by,
+                        r.decision,
+                        r.decision_scope,
+                        r.content_hash,
+                        body
+                    ],
+                )?;
+            }
+        }
+        if let Some(f) = files.iter().find(|f| f.path == "tool_grants.ndjson") {
+            let text = String::from_utf8_lossy(&f.bytes).to_string();
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let g: ToolGrant = serde_json::from_str(line)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO tool_grants(grant_id, workspace_id, run_id, effect,
+                        tool_name, target, scope, created_at, created_by)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        g.grant_id,
+                        g.workspace_id,
+                        g.run_id,
+                        g.effect,
+                        g.tool_name,
+                        g.target,
+                        g.scope,
+                        g.created_at,
+                        g.created_by
+                    ],
+                )?;
+            }
+        }
         if let Some(f) = files.iter().find(|f| f.path == "memories.ndjson") {
             let text = String::from_utf8_lossy(&f.bytes).to_string();
             for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -3026,7 +3137,6 @@ pub(crate) fn load_events(conn: &Connection, workspace_id: &str) -> Result<Vec<E
 pub(crate) const RUN_COLS: &str = "id, workspace_id, thread_id, branch_id, branch_revision, state,
     prompt, started_at, ended_at, result_json, receipt_json, approval_kind";
 
-
 pub(crate) const TOOL_REQ_COLS: &str = "request_id, run_id, workspace_id, body_json,
     invocation_json, invocation_redacted";
 
@@ -3045,19 +3155,14 @@ pub(crate) fn load_tool_request(
 ) -> Result<Option<ToolPermissionRequest>> {
     Ok(conn
         .query_row(
-            &format!(
-                "SELECT {TOOL_REQ_COLS} FROM tool_permission_requests WHERE request_id = ?1"
-            ),
+            &format!("SELECT {TOOL_REQ_COLS} FROM tool_permission_requests WHERE request_id = ?1"),
             [request_id],
             row_to_tool_request,
         )
         .optional()?)
 }
 
-pub(crate) fn load_invocation(
-    conn: &Connection,
-    request_id: &str,
-) -> Result<Option<Value>> {
+pub(crate) fn load_invocation(conn: &Connection, request_id: &str) -> Result<Option<Value>> {
     let raw: Option<Option<String>> = conn
         .query_row(
             "SELECT invocation_json FROM tool_permission_requests WHERE request_id = ?1",
@@ -3193,6 +3298,37 @@ pub(crate) fn row_to_grant(r: &rusqlite::Row<'_>) -> rusqlite::Result<Permission
         created_by: r.get(5)?,
         run_id: r.get(6)?,
     })
+}
+
+fn load_tool_requests(conn: &Connection, workspace_id: &str) -> Result<Vec<ToolPermissionRequest>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TOOL_REQ_COLS} FROM tool_permission_requests
+         WHERE workspace_id = ?1 ORDER BY created_at"
+    ))?;
+    let rows = stmt.query_map([workspace_id], row_to_tool_request)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn load_tool_grants_all(conn: &Connection, workspace_id: &str) -> Result<Vec<ToolGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT grant_id, workspace_id, run_id, effect, tool_name, target, scope, created_at,
+                created_by
+         FROM tool_grants WHERE workspace_id = ?1 ORDER BY created_at",
+    )?;
+    let rows = stmt.query_map([workspace_id], |r| {
+        Ok(ToolGrant {
+            grant_id: r.get(0)?,
+            workspace_id: r.get(1)?,
+            run_id: r.get(2)?,
+            effect: r.get(3)?,
+            tool_name: r.get(4)?,
+            target: r.get(5)?,
+            scope: r.get(6)?,
+            created_at: r.get(7)?,
+            created_by: r.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 fn load_plans(conn: &Connection, workspace_id: &str) -> Result<Vec<RunPlan>> {

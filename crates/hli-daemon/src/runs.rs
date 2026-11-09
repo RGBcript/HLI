@@ -16,9 +16,9 @@ use hli_core::{
     HliError,
     ids::new_id,
     model::{
-        ContextManifest, ExecMchInstance, ExecSampling, ExecSnapshot, ModuleVersion,
-        PermissionGrant, PlanStep, Receipt, Run, RunPlan, SecretHandleRef, ToolCall,
-        ToolPermissionRequest, EXEC_SNAPSHOT_VERSION, approval_scope_valid, run_is_terminal,
+        ContextManifest, EXEC_SNAPSHOT_VERSION, ExecMchInstance, ExecSampling, ExecSnapshot,
+        ModuleVersion, PermissionGrant, PlanStep, Receipt, Run, RunPlan, SecretHandleRef, ToolCall,
+        ToolPermissionRequest, approval_scope_valid, run_is_terminal,
     },
     time::now_iso,
 };
@@ -206,7 +206,7 @@ fn step_covers(step: &PlanStep, call: &hli_core::model::ToolCall) -> bool {
     }
     match step.target.as_deref() {
         None => true,
-        Some(t) => call.arguments["path"].as_str() == Some(t),
+        Some(t) => hli_agent::normalize_target(&call.name, &call.arguments).as_deref() == Some(t),
     }
 }
 
@@ -620,8 +620,7 @@ pub fn execute_prepared_run(
                 let grants = r
                     .tool_grants(&run.workspace_id, Some(run_id))
                     .unwrap_or_default();
-                match hli_agent::decide(&call.name, effect, target.as_deref(), run_id, &grants)
-                {
+                match hli_agent::decide(&call.name, effect, target.as_deref(), run_id, &grants) {
                     hli_agent::ToolDecision::Deny => {
                         let _ = w.run_event(
                             run_id,
@@ -632,8 +631,7 @@ pub fn execute_prepared_run(
                         result["error"] = json!("herramienta denegada por política");
                     }
                     hli_agent::ToolDecision::Ask => {
-                        let (redacted, has_secrets) =
-                            hli_agent::redact_arguments(&call.arguments);
+                        let (redacted, has_secrets) = hli_agent::redact_arguments(&call.arguments);
                         let request = ToolPermissionRequest {
                             request_id: hli_core::ids::new_id("perm"),
                             run_id: run.id.clone(),
@@ -646,10 +644,7 @@ pub fn execute_prepared_run(
                             operation: call.name.clone(),
                             effect: effect.to_string(),
                             target: target.clone(),
-                            arguments_hash: hli_agent::invocation_hash(
-                                &call.name,
-                                &call.arguments,
-                            ),
+                            arguments_hash: hli_agent::invocation_hash(&call.name, &call.arguments),
                             arguments_summary: hli_agent::summarize(&call.name, &call.arguments),
                             reason: "invocación declarada en el plan aprobado".into(),
                             requested_scope: None,
@@ -1428,8 +1423,6 @@ pub fn plan_response(r: &Reader, run_id: &str) -> Result<Value, HliError> {
     }))
 }
 
-/// Ejecuta pasos declarados por el proveedor (sin cadena de razonamiento).
-
 // ---------------------------------------------------------------------------
 // Permisos por invocación
 // ---------------------------------------------------------------------------
@@ -1548,7 +1541,10 @@ pub fn approve_permission(
     if run.state != "waiting_approval" || run.approval_kind.as_deref() != Some("tool") {
         return Err(HliError::new(
             "permission_conflict",
-            format!("el run no espera permiso (estado {}, kind {:?})", run.state, run.approval_kind),
+            format!(
+                "el run no espera permiso (estado {}, kind {:?})",
+                run.state, run.approval_kind
+            ),
         ));
     }
     let invocation = r.tool_invocation(request_id)?.ok_or_else(|| {
@@ -1607,7 +1603,11 @@ pub fn approve_permission(
     let plan = w
         .set_plan_status(
             &plan.plan_id,
-            if state == "completed" { "completed" } else { "failed" },
+            if state == "completed" {
+                "completed"
+            } else {
+                "failed"
+            },
             plan.approval_scope.clone(),
             plan.approved_by.clone(),
             None,
@@ -1643,7 +1643,13 @@ pub fn deny_permission(
         "reason": reason, "tool": req.tool_name
     });
     let plan = w
-        .set_plan_status(&plan.plan_id, "failed", None, None, Some("tool_denied".into()))
+        .set_plan_status(
+            &plan.plan_id,
+            "failed",
+            None,
+            None,
+            Some("tool_denied".into()),
+        )
         .unwrap_or(plan);
     let mut receipt = permission_receipt(&manifest, &plan, &snapshot, &req, &result, false, actor);
     receipt.result_hash = hli_core::canon::hash_canonical(&result);

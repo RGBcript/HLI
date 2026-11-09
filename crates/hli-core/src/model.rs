@@ -639,7 +639,6 @@ pub struct PermissionGrant {
     pub run_id: Option<String>,
 }
 
-
 // ---------------------------------------------------------------------------
 // Permisos por invocación (0.10)
 // ---------------------------------------------------------------------------
@@ -722,7 +721,10 @@ impl ToolPermissionRequest {
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self.status.as_str(), "approved" | "denied" | "cancelled" | "expired" | "superseded")
+        matches!(
+            self.status.as_str(),
+            "approved" | "denied" | "cancelled" | "expired" | "superseded"
+        )
     }
 }
 
