@@ -16,13 +16,26 @@ Windows x86_64. Linux es experimental.
 ## Instalación rápida
 
 ```powershell
-.\install.ps1
-$env:HLI_HOME = "$env:LOCALAPPDATA\HLI\data"
-hli daemon start
-hli --version
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+# abre una terminal nueva
+hli doctor
+hli
 ```
 
-Guía completa de 15 minutos: [QUICKSTART.md](QUICKSTART.md).
+El instalador compila en release y copia `hli`, `hli-tui`, `hli-daemon` y
+`hli-mcp` a `%USERPROFILE%\.local\bin`, añade esa carpeta al PATH del usuario y
+verifica con `hli --version`. Sin administrador. En Linux/macOS: `./install.sh`.
+
+El daemon arranca solo en el primer comando; el workspace del directorio se crea
+también sin pasos previos. Una pasada sin TUI:
+
+```bash
+hli "resume este repo"          # o hli -p "resume este repo"
+cat log.txt | hli -p "¿qué falla?"
+```
+
+Guía completa: [docs/INSTALL.md](docs/INSTALL.md) ·
+[QUICKSTART.md](QUICKSTART.md).
 
 ## Estado honesto
 
