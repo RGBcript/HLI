@@ -79,6 +79,23 @@ mensaje que remite a `hli`.
 La ejecución observada usa el mismo camino: `run.start` con `async: true`,
 polling de `run.status` y actividad por `event.list`.
 
+### Streaming JSONL
+
+```powershell
+hli run "tarea" --async --output jsonl --follow
+```
+
+Emite una línea JSON por evento persistido (`{"type":"event",...}`) en orden de
+`sequence`, desde el primero del run, sin duplicados ni ANSI. Al llegar a un
+estado terminal emite una proyección `{"type":"receipt","source":"run.status",...}`
+que **no** es un evento durable. Código de salida 0 solo si el run terminó
+`completed`.
+
+`Ctrl+C` solicita `run.cancel` y espera el estado terminal; una segunda pulsación
+(o el timeout de cancelación) cierra el cliente sin matar el daemon. Si el
+consumidor cierra la tubería, el cliente termina sin cancelar el run.
+`--output jsonl` sin `--follow` sigue siendo una única línea terminal.
+
 ## Lo que este flujo no hace
 
 - No ejecuta herramientas ni permisos interactivos: el runtime actual ejecuta el

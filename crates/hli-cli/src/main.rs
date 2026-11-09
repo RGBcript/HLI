@@ -938,7 +938,8 @@ fn linked_workspace() -> Result<Option<Value>, String> {
 }
 
 fn run_task(args: &[String], output: &str) -> Result<(), String> {
-    let is_async = args.iter().any(|a| a == "--async");
+    let follow = args.iter().any(|a| a == "--follow");
+    let is_async = follow || args.iter().any(|a| a == "--async");
     let task = args.first().cloned().unwrap_or_default();
     if task.trim().is_empty() {
         return Err("falta la tarea".into());
@@ -977,9 +978,168 @@ fn run_task(args: &[String], output: &str) -> Result<(), String> {
             "branch_id": branch_id,
             "prompt": task,
             "async": is_async,
+            "sim_delay_ms": args
+                .windows(2)
+                .find(|w| w[0] == "--sim-delay-ms")
+                .and_then(|w| w[1].parse::<u64>().ok()),
+            "timeout_secs": args
+                .windows(2)
+                .find(|w| w[0] == "--timeout-secs")
+                .and_then(|w| w[1].parse::<u64>().ok()),
         }),
     )?;
+    if follow {
+        let run_id = v["id"].as_str().unwrap_or("").to_string();
+        if run_id.is_empty() {
+            return Err("run.start no devolvió id".into());
+        }
+        let timeout = args
+            .windows(2)
+            .find(|w| w[0] == "--timeout-secs")
+            .and_then(|w| w[1].parse::<u64>().ok())
+            .unwrap_or(10);
+        return follow_run(&ws_id, &branch_id, &run_id, timeout);
+    }
     print_value(&v, output)
+}
+
+mod sigint {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    static FIRED: AtomicBool = AtomicBool::new(false);
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+
+    #[cfg(windows)]
+    unsafe extern "system" fn handler(_ctrl_type: u32) -> i32 {
+        FIRED.store(true, Ordering::SeqCst);
+        COUNT.fetch_add(1, Ordering::SeqCst);
+        1
+    }
+
+    #[cfg(windows)]
+    pub fn install() {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn SetConsoleCtrlHandler(
+                handler: Option<unsafe extern "system" fn(u32) -> i32>,
+                add: i32,
+            ) -> i32;
+        }
+        unsafe {
+            SetConsoleCtrlHandler(Some(handler), 1);
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn install() {}
+
+    pub fn fired() -> bool {
+        FIRED.load(Ordering::SeqCst)
+    }
+
+    pub fn presses() -> u32 {
+        COUNT.load(Ordering::SeqCst)
+    }
+}
+
+fn is_terminal_state(state: &str) -> bool {
+    matches!(
+        state,
+        "completed" | "failed" | "cancelled" | "timed_out" | "interrupted"
+    )
+}
+
+fn follow_run(ws: &str, br: &str, run_id: &str, timeout_secs: u64) -> Result<(), String> {
+    use std::io::Write as _;
+    sigint::install();
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut last_seq = 0i64;
+    let mut start_seq: Option<i64> = None;
+    let mut cancelled = false;
+    let mut terminal_seen: Option<String> = None;
+    let started = Instant::now();
+
+    while terminal_seen.is_none() {
+        if sigint::fired() {
+            if !cancelled {
+                let _ = call("run.cancel", json!({ "run_id": run_id }));
+                cancelled = true;
+            } else if sigint::presses() >= 2 {
+                return Err("cancelado por el usuario".into());
+            }
+        }
+        if cancelled && started.elapsed() > Duration::from_secs(timeout_secs.max(1)) {
+            return Err("cancelación sin estado terminal".into());
+        }
+
+        if let Ok(list) = call("event.list", json!({ "workspace_id": ws }))
+            && let Some(arr) = list.as_array()
+        {
+            let mut evs: Vec<&Value> = arr.iter().collect();
+            evs.sort_by_key(|e| e["sequence"].as_i64().unwrap_or(0));
+            if start_seq.is_none() {
+                start_seq = evs
+                    .iter()
+                    .filter(|e| e["payload"]["run_id"].as_str() == Some(run_id))
+                    .filter_map(|e| e["sequence"].as_i64())
+                    .min();
+                if let Some(s) = start_seq {
+                    last_seq = s - 1;
+                }
+            }
+            if let Some(start) = start_seq {
+                for e in evs {
+                    let seq = e["sequence"].as_i64().unwrap_or(0);
+                    if seq <= last_seq || seq < start {
+                        continue;
+                    }
+                    let own = e["payload"]["run_id"].as_str() == Some(run_id);
+                    let same_branch = e["branch_id"].as_str() == Some(br);
+                    if !own && !same_branch {
+                        continue;
+                    }
+                    last_seq = seq;
+                    let line = json!({
+                        "type": "event",
+                        "sequence": seq,
+                        "event_type": e["type"],
+                        "run_id": run_id,
+                        "timestamp": e["created_at"],
+                        "data": e["payload"]
+                    });
+                    if writeln!(out, "{line}").is_err() {
+                        // Consumidor desconectado: cerrar sin cancelar ni tocar el daemon.
+                        return Ok(());
+                    }
+                    let _ = out.flush();
+                }
+            }
+        }
+
+        let st = call("run.status", json!({ "run_id": run_id }))?;
+        let state = st["run"]["state"].as_str().unwrap_or("").to_string();
+        if is_terminal_state(&state) {
+            let line = json!({
+                "type": "receipt",
+                "source": "run.status",
+                "run_id": run_id,
+                "terminal_state": state,
+                "receipt": st["run"]["receipt"].clone()
+            });
+            let _ = writeln!(out, "{line}");
+            let _ = out.flush();
+            terminal_seen = Some(state);
+        } else {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    match terminal_seen.as_deref() {
+        Some("completed") => Ok(()),
+        Some(other) => Err(format!("run {other}")),
+        None => Err("follow terminó sin estado terminal".into()),
+    }
 }
 
 fn usage() -> Result<(), String> {
@@ -989,7 +1149,7 @@ fn usage() -> Result<(), String> {
   hli . | hli <ruta>       Agent Mode vinculado a esa ruta
   hli inspect              Inspector Mode
   hli resume               reanudar el último thread del directorio
-  hli run \"<tarea>\"      ejecución directa [--async] [--output jsonl]
+  hli run \"<tarea>\"      ejecución directa [--async] [--output jsonl] [--follow]
   hli daemon start|stop|status
   hli workspace create <name> [--root PATH] | list | get <id>
   hli thread create <title> --workspace <id> | list --workspace <id>
