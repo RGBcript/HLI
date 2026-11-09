@@ -80,6 +80,18 @@ primer poll: es correcto.
 
 ---
 
+## 1d. Referencias `@` (Slice 3b)
+
+| # | Acción | Qué debe verse |
+|---|---|---|
+| 28 | `@` en el compositor | Selector con categoría `Files` y la lista de archivos del proyecto |
+| 29 | Escribir parte de un archivo y `Enter` | Se inserta `@file:ruta/relativa` y el archivo no se copia al prompt |
+| 30 | `Tab` dos veces y `Enter` | Se inserta `@memory:mem_…` (o `@artifact:art_…` si no hay memorias) |
+| 31 | `Esc` con el selector abierto | El compositor queda como estaba antes de `@` |
+| 32 | Modificar un archivo ya referenciado y enviar | Aviso `reference changed: …`; la referencia no se sustituye |
+
+---
+
 ## 2. Criterio de aceptación
 
 - No hay pánico ni corrupción de pantalla.
@@ -101,7 +113,7 @@ Commit evaluado:
 Dimensiones probadas:
 Fecha:
 Paso 0 (teclado):       OK / REGRESIÓN
-Pasos ejecutados:       27 / 27
+Pasos ejecutados:       32 / 32
 Resultado:              PENDIENTE / PASA / FALLA
 Observaciones:
 Firma:

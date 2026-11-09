@@ -77,9 +77,24 @@ comando mapea a una operación existente del daemon o del Inspector.
 
 ## Referencias `@`
 
-Slice 1: `@` inserta el token y lo conserva literal (`@art_091`, `@mem_018`,
-`@branch/main`). El selector fuzzy y la resolución a ID estable desde nombre
-humano quedan pendientes; no se inventa identidad.
+Escribir `@` abre un selector con cinco categorías: **Files**, **Artifacts**,
+**Memories**, **Runs** y **Branches**.
+
+- Fuentes: archivos del `root_path` del workspace; artifacts del workspace;
+  memorias `active`; runs del thread; branches del thread.
+- Búsqueda por nombre, ruta o ID. `Up`/`Down` selecciona, `Enter` inserta,
+  `Esc` cierra sin tocar el compositor, `Tab`/`Shift+Tab` cambia de categoría,
+  `Backspace` edita la búsqueda.
+- La referencia visible es `@file:crates/…`, `@artifact:art_…`, `@memory:mem_…`,
+  `@run:run_…`, `@branch:nombre`.
+- Internamente se guarda `reference_type`, `stable_id`, `display_text`, hash o
+  revisión y el instante de selección. El texto visible nunca es la identidad.
+- **Archivos**: se guarda ruta relativa, hash SHA-256 del contenido y tamaño. Al
+  enviar el prompt se recalcula: si el archivo cambió, se avisa
+  `reference changed: … (se conserva la revisión seleccionada)`; si desapareció,
+  `reference missing: …`. No se sustituye contenido en silencio.
+- **Artifacts**: se conserva el `sha256` del artifact. **Branches**: se guarda
+  `head_sequence` como revisión.
 
 ## Transcript durable
 
@@ -149,8 +164,7 @@ cuando existe.
 - Sin plan aprobable ni UI de permisos; la política vigente no cambia.
 - Sin UI de permisos: la política vigente no cambia y `shell.execute` sigue
   denegado.
-- Selector `@` todavía literal: el selector fuzzy con referencias estables es
-  Slice 3b.
-- Sin `Ctrl+E` ni `/details`: los detalles expandibles son Slice 3b.
+- Sin `Ctrl+E` ni `/details`: los detalles expandibles siguen pendientes.
+- `/provider`, `/model`, `/export` y el resto de la paleta avanzada: pendientes.
 - El título del thread es el prompt truncado; se puede renombrar por CLI en una
   iteración posterior.
