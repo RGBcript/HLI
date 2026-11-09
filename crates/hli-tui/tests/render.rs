@@ -2832,6 +2832,8 @@ fn workspace_tab_renders_the_list_not_the_transcript() {
 fn model_picker_falls_back_to_sim_without_daemon() {
     let mut app = App::demo();
     app.agent.model_open = false;
+    // Sin daemon: el worker cerrado fuerza el catálogo conocido.
+    app.daemon_async = hli_tui::daemon_async::AsyncDaemon::closed();
     app.open_model_picker();
     app.pump_daemon();
     assert!(app.agent.model_open);

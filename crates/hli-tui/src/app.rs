@@ -3179,9 +3179,6 @@ impl App {
     }
 
     fn ensure_thread(&mut self, text: &str) -> Option<String> {
-        if let Some(t) = self.agent.thread.as_ref().and_then(|t| t["id"].as_str()) {
-            return Some(t.to_string());
-        }
         let ws = self
             .agent
             .workspace
@@ -3189,6 +3186,24 @@ impl App {
             .get("id")?
             .as_str()?
             .to_string();
+        // Un thread de otro workspace no sirve: el daemon rechaza el run y el
+        // usuario ve «el thread pertenece a otro workspace». Se descarta.
+        if let Some(t) = self.agent.thread.as_ref() {
+            // Sin `workspace_id` se acepta (thread antiguo o de test); con
+            // uno distinto, se descarta.
+            let same = match t["workspace_id"].as_str() {
+                None => true,
+                Some(tws) => tws == ws.as_str(),
+            };
+            if same {
+                if let Some(id) = t["id"].as_str() {
+                    return Some(id.to_string());
+                }
+            } else {
+                self.agent.thread = None;
+                self.agent.branch = None;
+            }
+        }
         let title: String = text.chars().take(48).collect();
         match client::call_ui(
             "thread.create",
@@ -4679,16 +4694,26 @@ impl App {
     fn apply_daemon_reply(&mut self, reply: crate::daemon_async::Reply) {
         match reply {
             crate::daemon_async::Reply::Providers(result) => {
+                let mut default = String::new();
                 if let Ok(v) = result {
                     self.agent.providers = v["providers"].as_array().cloned().unwrap_or_default();
+                    default = v["default_provider"].as_str().unwrap_or("").to_string();
                 }
                 self.ensure_known_providers();
                 self.agent.model_loading = false;
+                // Abre en el proveedor de la sesión; si no está, en el default
+                // configurado; si tampoco, en el primero.
                 self.agent.model_sel = self
                     .agent
                     .providers
                     .iter()
                     .position(|p| p["name"].as_str() == Some(self.agent.provider.as_str()))
+                    .or_else(|| {
+                        self.agent
+                            .providers
+                            .iter()
+                            .position(|p| p["name"].as_str() == Some(default.as_str()))
+                    })
                     .unwrap_or(0);
             }
             crate::daemon_async::Reply::Workspaces(result) => {
