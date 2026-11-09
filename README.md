@@ -52,7 +52,8 @@ workspace, toma una tarea en lenguaje natural y crea el thread, la rama y el run
 sin pedir nada más. `hli inspect` (o `Ctrl+O`) abre el dashboard de observabilidad
 anterior, que se conserva como **Inspector**.
 
-- Guía: [docs/AGENT-MODE.md](docs/AGENT-MODE.md)
+- Guía: [docs/AGENT-MODE.md](docs/AGENT-MODE.md) — incluye `hli resume`, `Ctrl+R`
+  y el transcript durable desde el Event Store.
 - Flujo: [docs/DELEGATION-WORKFLOW.md](docs/DELEGATION-WORKFLOW.md)
 - Gate manual: [docs/AGENT-TUI-MANUAL-GATE.md](docs/AGENT-TUI-MANUAL-GATE.md)
 

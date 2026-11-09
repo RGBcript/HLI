@@ -68,6 +68,18 @@ primer poll: es correcto.
 
 ---
 
+## 1c. Interacción avanzada (Slice 3a)
+
+| # | Acción | Qué debe verse |
+|---|---|---|
+| 23 | `hli resume` en el proyecto | Selector con los threads recientes (título, workspace, rama, estado, modelo) |
+| 24 | `Enter` sobre uno | `Resumed: …` y el transcript reconstruido, sin crear otro thread |
+| 25 | `Ctrl+R` y escribir parte de un prompt | Overlay de historial filtrado; `Enter` copia al compositor sin enviar |
+| 26 | Tras un run | Bloque terminal con estado, proveedor, tokens, coste, receipt y artifacts |
+| 27 | Cambiar a Inspector y volver | El transcript no duplica entradas |
+
+---
+
 ## 2. Criterio de aceptación
 
 - No hay pánico ni corrupción de pantalla.
@@ -89,7 +101,7 @@ Commit evaluado:
 Dimensiones probadas:
 Fecha:
 Paso 0 (teclado):       OK / REGRESIÓN
-Pasos ejecutados:       22 / 22
+Pasos ejecutados:       27 / 27
 Resultado:              PENDIENTE / PASA / FALLA
 Observaciones:
 Firma:

@@ -30,6 +30,8 @@ En cada sesión nueva:
 $env:HLI_HOME = "$env:LOCALAPPDATA\HLI\data"
 $env:Path = "$env:LOCALAPPDATA\HLI\bin;$env:Path"
 hli --version
+hli                       # Agent Mode en el proyecto actual
+hli resume                # selector de threads recientes
 ```
 
 Debe imprimir `hli 0.9.0-beta.1`.

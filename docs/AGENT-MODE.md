@@ -81,6 +81,45 @@ Slice 1: `@` inserta el token y lo conserva literal (`@art_091`, `@mem_018`,
 `@branch/main`). El selector fuzzy y la resolución a ID estable desde nombre
 humano quedan pendientes; no se inventa identidad.
 
+## Transcript durable
+
+El transcript visible se reconstruye desde datos persistidos, no desde una lista
+de la TUI:
+
+- `run.prompt` → mensaje del usuario;
+- `run.result.text` → respuesta del provider;
+- `event.*` del run → actividad (`model.*`, `context.*`, `tool.*`);
+- `run.state` + `run.receipt` → bloque terminal.
+
+Orden: runs por `started_at`, eventos por `sequence`. Proyectar dos veces el
+mismo dato produce el mismo transcript: el polling, el cambio a Inspector y el
+`resume` no duplican entradas.
+
+## Resume
+
+- `hli resume --last`: abre el último thread del workspace vinculado al
+  directorio actual.
+- `hli resume`: selector de threads recientes con título, workspace, rama,
+  último estado, provider/model y fecha de actividad.
+- Al elegir, recupera transcript, rama, runs, receipts y artifacts **sin crear**
+  otro thread.
+- Si el directorio no tiene workspace, el selector muestra los recientes.
+
+## Historial (`Ctrl+R`)
+
+- Abre un overlay de búsqueda sobre los prompts durables del thread (derivados de
+  `run.prompt`, no de una lista en memoria).
+- Escribir filtra; `Ctrl+R` otra vez avanza coincidencias; `Enter` copia al
+  compositor **sin enviar**; `Esc` cierra sin tocar el compositor.
+
+## Resultado terminal
+
+Al terminar un run se muestra un bloque con estado real, duración, provider,
+tokens, coste (`unpriced` si no hay precio), receipt (`result_hash` +
+`context_manifest`) y artifacts. Si el estado es `failed`, `cancelled`,
+`timed_out` o `interrupted`, no dice «completed» y añade el error estructurado
+cuando existe.
+
 ## Inspector Mode
 
 - `hli inspect` abre el dashboard actual.
@@ -110,6 +149,8 @@ humano quedan pendientes; no se inventa identidad.
 - Sin plan aprobable ni UI de permisos; la política vigente no cambia.
 - Sin UI de permisos: la política vigente no cambia y `shell.execute` sigue
   denegado.
-- Sin `Ctrl+R`, `Ctrl+E`, `/details` ni expansión de actividad.
+- Selector `@` todavía literal: el selector fuzzy con referencias estables es
+  Slice 3b.
+- Sin `Ctrl+E` ni `/details`: los detalles expandibles son Slice 3b.
 - El título del thread es el prompt truncado; se puede renombrar por CLI en una
   iteración posterior.

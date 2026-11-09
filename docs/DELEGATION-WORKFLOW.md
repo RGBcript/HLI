@@ -50,6 +50,12 @@ Lo que ocurrió por debajo, sin que el usuario lo pidiera:
 - **Alternativas**: `/branch` ofrece crear `alternative-N` desde la revisión
   actual. La rama es durable; el usuario no gestiona el árbol.
 
+## Reanudar
+
+`hli resume` lista los threads recientes y reconstruye su transcript desde runs y
+eventos. `hli resume --last` va directo al último thread del workspace vinculado.
+No se crea nada nuevo: el daemon sigue siendo la fuente de verdad.
+
 ## Fallos
 
 | Situación | Qué hace la interfaz |
