@@ -209,6 +209,8 @@ pub struct ContextManifest {
     pub summaries: Vec<Value>,
     pub artifact_slices: Vec<Value>,
     pub excluded: Vec<Value>,
+    #[serde(default)]
+    pub explicit_references: Vec<ExplicitReferenceEntry>,
     pub payload_hash: String,
     pub estimated_tokens: i64,
     pub content_hash: String,
@@ -233,6 +235,7 @@ impl ContextManifest {
             "summaries": self.summaries,
             "artifact_slices": self.artifact_slices,
             "excluded": self.excluded,
+            "explicit_references": self.explicit_references,
             "payload_hash": self.payload_hash,
             "estimated_tokens": self.estimated_tokens,
             "created_at": self.created_at
@@ -242,6 +245,50 @@ impl ContextManifest {
     pub fn seal(&mut self) {
         self.content_hash = hash_canonical(&self.envelope());
     }
+}
+
+/// Referencia explícita tal como la envía el cliente.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExplicitReference {
+    pub reference_type: String,
+    pub stable_id: String,
+    #[serde(default)]
+    pub display_text: String,
+    #[serde(default)]
+    pub selected_at: String,
+    #[serde(default)]
+    pub selection_reason: String,
+    #[serde(default)]
+    pub content_hash: Option<String>,
+    #[serde(default)]
+    pub revision: Option<i64>,
+    #[serde(default)]
+    pub source_scope: Option<String>,
+}
+
+/// Entrada del manifiesto: referencia + resultado de validación y materialización.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ExplicitReferenceEntry {
+    pub reference_type: String,
+    pub stable_id: String,
+    pub display_text: String,
+    pub selected_at: String,
+    pub selection_reason: String,
+    pub validation_state: String,
+    pub content_hash: Option<String>,
+    pub revision: Option<i64>,
+    pub materialization_kind: String,
+    pub materialized_artifact_id: Option<String>,
+    pub slice_ids: Vec<String>,
+    pub estimated_tokens: i64,
+    pub included: bool,
+    pub exclusion_reason: Option<String>,
+    /// Contenido materializado (solo texto y dentro de presupuesto).
+    #[serde(default)]
+    pub materialized_text: Option<String>,
+    /// Metadatos por tipo (size, media_type, status, receipt hash, thread_id...).
+    #[serde(default)]
+    pub detail: Value,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
