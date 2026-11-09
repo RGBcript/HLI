@@ -115,6 +115,15 @@ fn summarize_output(ok: bool, text: &str) -> String {
         .to_string()
 }
 
+/// Primeras decisiones, siempre visibles y recorribles.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AgentTab {
+    Workspace,
+    Session,
+    #[default]
+    Chat,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TuiMode {
     Agent,
@@ -187,6 +196,12 @@ pub struct AgentState {
     pub history_index: Option<usize>,
     pub palette: bool,
     pub palette_index: usize,
+    pub agent_tab: AgentTab,
+    pub ws_sel: usize,
+    pub thread_sel: usize,
+    pub model_open: bool,
+    pub model_sel: usize,
+    pub providers: Vec<Value>,
     pub offer: Offer,
     pub pending: Option<String>,
     pub busy: bool,
@@ -786,6 +801,12 @@ impl Default for AgentState {
             history_index: None,
             palette: false,
             palette_index: 0,
+            agent_tab: AgentTab::default(),
+            ws_sel: 0,
+            thread_sel: 0,
+            model_open: false,
+            model_sel: 0,
+            providers: Vec::new(),
             offer: Offer::None,
             pending: None,
             busy: false,
@@ -2604,7 +2625,7 @@ impl App {
 // Agent Mode
 // ---------------------------------------------------------------------------
 
-pub const SLASH_COMMANDS: [&str; 17] = [
+pub const SLASH_COMMANDS: [&str; 21] = [
     "help",
     "status",
     "inspect",
@@ -2613,6 +2634,10 @@ pub const SLASH_COMMANDS: [&str; 17] = [
     "artifacts",
     "mch",
     "branch",
+    "model",
+    "provider",
+    "workspace",
+    "sessions",
     "new",
     "resume",
     "details",
@@ -3464,6 +3489,45 @@ impl App {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                // Fila 1: barra de pestañas.
+                if self.mode == TuiMode::Agent && m.row == 1 {
+                    let col = m.column as usize;
+                    self.agent.agent_tab = if col < 14 {
+                        AgentTab::Workspace
+                    } else if col < 26 {
+                        AgentTab::Session
+                    } else {
+                        AgentTab::Chat
+                    };
+                    match self.agent.agent_tab {
+                        AgentTab::Workspace => self.refresh_workspaces(),
+                        AgentTab::Session => self.load_threads(),
+                        AgentTab::Chat => {}
+                    }
+                    return true;
+                }
+                // Listas de workspace/sesión: clic selecciona, segundo clic entra.
+                if self.mode == TuiMode::Agent && self.agent.agent_tab != AgentTab::Chat {
+                    let idx = m.row.saturating_sub(3) as usize;
+                    match self.agent.agent_tab {
+                        AgentTab::Workspace if idx < self.workspaces.len() => {
+                            if self.agent.ws_sel == idx {
+                                self.select_workspace();
+                            } else {
+                                self.agent.ws_sel = idx;
+                            }
+                        }
+                        AgentTab::Session if idx < self.threads.len() => {
+                            if self.agent.thread_sel == idx {
+                                self.select_thread();
+                            } else {
+                                self.agent.thread_sel = idx;
+                            }
+                        }
+                        _ => {}
+                    }
+                    return true;
+                }
                 if self.on_scrollbar(m.column) {
                     self.scrollbar_to(m.row);
                 } else if let Some(idx) = self.row_to_line(m.row) {
@@ -4069,6 +4133,150 @@ impl App {
             .collect()
     }
 
+    // --- Pestañas: workspace → sesión → chat -------------------------------
+
+    pub fn cycle_tab(&mut self, forward: bool) {
+        self.agent.palette = false;
+        self.agent.agent_tab = match (self.agent.agent_tab, forward) {
+            (AgentTab::Workspace, true) => AgentTab::Session,
+            (AgentTab::Session, true) => AgentTab::Chat,
+            (AgentTab::Chat, true) => AgentTab::Workspace,
+            (AgentTab::Workspace, false) => AgentTab::Chat,
+            (AgentTab::Session, false) => AgentTab::Workspace,
+            (AgentTab::Chat, false) => AgentTab::Session,
+        };
+        if self.agent.agent_tab == AgentTab::Workspace {
+            self.refresh_workspaces();
+        } else if self.agent.agent_tab == AgentTab::Session {
+            self.load_threads();
+        }
+    }
+
+    pub fn refresh_workspaces(&mut self) {
+        let list = client::call("workspace.list", json!({})).unwrap_or(Value::Null);
+        self.workspaces = list.as_array().cloned().unwrap_or_default();
+        let current = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["id"].as_str())
+            .map(str::to_string);
+        self.agent.ws_sel = self
+            .workspaces
+            .iter()
+            .position(|w| w["id"].as_str().map(str::to_string) == current)
+            .unwrap_or(0);
+    }
+
+    /// Enter en la pestaña Workspace: vincula y pasa a sesiones.
+    pub fn select_workspace(&mut self) {
+        let Some(ws) = self.workspaces.get(self.agent.ws_sel).cloned() else {
+            return;
+        };
+        self.agent.workspace = Some(ws);
+        self.agent.thread = None;
+        self.agent.branch = None;
+        self.load_threads();
+        self.agent.thread_sel = self.threads.len().saturating_sub(1);
+        if let Some(t) = self.threads.get(self.agent.thread_sel).cloned() {
+            self.agent.thread = Some(t);
+            self.load_branches();
+            self.pick_last_branch();
+        }
+        self.agent.agent_tab = AgentTab::Session;
+    }
+
+    /// Enter en la pestaña Sesión: entra al thread y abre el chat.
+    pub fn select_thread(&mut self) {
+        let Some(t) = self.threads.get(self.agent.thread_sel).cloned() else {
+            return;
+        };
+        self.agent.thread = Some(t);
+        self.agent.branch = None;
+        self.load_branches();
+        self.pick_last_branch();
+        self.agent.lines.clear();
+        self.agent.scroll_top = None;
+        self.load_transcript();
+        self.agent.agent_tab = AgentTab::Chat;
+    }
+
+    /// `n` en Workspace: crea el workspace del directorio actual.
+    pub fn create_workspace_here(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let name = cwd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace")
+            .to_string();
+        match client::call(
+            "workspace.create",
+            json!({ "name": name, "root": cwd.to_string_lossy() }),
+        ) {
+            Ok(ws) => {
+                self.agent.workspace = Some(ws);
+                self.refresh_workspaces();
+                self.load_threads();
+                self.agent.agent_tab = AgentTab::Session;
+            }
+            Err(e) => self.agent.push(AgentKind::Error, e),
+        }
+    }
+
+    pub fn new_session(&mut self) {
+        let Some(ws) = self.agent.workspace.as_ref().and_then(|w| w["id"].as_str()) else {
+            return;
+        };
+        let ws = ws.to_string();
+        match client::call(
+            "thread.create",
+            json!({ "workspace_id": ws, "title": "session" }),
+        ) {
+            Ok(t) => {
+                self.agent.thread = Some(t.clone());
+                self.agent.branch = None;
+                self.threads.push(t);
+                self.agent.thread_sel = self.threads.len() - 1;
+                self.load_branches();
+                self.pick_last_branch();
+                self.agent.lines.clear();
+                self.agent.agent_tab = AgentTab::Chat;
+                self.agent.push(AgentKind::Info, "Sesión nueva".to_string());
+            }
+            Err(e) => self.agent.push(AgentKind::Error, e),
+        }
+    }
+
+    /// `/model`: proveedores reales del daemon, no una lista inventada.
+    pub fn open_model_picker(&mut self) {
+        let v = client::call("provider.list", json!({})).unwrap_or(Value::Null);
+        self.agent.providers = v["providers"].as_array().cloned().unwrap_or_default();
+        if self.agent.providers.is_empty() {
+            self.agent.providers = vec![json!({
+                "name": "sim", "kind": "sim", "model": "sim-1", "default": true
+            })];
+        }
+        self.agent.model_sel = self
+            .agent
+            .providers
+            .iter()
+            .position(|p| p["name"].as_str() == Some(self.agent.provider.as_str()))
+            .unwrap_or(0);
+        self.agent.model_open = true;
+        self.agent.palette = false;
+        self.agent.composer.clear();
+    }
+
+    pub fn apply_model(&mut self) {
+        if let Some(p) = self.agent.providers.get(self.agent.model_sel) {
+            self.agent.provider = p["name"].as_str().unwrap_or("sim").to_string();
+            self.agent.model = p["model"].as_str().unwrap_or("sim-1").to_string();
+            let line = format!("Modelo: {}/{}", self.agent.provider, self.agent.model);
+            self.agent.push(AgentKind::Info, line);
+        }
+        self.agent.model_open = false;
+    }
+
     pub fn run_slash(&mut self, line: &str) -> bool {
         let raw = line.trim_start_matches('/');
         let mut parts = raw.split_whitespace();
@@ -4113,6 +4321,14 @@ impl App {
             "details" => self.toggle_all_details(),
             "cancel" => self.request_cancel(),
             "resume" => self.open_resume(),
+            "workspace" => {
+                self.refresh_workspaces();
+                self.agent.agent_tab = AgentTab::Workspace;
+            }
+            "sessions" => {
+                self.load_threads();
+                self.agent.agent_tab = AgentTab::Session;
+            }
             "exit" => return true,
             "new" => {
                 if let Some(ws) = self
@@ -4137,8 +4353,7 @@ impl App {
                 }
             }
             "branch" => self.slash_branch(&args),
-            "provider" => self.slash_provider(&args),
-            "model" => self.slash_model(&args),
+            "provider" | "model" => self.open_model_picker(),
             "export" => self.slash_export(&args),
             other => self.agent.push(
                 AgentKind::Info,
@@ -4189,72 +4404,6 @@ impl App {
                 format!("branches: {}", names.join(", "))
             },
         );
-    }
-
-    fn slash_provider(&mut self, args: &[String]) {
-        let Some(ws) = self
-            .agent
-            .workspace
-            .as_ref()
-            .and_then(|w| w["id"].as_str())
-            .map(str::to_string)
-        else {
-            return;
-        };
-        match args.first() {
-            None => match client::call("provider.list", json!({})) {
-                Ok(v) => {
-                    let list = v.as_array().cloned().unwrap_or_default();
-                    let lines = format_providers(&list, &self.agent.provider);
-                    self.agent.push(
-                        AgentKind::Info,
-                        if lines.is_empty() {
-                            "sin providers configurados".to_string()
-                        } else {
-                            lines.join("\n")
-                        },
-                    );
-                }
-                Err(e) => self.agent.push(AgentKind::Error, e),
-            },
-            Some(name) => {
-                let from = self.agent.provider.clone();
-                match client::call("provider.set_default", json!({ "name": name })) {
-                    Ok(_) => {
-                        self.agent.provider = name.clone();
-                        let mut event = json!({
-                            "workspace_id": ws,
-                            "type": "provider.handoff",
-                            "payload": { "from": from, "to": name }
-                        });
-                        if let Some(th) = self.agent.thread.as_ref().and_then(|t| t["id"].as_str())
-                        {
-                            event["thread_id"] = json!(th);
-                        }
-                        let _ = client::call("event.append", event);
-                        self.agent
-                            .push(AgentKind::Info, format!("provider: {from} → {name}"));
-                    }
-                    Err(e) => self.agent.push(AgentKind::Error, e),
-                }
-            }
-        }
-    }
-
-    fn slash_model(&mut self, args: &[String]) {
-        match args.first() {
-            None => {
-                let current = self.agent.model.clone();
-                self.agent.push(
-                    AgentKind::Info,
-                    format!("model: {current} · no hay catálogo expuesto; /model <nombre>"),
-                );
-            }
-            Some(model) => {
-                self.agent.model = model.clone();
-                self.agent.push(AgentKind::Info, format!("model: {model}"));
-            }
-        }
     }
 
     fn slash_export(&mut self, args: &[String]) {
@@ -4330,6 +4479,85 @@ impl App {
         }
         if self.agent.history_open {
             return self.handle_history_key(k);
+        }
+        if self.agent.model_open {
+            match k.code {
+                KeyCode::Esc => self.agent.model_open = false,
+                KeyCode::Up => self.agent.model_sel = self.agent.model_sel.saturating_sub(1),
+                KeyCode::Down if self.agent.model_sel + 1 < self.agent.providers.len() => {
+                    self.agent.model_sel += 1;
+                }
+                KeyCode::Enter => self.apply_model(),
+                _ => {}
+            }
+            return false;
+        }
+        // Pestañas: workspace → sesión → chat. `Tab` cicla; `Alt+1/2/3` salta.
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
+        match k.code {
+            KeyCode::Tab => {
+                self.cycle_tab(true);
+                return false;
+            }
+            KeyCode::BackTab => {
+                self.cycle_tab(false);
+                return false;
+            }
+            KeyCode::Char('1') if alt => {
+                self.refresh_workspaces();
+                self.agent.agent_tab = AgentTab::Workspace;
+                return false;
+            }
+            KeyCode::Char('2') if alt => {
+                self.load_threads();
+                self.agent.agent_tab = AgentTab::Session;
+                return false;
+            }
+            KeyCode::Char('3') if alt => {
+                self.agent.agent_tab = AgentTab::Chat;
+                return false;
+            }
+            _ => {}
+        }
+        if self.agent.agent_tab != AgentTab::Chat {
+            let n = match self.agent.agent_tab {
+                AgentTab::Workspace => self.workspaces.len(),
+                AgentTab::Session => self.threads.len(),
+                AgentTab::Chat => 0,
+            };
+            let sel = match self.agent.agent_tab {
+                AgentTab::Workspace => self.agent.ws_sel,
+                AgentTab::Session => self.agent.thread_sel,
+                AgentTab::Chat => 0,
+            };
+            let next = match k.code {
+                KeyCode::Up => Some(sel.saturating_sub(1)),
+                KeyCode::Down if sel + 1 < n => Some(sel + 1),
+                _ => None,
+            };
+            if let Some(v) = next {
+                match self.agent.agent_tab {
+                    AgentTab::Workspace => self.agent.ws_sel = v,
+                    AgentTab::Session => self.agent.thread_sel = v,
+                    AgentTab::Chat => {}
+                }
+            }
+            match k.code {
+                KeyCode::Up | KeyCode::Down => {}
+                KeyCode::Enter => match self.agent.agent_tab {
+                    AgentTab::Workspace => self.select_workspace(),
+                    AgentTab::Session => self.select_thread(),
+                    AgentTab::Chat => {}
+                },
+                KeyCode::Char('n') => match self.agent.agent_tab {
+                    AgentTab::Workspace => self.create_workspace_here(),
+                    AgentTab::Session => self.new_session(),
+                    AgentTab::Chat => {}
+                },
+                KeyCode::Esc => self.agent.agent_tab = AgentTab::Chat,
+                _ => {}
+            }
+            return false;
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);

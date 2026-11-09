@@ -2799,6 +2799,59 @@ fn screen_reader_uses_classic_renderer() {
     assert!(code.contains("classic::run"));
 }
 
+// --- Pestañas y selección de modelo ---------------------------------------
+
+#[test]
+fn tabs_cycle_workspace_session_chat() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    assert_eq!(app.agent.agent_tab, hli_tui::app::AgentTab::Chat);
+    app.cycle_tab(true);
+    assert_eq!(app.agent.agent_tab, hli_tui::app::AgentTab::Workspace);
+    app.cycle_tab(true);
+    assert_eq!(app.agent.agent_tab, hli_tui::app::AgentTab::Session);
+    app.cycle_tab(true);
+    assert_eq!(app.agent.agent_tab, hli_tui::app::AgentTab::Chat);
+    app.cycle_tab(false);
+    assert_eq!(app.agent.agent_tab, hli_tui::app::AgentTab::Session);
+}
+
+#[test]
+fn workspace_tab_renders_the_list_not_the_transcript() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.agent_tab = hli_tui::app::AgentTab::Workspace;
+    app.workspaces = vec![serde_json::json!({"id":"ws_1","name":"demo","root_path":"C:/tmp/demo"})];
+    let text = render(&app, 100, 30);
+    assert!(text.contains("Workspace"));
+    assert!(text.contains("demo"));
+    assert!(text.contains("elige dónde trabajar"));
+}
+
+#[test]
+fn model_picker_falls_back_to_sim_without_daemon() {
+    let mut app = App::demo();
+    app.agent.model_open = false;
+    app.open_model_picker();
+    assert!(app.agent.model_open);
+    assert!(!app.agent.providers.is_empty());
+    assert_eq!(app.agent.providers[0]["name"], "sim");
+}
+
+#[test]
+fn apply_model_sets_provider_and_model() {
+    let mut app = App::demo();
+    app.agent.providers = vec![serde_json::json!({
+        "name": "ollama", "kind": "ollama", "model": "llama3.1:8b"
+    })];
+    app.agent.model_sel = 0;
+    app.agent.model_open = true;
+    app.apply_model();
+    assert!(!app.agent.model_open);
+    assert_eq!(app.agent.provider, "ollama");
+    assert_eq!(app.agent.model, "llama3.1:8b");
+}
+
 #[test]
 fn missing_file_requires_cancel_only() {
     let root = tmp_dir("preflight-missing");

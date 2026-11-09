@@ -876,6 +876,84 @@ fn mch_lines(app: &App) -> Vec<Line<'static>> {
 // Agent Mode
 // ---------------------------------------------------------------------------
 
+/// Lista navegable de workspaces o sesiones. Mismo rectángulo que el
+/// transcript: la pestaña cambia el contenido, no el marco.
+fn draw_agent_list(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
+    use crate::app::AgentTab;
+    let (title, items, sel): (&str, Vec<(String, String)>, usize) = match app.agent.agent_tab {
+        AgentTab::Workspace => (
+            " workspace ",
+            app.workspaces
+                .iter()
+                .map(|w| {
+                    (
+                        w["name"].as_str().unwrap_or("-").to_string(),
+                        w["root_path"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect(),
+            app.agent.ws_sel,
+        ),
+        AgentTab::Session => (
+            " sesiones ",
+            app.threads
+                .iter()
+                .map(|th| {
+                    (
+                        th["title"].as_str().unwrap_or("sesión").to_string(),
+                        th["id"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect(),
+            app.agent.thread_sel,
+        ),
+        AgentTab::Chat => (" ", Vec::new(), 0),
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        match app.agent.agent_tab {
+            AgentTab::Workspace => "elige dónde trabajar",
+            _ => "elige una sesión o crea otra",
+        },
+        Style::default().fg(t.artifact),
+    )));
+    lines.push(Line::from(""));
+    if items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (ninguno todavía)",
+            Style::default().fg(t.artifact),
+        )));
+    }
+    for (i, (name, meta)) in items.iter().enumerate() {
+        let active = i == sel;
+        let mut row = vec![
+            Span::styled(
+                if active { " ▶ " } else { "   " },
+                Style::default().fg(t.primary),
+            ),
+            Span::styled(
+                format!("{name:<26}"),
+                if active {
+                    Style::default().fg(t.primary).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.memory)
+                },
+            ),
+            Span::styled(meta.clone(), Style::default().fg(t.artifact)),
+        ];
+        if active {
+            row.push(Span::styled("  ↵", Style::default().fg(t.success)));
+        }
+        lines.push(Line::from(row));
+    }
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 fn draw_agent(f: &mut Frame, app: &App) {
     let area = f.area();
     if area.width < 40 || area.height < 10 {
@@ -923,16 +1001,59 @@ fn draw_agent(f: &mut Frame, app: &App) {
     } else {
         format!("{spinner} ")
     };
-    let head = format!(
-        "HLI │ {ws}/{th}/{br} │ {p}/{m} │ {sp}{state}{kind}",
+    // Pestañas: las tres primeras decisiones, siempre a la vista.
+    let tab_style = |active: bool| {
+        if active {
+            Style::default()
+                .fg(t.primary)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(t.artifact)
+        }
+    };
+    let mut tabs: Vec<Span> = Vec::new();
+    for (n, label, tab) in [
+        (1, "Workspace", crate::app::AgentTab::Workspace),
+        (2, "Sesión", crate::app::AgentTab::Session),
+        (3, "Chat", crate::app::AgentTab::Chat),
+    ] {
+        tabs.push(Span::styled(
+            format!(" {n} {label} "),
+            tab_style(app.agent.agent_tab == tab),
+        ));
+        tabs.push(Span::styled("│", Style::default().fg(t.artifact)));
+    }
+    let right = format!(
+        " {ws}/{th}/{br} · {p}/{m} · {sp}{state}{kind} ",
         p = app.agent.provider,
         m = app.agent.model,
         state = app.agent.run_state.replace('_', " "),
     );
+    tabs.push(Span::styled(right, Style::default().fg(t.artifact)));
     f.render_widget(
-        Paragraph::new(head).block(Block::default().borders(Borders::ALL).title(" HLI ")),
+        Paragraph::new(Line::from(tabs))
+            .block(Block::default().borders(Borders::ALL).title(" HLI ")),
         parts[0],
     );
+
+    // Workspace y Sesión sustituyen el cuerpo; el compositor solo vive en Chat.
+    if app.agent.agent_tab != crate::app::AgentTab::Chat {
+        draw_agent_list(f, parts[1], app, &t);
+        let hint = "↑↓ mover · ↵ entrar · n nuevo · Tab cambiar · Esc volver a Chat";
+        f.render_widget(
+            Paragraph::new(Line::from(hint))
+                .block(Block::default().borders(Borders::ALL).title(" ayuda ")),
+            parts[2],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                app.agent_status_line(),
+                Style::default().fg(t.artifact),
+            ))),
+            parts[3],
+        );
+        return;
+    }
 
     let inner_h = parts[1].height.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -1112,6 +1233,65 @@ fn draw_agent(f: &mut Frame, app: &App) {
     {
         draw_plan(f, area, plan);
     }
+    if app.agent.model_open {
+        draw_model(f, area, app);
+    }
+}
+
+/// `/model`: proveedores del daemon. Elegir aquí cambia el modelo de la sesión
+/// y lo que se envía en `run.start`.
+fn draw_model(f: &mut Frame, area: Rect, app: &App) {
+    let t = Theme::for_app(app);
+    let height = (app.agent.providers.len() as u16 + 5).min(area.height.saturating_sub(2));
+    let rect = overlay_rect(area, area.width.saturating_sub(8), height);
+    f.render_widget(Clear, rect);
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "modelo para esta sesión",
+        Style::default().fg(t.artifact),
+    )));
+    lines.push(Line::from(""));
+    if app.agent.providers.is_empty() {
+        lines.push(Line::from("  (ningún proveedor configurado)"));
+    }
+    for (i, p) in app.agent.providers.iter().enumerate() {
+        let name = p["name"].as_str().unwrap_or("-");
+        let model = p["model"].as_str().unwrap_or("-");
+        let kind = p["kind"].as_str().unwrap_or("-");
+        let active = i == app.agent.model_sel;
+        let current = name == app.agent.provider;
+        lines.push(Line::from(vec![
+            Span::styled(
+                if active { " ▶ " } else { "   " },
+                Style::default().fg(t.primary),
+            ),
+            Span::styled(
+                format!("{name:<14}"),
+                if active {
+                    Style::default().fg(t.primary).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.memory)
+                },
+            ),
+            Span::styled(format!("{kind:<10}"), Style::default().fg(t.artifact)),
+            Span::styled(model.to_string(), Style::default().fg(t.memory)),
+            Span::styled(
+                if current { "  actual" } else { "" },
+                Style::default().fg(t.success),
+            ),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "↑↓ elegir · ↵ aplicar · esc cerrar",
+        Style::default().fg(t.artifact),
+    )));
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" model "))
+            .wrap(Wrap { trim: false }),
+        rect,
+    );
 }
 
 fn draw_permission(f: &mut Frame, area: Rect, perm: &crate::app::PermissionView) {

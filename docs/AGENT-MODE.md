@@ -343,3 +343,24 @@ permiso). Plan approval y tool permission siguen siendo fronteras separadas.
   stdin y su salida se añade a la barra de estado.
 - Ratón: rueda, clic en la scrollbar, clic para expandir/colapsar actividad y
   arrastre para seleccionar líneas (copia al portapapeles).
+
+### Pestañas: las tres primeras decisiones
+
+La cabecera muestra `1 Workspace │ 2 Sesión │ 3 Chat`. Se recorren con `Tab`
+(adelante) y `Shift+Tab` (atrás), se saltan con `Alt+1/2/3` y se eligen con clic
+en la barra.
+
+- **Workspace**: lista de workspaces; `↑↓` mueve, `Enter` vincula y pasa a
+  sesiones, `n` crea el workspace del directorio actual.
+- **Sesión**: threads del workspace; `↑↓` mueve, `Enter` entra al chat y carga
+  el transcript, `n` crea una sesión nueva.
+- **Chat**: conversación, compositor y subpaneles.
+
+En las listas, el primer clic selecciona y el segundo entra; `Esc` vuelve a Chat.
+
+### `/model` y `/provider`
+
+Ambos abren el selector de proveedores reales del daemon (`provider.list`), con
+`↑↓`, `Enter` y `Esc`. Al aplicar, el proveedor y el modelo de la sesión cambian
+y son los que se envían en `run.start`; la cabecera y la barra de estado lo
+reflejan. Sin proveedores configurados, el selector muestra `sim`.

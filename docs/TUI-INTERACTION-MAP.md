@@ -103,3 +103,17 @@ Regla: exactamente un foco. `q` no sale si el command bar tiene el foco.
 | Agent Mode | arrastrar | seleccionar líneas y copiar |
 | Arranque | `--classic` / `HLI_DISABLE_ALTERNATE_SCREEN` | renderer clásico |
 | Arranque | `HLI_SCREEN_READER=1` | texto plano |
+
+## Pestañas y modelo (0.9)
+
+| Contexto | Entrada | Acción |
+|---|---|---|
+| Global | `Tab` / `Shift+Tab` | siguiente / anterior pestaña |
+| Global | `Alt+1` `Alt+2` `Alt+3` | ir a Workspace / Sesión / Chat |
+| Global | clic en la barra | cambiar de pestaña |
+| Lista | `↑↓` | mover selección |
+| Lista | `Enter` o segundo clic | entrar |
+| Lista | `n` | crear workspace / sesión |
+| Lista | `Esc` | volver a Chat |
+| Chat | `/model` o `/provider` | selector de modelo |
+| Selector | `↑↓` `Enter` `Esc` | elegir / aplicar / cerrar |
