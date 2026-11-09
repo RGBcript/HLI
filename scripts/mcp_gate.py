@@ -164,6 +164,23 @@ def main():
         assert "MCP funciona" in res["content"][0]["text"]
         rr = mcp.call("resources/read", {"uri": f"hli://run/{run_m['id']}"})
         assert run_m["id"] in rr["contents"][0]["text"]
+        # --- planificación durable por MCP ---
+        for t in ["run_plan", "run_approve", "run_reject", "run_replan"]:
+            assert t in tools, f"tool {t}"
+        planned_run = run(env, "run", "start", "--workspace", ws, "--thread", th,
+                          "--branch", b["id"], "--prompt", "tool:write mcp.txt hola")
+        planned = mcp.call("tools/call", {"name": "run_plan",
+                                          "arguments": {"run_id": planned_run["id"]}})
+        assert planned["isError"] is False, "mcp_run_plan"
+        payload = json.loads(planned["content"][0]["text"])
+        assert "execution" not in payload, "mcp_plan_never_exposes_execution_json"
+        assert payload["plan"]["plan_id"] and payload["execution_snapshot_hash"]
+        approved = mcp.call("tools/call", {"name": "run_approve", "arguments": {
+            "run_id": planned_run["id"], "plan_id": payload["plan"]["plan_id"],
+            "scope": "once"}})
+        assert approved["isError"] is False, "mcp_run_approve"
+        run(env, "run", "wait", planned_run["id"], "--timeout-secs", "10")
+        assert run(env, "run", "get", planned_run["id"])["run"]["state"] == "completed"
         mcp.close()
 
         # --- export/import ---

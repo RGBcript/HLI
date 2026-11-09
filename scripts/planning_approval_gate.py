@@ -39,6 +39,8 @@ RESULT = {
     "revision_history": False,
     "restart": False,
     "receipt": False,
+    "secret_safety": False,
+    "inspector_actions": False,
     "jsonl": False,
     "mcp": False,
     "export_import": False,
@@ -285,6 +287,70 @@ try:
         and receipt.get("superseded_plan_ids")
         and receipt.get("invalidation_events")
         and receipt.get("execution_snapshot_hash")
+    )
+
+    # 4c) Seguridad de secretos: ni SQLite, ni eventos, ni receipt, ni export.
+    secret_value = "GATESECRET-77c1"
+    secrets = HOME / "secrets"
+    secrets.mkdir(exist_ok=True)
+    (secrets / "gate").write_text(secret_value, encoding="utf-8")
+    jrun("provider", "add", "gate-oai", "--kind", "openai",
+         "--base-url", "http://127.0.0.1:9/v1", "--model", "m",
+         "--timeout", "2", "--secret-handle", "gate")
+    secret_run = jrun("run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+                      "--prompt", "tool:write secret.txt s", "--provider", "gate-oai")
+    secret_plan = jrun("run", "plan", secret_run["id"])
+    handles = secret_plan["execution"]["secret_handles"]
+    jrun("run", "approve", secret_run["id"], "--scope", "once",
+         "--plan", secret_plan["plan"]["plan_id"])
+    wait_state(ENV, secret_run["id"], "failed", timeout=10)
+    secret_export = HOME / "secret-check.hliar"
+    jrun("export", ws, "--out", str(secret_export))
+    blobs = [
+        (HOME / "hli.db").read_bytes(),
+        secret_export.read_bytes(),
+        json.dumps(jrun("run", "get", secret_run["id"])).encode(),
+        json.dumps(jrun("event", "list", "--workspace", ws)).encode(),
+        json.dumps(secret_plan).encode(),
+    ]
+    RESULT["secret_safety"] = bool(
+        handles
+        and handles[0]["id"] == "gate"
+        and handles[0]["version"].startswith("v")
+        and all(secret_value.encode() not in b for b in blobs)
+        and b"secret_values" not in blobs[1]
+    )
+
+    # 4d) Acciones del Inspector: mismas operaciones del daemon.
+    insp = jrun("run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+                "--prompt", "tool:write inspect.txt i", "--provider", "sim")
+    insp_plan = jrun("run", "plan", insp["id"])["plan"]
+    once = jrun("run", "approve", insp["id"], "--scope", "once", "--plan", insp_plan["plan_id"])
+    insp2 = jrun("run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+                 "--prompt", "tool:write inspect2.txt i", "--provider", "sim")
+    rej = jrun("run", "reject", insp2["id"], "--plan",
+               jrun("run", "plan", insp2["id"])["plan"]["plan_id"],
+               "--reason", "rejected_from_inspector")
+    insp3 = jrun("run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+                 "--prompt", "tool:write inspect3.txt i", "--provider", "sim")
+    v1_3 = jrun("run", "plan", insp3["id"])["plan"]["plan_id"]
+    jrun("provider", "add", "local", "--kind", "ollama",
+         "--base-url", "http://127.0.0.1:9", "--model", "m3", "--timeout", "2")
+    rp3 = jrun("run", "start", "--workspace", ws, "--thread", th, "--branch", br,
+               "--prompt", "tool:write inspect4.txt i", "--provider", "local")
+    v1_4 = jrun("run", "plan", rp3["id"])["plan"]["plan_id"]
+    jrun("provider", "add", "local", "--kind", "ollama",
+         "--base-url", "http://127.0.0.1:9", "--model", "m4", "--timeout", "2")
+    stale_inspector = run("run", "approve", rp3["id"], "--plan", v1_4)
+    replanned = jrun("run", "replan", rp3["id"], "--plan", v1_4,
+                     "--reason", "provider changed")
+    RESULT["inspector_actions"] = bool(
+        once["run"]["state"] == "running"
+        and rej["run"]["state"] == "cancelled"
+        and rej["plan"]["status"] == "rejected"
+        and stale_inspector.returncode != 0
+        and replanned["plan"]["revision"] == 2
+        and replanned["plan"]["supersedes_plan_id"] == v1_4
     )
 
     # 5) Reinicio con un run en espera: el plan y la instantánea sobreviven.

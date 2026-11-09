@@ -89,7 +89,7 @@ def main():
         make_fixture(home1)
         status = jrun(env1, "migrate", "status")
         out["previous_fixture"] = (
-            status["current_version"] == 5 and status["target_version"] == 7
+            status["current_version"] == 5 and status["target_version"] == 8
         )
         if not out["previous_fixture"]:
             raise RuntimeError(f"fixture inesperada: {status}")
@@ -107,7 +107,7 @@ def main():
 
         phase = "apply"
         applied = jrun(env1, "migrate", "apply")
-        out["schema_upgraded"] = applied["to_version"] == 7 and applied["from_version"] == 5
+        out["schema_upgraded"] = applied["to_version"] == 8 and applied["from_version"] == 5
         if applied.get("backup") is None:
             out["backup_created"] = False
 

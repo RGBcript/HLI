@@ -220,6 +220,66 @@ fn stale_snapshot_invalidates_keeps_revision_and_requires_replan() {
 }
 
 #[test]
+fn secret_values_never_persist_anywhere() {
+    let mut c = Ctx::new("plan-secret");
+    c.start();
+    let (ws, th, br, _) = setup(&c);
+    let secrets = c.home().join("secrets");
+    std::fs::create_dir_all(&secrets).unwrap();
+    std::fs::write(secrets.join("api"), "SUPERSECRET-9f3a\n").unwrap();
+    c.ok(
+        "provider.add",
+        json!({"name": "oai", "kind": "openai", "base_url": "http://127.0.0.1:9/v1",
+               "model": "m", "timeout_seconds": 2, "secret_handle": "api"}),
+    );
+    let run = start_run(&c, &ws, &th, &br, "tool:write secret.txt x", Some("oai"));
+    let plan = c.ok("run.plan", json!({"run_id": run["id"]}));
+    let exec = &plan["execution"];
+    assert_eq!(exec["secret_handles"][0]["id"], "api");
+    assert!(
+        exec["secret_handles"][0]["version"]
+            .as_str()
+            .unwrap()
+            .starts_with('v')
+    );
+    assert!(!exec.to_string().contains("SUPERSECRET"));
+
+    let _ = c.call(
+        "run.approve",
+        json!({"run_id": run["id"], "scope": "once",
+               "plan_id": plan["plan"]["plan_id"]}),
+    );
+    c.ok("run.wait", json!({"run_id": run["id"], "timeout_secs": 10}));
+
+    let got = c.ok("run.get", json!({"run_id": run["id"]}));
+    assert!(
+        !serde_json::to_string(&got).unwrap().contains("SUPERSECRET"),
+        "el receipt no debe contener el valor del secreto"
+    );
+    let events = c.ok("event.list", json!({"workspace_id": ws}));
+    assert!(
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("SUPERSECRET")
+    );
+
+    let out = c.home().join("export.hliar");
+    c.ok(
+        "export",
+        json!({"workspace_id": ws, "out": out.to_string_lossy()}),
+    );
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("SUPERSECRET"));
+    assert!(!String::from_utf8_lossy(&bytes).contains("secret_values"));
+
+    let db = std::fs::read(c.home().join("hli.db")).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&db).contains("SUPERSECRET"),
+        "la base SQLite no debe contener valores de secreto"
+    );
+}
+
+#[test]
 fn reject_prevents_execution_and_is_idempotent() {
     let mut c = Ctx::new("plan-reject");
     c.start();

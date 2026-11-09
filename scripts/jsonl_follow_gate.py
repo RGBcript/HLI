@@ -16,7 +16,8 @@ HLI = ROOT / "target" / "debug" / "hli.exe"
 
 result = {"gate": "jsonl-follow", "ok": False, "ordered": False, "no_duplicates": False,
           "no_ansi": False, "receipt_projection": False, "cancel": False,
-          "concurrent_streams": False,
+          "concurrent_streams": False, "plan_events": False, "external_approval": False,
+          "plan_isolated": False, "rejected_exit": False,
           "consumer_disconnect_safe": False, "backward_compatible": False}
 
 home = Path(tempfile.mkdtemp(prefix="hli-follow-gate-"))
@@ -136,10 +137,93 @@ try:
     obj = json.loads(single[0]) if len(single) == 1 else {}
     result["backward_compatible"] = len(single) == 1 and "id" in obj and obj.get("type") is None
 
+    # planificación durable: espera, aprobación externa y continuación
+    pf = subprocess.Popen([str(HLI), "run", "tool:write jsonl-plan.txt x",
+                           "--async", "--output", "jsonl", "--follow",
+                           "--timeout-secs", "30"],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                          env=env, cwd=project)
+    plan_events = []
+    plan_run = None
+    while True:
+        line = pf.stdout.readline()
+        if not line:
+            break
+        obj = json.loads(line)
+        if obj.get("type") == "event":
+            plan_run = plan_run or obj.get("run_id")
+            plan_events.append(obj["event_type"])
+            if obj["event_type"] == "run.waiting_approval":
+                break
+    if plan_run:
+        shown = jrun(["run", "plan", plan_run])
+        jrun(["run", "approve", plan_run, "--scope", "once",
+              "--plan", shown["plan"]["plan_id"]])
+        tail = []
+        while True:
+            line = pf.stdout.readline()
+            if not line:
+                break
+            obj = json.loads(line)
+            tail.append(obj)
+            if obj.get("type") == "receipt":
+                break
+        pf.wait(timeout=20)
+    else:
+        tail = []
+        pf.kill()
+    seqs = [o["sequence"] for o in tail if o.get("type") == "event"]
+    result["plan_events"] = all(
+        k in plan_events
+        for k in ("plan.created", "run.planning", "run.waiting_approval")
+    ) and all(k in plan_events + [o["event_type"] for o in tail if o.get("type") == "event"]
+              for k in ("plan.approved", "plan.execution_started", "plan.completed"))
+    result["external_approval"] = bool(
+        tail and tail[-1].get("type") == "receipt"
+        and tail[-1].get("terminal_state") == "completed"
+        and pf.returncode == 0
+    )
+    result["plan_isolated"] = bool(
+        plan_run
+        and all(o.get("run_id") == plan_run for o in tail if o.get("type") == "event")
+        and seqs == sorted(seqs)
+        and len(seqs) == len(set(seqs))
+    )
+
+    # rechazo externo: el follow sale con estado terminal no exitoso
+    pr = subprocess.Popen([str(HLI), "run", "tool:write jsonl-reject.txt x",
+                           "--async", "--output", "jsonl", "--follow",
+                           "--timeout-secs", "30"],
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                          env=env, cwd=project)
+    reject_run = None
+    while True:
+        line = pr.stdout.readline()
+        if not line:
+            break
+        obj = json.loads(line)
+        if obj.get("type") == "event":
+            reject_run = reject_run or obj.get("run_id")
+            if obj["event_type"] == "run.waiting_approval":
+                break
+    if reject_run:
+        jrun(["run", "reject", reject_run, "--reason", "gate"])
+        rest = pr.stdout.read()
+        pr.wait(timeout=20)
+        receipts = [json.loads(l) for l in rest.splitlines() if l.strip()
+                    and json.loads(l).get("type") == "receipt"]
+        result["rejected_exit"] = bool(
+            receipts and receipts[-1]["terminal_state"] == "cancelled"
+            and pr.returncode != 0
+        )
+    else:
+        pr.kill()
+
     result["ok"] = all([
         result["ordered"], result["no_duplicates"], result["no_ansi"],
         result["receipt_projection"], completed_exit, failed_ok, result["cancel"],
-        result["concurrent_streams"],
+        result["concurrent_streams"], result["plan_events"], result["external_approval"],
+        result["plan_isolated"], result["rejected_exit"],
         result["consumer_disconnect_safe"], result["backward_compatible"],
     ])
 except Exception as exc:  # noqa: BLE001
