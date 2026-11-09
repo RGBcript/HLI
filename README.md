@@ -1,6 +1,24 @@
 # HLI — Hierarchical Layered Intelligence
 
-HLI es un **runtime agéntico completo**: ejecuta turnos con contexto, memoria,
+> **Beta privada · 0.9.0-beta.1**
+>
+> HLI no está estable y este repositorio no lo pretende. Es una base de ingeniería
+> que funciona, con pruebas y gates en verde, sobre la que se construirá el proyecto:
+> una reconstrucción de un harness anterior desde cero, con un núcleo más pequeño y verificable.
+>
+> Lo que **sí** hace hoy: instalar, arrancar el daemon sola, ejecutar tareas con un
+> modelo real (Ollama local o compatible con OpenAI), plan durable con efectos,
+> permiso por invocación, receipts, MCP, MCH, TUI con pestañas y `/settings`.
+>
+> Lo que **no** hace todavía: leer `AGENTS.md` como instrucciones de proyecto,
+> modos de permiso (`plan`, `accept-edits`, `dont-ask`), skills con carga diferida,
+> compactación de contexto, checkpoints/rewind y streaming de la respuesta.
+>
+> El gate humano de la TUI sigue pendiente (`manual_pending=true`). No hay tag de
+> versión estable ni paquete publicado. Si necesitas algo que puedas desplegar sin
+> supervisión, esto no es.
+
+HLI es un **runtime agéntico local**: ejecuta turnos con contexto, memoria,
 eventos verificables, módulos y procesos especializados, todo sobre un almacén
 local.
 
@@ -12,6 +30,26 @@ local.
 
 **Versión:** 0.9.0-beta.1 · **Licencia:** Apache-2.0 · **Plataforma probada:**
 Windows x86_64. Linux es experimental.
+
+## Por qué beta y no 1.0
+
+| Ya está | Falta para 1.0 |
+|---|---|
+| 405 pruebas en debug y release, 0 fallos | Gate humano de la TUI firmado |
+| 11 gates en `ok=true` | `AGENTS.md` leído por el runtime |
+| Event log, planes, permisos, receipts | Modos de permiso y reglas con glob |
+| Installer, `doctor`, daemon automático | Compactación, checkpoints, streaming |
+| TUI usable con modelo real | CI verde sostenido y paquete |
+
+La lista de trabajo, con referencias de Command Code y otros CLIs, está en
+[docs/AGENT-PROTOCOL-PROPOSAL.md](docs/AGENT-PROTOCOL-PROPOSAL.md).
+
+## Para qué se construye
+
+No para competir en funciones, sino para servir de base a **el proyecto**, la
+reconstrucción de un harness anterior: un núcleo pequeño, con estado durable y permisos explícitos,
+que sea fácil de auditar y de extender sin arrastrar la superficie de un producto
+completo.
 
 ## Instalación rápida
 
