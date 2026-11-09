@@ -980,10 +980,48 @@ fn daemon_start() -> Result<(), String> {
 
 /// Arranca el proceso del daemon y espera a que responda. Silencioso: se usa
 /// tanto desde `daemon start` como desde cualquier comando.
+struct StartLock(PathBuf);
+
+impl Drop for StartLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 fn spawn_daemon() -> Result<(), String> {
     if call_raw("daemon.ping", json!({})).is_ok() {
         return Ok(());
     }
+    std::fs::create_dir_all(home()).map_err(|e| format!("no se pudo crear HLI_HOME: {e}"))?;
+    // Un solo arranque a la vez por HLI_HOME. Sin esto, varios comandos
+    // concurrentes lanzan varios daemons antes de que el primero responda.
+    let lock_path = home().join("daemon.start.lock");
+    let _lock = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(_) => StartLock(lock_path.clone()),
+        Err(_) => {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(100));
+                if call_raw("daemon.ping", json!({})).is_ok() {
+                    return Ok(());
+                }
+            }
+            let stale = std::fs::metadata(&lock_path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|age| age.as_secs() > 30)
+                .unwrap_or(false);
+            if stale {
+                let _ = std::fs::remove_file(&lock_path);
+            }
+            return Err("el daemon está arrancando; reintenta en unos segundos".into());
+        }
+    };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let daemon = exe.with_file_name(if cfg!(windows) {
         "hli-daemon.exe"
@@ -996,7 +1034,6 @@ fn spawn_daemon() -> Result<(), String> {
             daemon.display()
         ));
     }
-    std::fs::create_dir_all(home()).map_err(|e| format!("no se pudo crear HLI_HOME: {e}"))?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
