@@ -686,6 +686,40 @@ fn run(args: &[String]) -> Result<(), String> {
                 output,
             )
         }
+        ("permission", Some("list")) => {
+            let mut payload = json!({});
+            if let Some(run) = flag(args, "--run") {
+                payload["run_id"] = json!(run);
+            }
+            if let Some(status) = flag(args, "--status") {
+                payload["status"] = json!(status);
+            }
+            print_value(&call("permission.list", payload)?, output)
+        }
+        ("permission", Some("inspect")) => {
+            let id = args.get(2).ok_or("falta request_id")?;
+            print_value(&call("permission.get", json!({"request_id": id}))?, output)
+        }
+        ("permission", Some("approve")) => {
+            let id = args.get(2).ok_or("falta request_id")?;
+            let scope = flag(args, "--scope").unwrap_or_else(|| "once".into());
+            print_value(
+                &call("permission.approve", json!({"request_id": id, "scope": scope}))?,
+                output,
+            )
+        }
+        ("permission", Some("deny")) => {
+            let id = args.get(2).ok_or("falta request_id")?;
+            let reason = flag(args, "--reason").unwrap_or_else(|| "denied".into());
+            print_value(
+                &call("permission.deny", json!({"request_id": id, "reason": reason}))?,
+                output,
+            )
+        }
+        ("permission", Some("cancel")) => {
+            let id = args.get(2).ok_or("falta request_id")?;
+            print_value(&call("permission.cancel", json!({"request_id": id}))?, output)
+        }
         ("prices", Some("list")) => print_value(&call("prices.list", json!({}))?, output),
         ("manifest", Some("get")) => {
             let id = args.get(2).ok_or("falta manifest_id")?;

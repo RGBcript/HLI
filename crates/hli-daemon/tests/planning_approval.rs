@@ -22,6 +22,20 @@ fn setup(c: &Ctx) -> (String, String, String, String) {
     (ws_id, th_id, br_id, root.to_string_lossy().to_string())
 }
 
+
+fn approve_pending(c: &Ctx, run_id: &str, scope: &str) {
+    let pending = c.ok(
+        "permission.list",
+        json!({"run_id": run_id, "status": "pending"}),
+    );
+    for p in pending.as_array().cloned().unwrap_or_default() {
+        c.ok(
+            "permission.approve",
+            json!({"request_id": p["request_id"], "scope": scope}),
+        );
+    }
+}
+
 fn start_run(c: &Ctx, ws: &str, th: &str, br: &str, prompt: &str, provider: Option<&str>) -> Value {
     let mut args = json!({
         "workspace_id": ws, "thread_id": th, "branch_id": br,
@@ -101,6 +115,11 @@ fn approve_executes_frozen_snapshot_and_records_receipt() {
     assert_eq!(approved["scope"], "once");
     assert_eq!(approved["approval_events"].as_array().unwrap().len(), 1);
 
+    // El plan aprobado autoriza los efectos, no la invocación concreta.
+    let waiting = c.ok("run.wait", json!({"run_id": run_id, "timeout_secs": 5}))["run"].clone();
+    assert_eq!(waiting["state"], "waiting_approval");
+    assert_eq!(waiting["approval_kind"], "tool");
+    approve_pending(&c, &run_id, "once");
     let waited = c.ok("run.wait", json!({"run_id": run_id, "timeout_secs": 10}));
     assert_eq!(waited["run"]["state"], "completed");
     let text = std::fs::read_to_string(std::path::Path::new(&root).join("nota.txt")).unwrap();
@@ -311,14 +330,28 @@ fn workspace_scope_persists_across_runs() {
     c.start();
     let (ws, th, br, _) = setup(&c);
     let r1 = start_run(&c, &ws, &th, &br, "tool:write c.txt 1", None);
+    let plan1 = c.ok("run.plan", json!({"run_id": r1["id"]}))["plan"].clone();
     c.ok(
         "run.approve",
-        json!({"run_id": r1["id"], "scope": "workspace"}),
+        json!({"run_id": r1["id"], "scope": "once", "plan_id": plan1["plan_id"]}),
     );
-    c.ok("run.wait", json!({"run_id": r1["id"], "timeout_secs": 10}));
+    let waiting1 = c.ok("run.wait", json!({"run_id": r1["id"], "timeout_secs": 5}));
+    assert_eq!(waiting1["run"]["state"], "waiting_approval");
+    approve_pending(&c, r1["id"].as_str().unwrap(), "workspace");
+    let done1 = c.ok("run.wait", json!({"run_id": r1["id"], "timeout_secs": 10}));
+    assert_eq!(done1["run"]["state"], "completed");
+
     let r2 = start_run(&c, &ws, &th, &br, "tool:write d.txt 2", None);
-    assert_eq!(
-        r2["state"], "completed",
-        "el grant de workspace evita una segunda aprobación"
+    assert_eq!(r2["state"], "waiting_approval");
+    let plan2 = c.ok("run.plan", json!({"run_id": r2["id"]}))["plan"].clone();
+    c.ok(
+        "run.approve",
+        json!({"run_id": r2["id"], "scope": "once", "plan_id": plan2["plan_id"]}),
     );
+    // El grant de workspace cubre la herramienta, no el plan: sólo se aprueba
+    // el plan y no debe aparecer una solicitud de permiso.
+    let done2 = c.ok("run.wait", json!({"run_id": r2["id"], "timeout_secs": 10}));
+    assert_eq!(done2["run"]["state"], "completed");
+    let pending = c.ok("permission.list", json!({"run_id": r2["id"], "status": "pending"}));
+    assert!(pending.as_array().unwrap().is_empty());
 }

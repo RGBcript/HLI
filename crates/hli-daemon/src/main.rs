@@ -233,6 +233,12 @@ fn make_receipt(
         provider_id: None,
         superseded_plan_ids: vec![],
         invalidation_events: vec![],
+        permission_decisions: vec![],
+        permission_request_ids: vec![],
+        allowed_tool_invocations: vec![],
+        denied_tool_invocations: vec![],
+        consumed_once_grants: vec![],
+        effective_workspace_grants: vec![],
     }
 }
 
@@ -953,6 +959,32 @@ fn dispatch(
             runs::plan_and_maybe_execute(home, w, r, prepared)
         }
 
+        "permission.list" => {
+            let run_id = o(args, "run_id");
+            let status = o(args, "status");
+            runs::permission_list(r, run_id.as_deref(), status.as_deref())
+        }
+        "permission.get" => {
+            let request_id = s(args, "request_id")?;
+            runs::permission_get(r, &request_id)
+        }
+        "permission.approve" => {
+            let request_id = s(args, "request_id")?;
+            let scope = o(args, "scope").unwrap_or_else(|| "once".into());
+            let actor = o(args, "actor").unwrap_or_else(|| "cli".into());
+            runs::approve_permission(home, w, r, &request_id, &scope, &actor)
+        }
+        "permission.deny" => {
+            let request_id = s(args, "request_id")?;
+            let reason = o(args, "reason").unwrap_or_else(|| "denied".into());
+            let actor = o(args, "actor").unwrap_or_else(|| "cli".into());
+            runs::deny_permission(w, r, &request_id, &reason, &actor)
+        }
+        "permission.cancel" => {
+            let request_id = s(args, "request_id")?;
+            let actor = o(args, "actor").unwrap_or_else(|| "cli".into());
+            runs::cancel_permission(w, r, &request_id, &actor)
+        }
         "run.plan" => {
             let run_id = s(args, "run_id")?;
             runs::plan_response(r, &run_id)

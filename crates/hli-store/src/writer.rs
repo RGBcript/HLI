@@ -160,6 +160,29 @@ pub enum WriteCmd {
         run_id: Option<String>,
         reply: Reply<PermissionGrant>,
     },
+    SaveToolRequest {
+        request: ToolPermissionRequest,
+        invocation: Option<Value>,
+        redacted: bool,
+        reply: Reply<ToolPermissionRequest>,
+    },
+    DecideToolRequest {
+        request_id: String,
+        decision: String,
+        scope: String,
+        actor: String,
+        reply: Reply<ToolPermissionRequest>,
+    },
+    CancelToolRequest {
+        request_id: String,
+        actor: String,
+        reply: Reply<ToolPermissionRequest>,
+    },
+    SetApprovalKind {
+        run_id: String,
+        kind: Option<String>,
+        reply: Reply<Run>,
+    },
     CommitMemory {
         workspace_id: String,
         scope: String,
@@ -416,6 +439,57 @@ impl Writer {
             approval_scope,
             approved_by,
             rejection_reason,
+            reply,
+        })
+    }
+
+
+    pub fn save_tool_request(
+        &self,
+        request: ToolPermissionRequest,
+        invocation: Option<Value>,
+        redacted: bool,
+    ) -> Result<ToolPermissionRequest> {
+        self.call(|reply| WriteCmd::SaveToolRequest {
+            request,
+            invocation,
+            redacted,
+            reply,
+        })
+    }
+
+    pub fn decide_tool_request(
+        &self,
+        request_id: &str,
+        decision: &str,
+        scope: &str,
+        actor: &str,
+    ) -> Result<ToolPermissionRequest> {
+        self.call(|reply| WriteCmd::DecideToolRequest {
+            request_id: request_id.to_string(),
+            decision: decision.to_string(),
+            scope: scope.to_string(),
+            actor: actor.to_string(),
+            reply,
+        })
+    }
+
+    pub fn cancel_tool_request(
+        &self,
+        request_id: &str,
+        actor: &str,
+    ) -> Result<ToolPermissionRequest> {
+        self.call(|reply| WriteCmd::CancelToolRequest {
+            request_id: request_id.to_string(),
+            actor: actor.to_string(),
+            reply,
+        })
+    }
+
+    pub fn set_approval_kind(&self, run_id: &str, kind: Option<&str>) -> Result<Run> {
+        self.call(|reply| WriteCmd::SetApprovalKind {
+            run_id: run_id.to_string(),
+            kind: kind.map(str::to_string),
             reply,
         })
     }
@@ -772,6 +846,38 @@ impl State {
                     run_id,
                 ));
             }
+
+            WriteCmd::SaveToolRequest {
+                request,
+                invocation,
+                redacted,
+                reply,
+            } => {
+                let _ = reply.send(self.save_tool_request(request, invocation, redacted));
+            }
+            WriteCmd::DecideToolRequest {
+                request_id,
+                decision,
+                scope,
+                actor,
+                reply,
+            } => {
+                let _ = reply.send(self.decide_tool_request(&request_id, &decision, &scope, &actor));
+            }
+            WriteCmd::CancelToolRequest {
+                request_id,
+                actor,
+                reply,
+            } => {
+                let _ = reply.send(self.cancel_tool_request(&request_id, &actor));
+            }
+            WriteCmd::SetApprovalKind {
+                run_id,
+                kind,
+                reply,
+            } => {
+                let _ = reply.send(self.set_approval_kind(&run_id, kind.as_deref()));
+            }
             WriteCmd::CommitMemory {
                 workspace_id,
                 scope,
@@ -1087,6 +1193,7 @@ impl State {
             branch_id: branch_id.to_string(),
             branch_revision: revision,
             state: "queued".into(),
+            approval_kind: None,
             prompt: prompt.to_string(),
             started_at: now_iso(),
             ended_at: None,
@@ -1257,6 +1364,240 @@ impl State {
             out.receipt = Some(r);
         }
         Ok(out)
+    }
+
+
+    fn set_approval_kind(&mut self, run_id: &str, kind: Option<&str>) -> Result<Run> {
+        let run = load_run(&self.conn, run_id)?
+            .ok_or_else(|| HliError::not_found(&format!("run {run_id}")))?;
+        if run.state != "waiting_approval" && run.state != "running" {
+            return Err(HliError::conflict(format!(
+                "no se puede fijar approval_kind en estado {}",
+                run.state
+            )));
+        }
+        self.conn.execute(
+            "UPDATE runs SET approval_kind = ?1 WHERE id = ?2",
+            params![kind, run_id],
+        )?;
+        load_run(&self.conn, run_id)?.ok_or_else(|| HliError::internal("run desaparecido"))
+    }
+
+    fn save_tool_request(
+        &mut self,
+        mut request: ToolPermissionRequest,
+        invocation: Option<Value>,
+        redacted: bool,
+    ) -> Result<ToolPermissionRequest> {
+        if request.status != "pending" {
+            return Err(HliError::invalid("una solicitud nace en pending"));
+        }
+        if !tool_request_status_valid(&request.status) {
+            return Err(HliError::invalid("estado de solicitud inválido"));
+        }
+        request.seal();
+        let body = canonical_json(&serde_json::to_value(&request).unwrap_or(json!({})));
+        let inv = invocation.as_ref().map(canonical_json);
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO tool_permission_requests(request_id, run_id, plan_id, plan_revision,
+                workspace_id, thread_id, branch_id, tool_name, operation, effect, target,
+                arguments_hash, arguments_summary, reason, requested_scope, status, created_at,
+                decided_at, decided_by, decision, decision_scope, content_hash, body_json,
+                invocation_json, invocation_redacted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17, NULL, NULL, NULL, NULL, ?18, ?19, ?20, ?21)",
+            params![
+                request.request_id,
+                request.run_id,
+                request.plan_id,
+                request.plan_revision,
+                request.workspace_id,
+                request.thread_id,
+                request.branch_id,
+                request.tool_name,
+                request.operation,
+                request.effect,
+                request.target,
+                request.arguments_hash,
+                request.arguments_summary,
+                request.reason,
+                request.requested_scope,
+                request.status,
+                request.created_at,
+                request.content_hash,
+                body,
+                inv,
+                if redacted { 1 } else { 0 }
+            ],
+        )?;
+        append_event(
+            &tx,
+            &request.workspace_id,
+            Some(&request.thread_id),
+            Some(&request.branch_id),
+            "tool.permission_requested",
+            json!({"kind": "agent", "id": "hli"}),
+            json!({
+                "run_id": request.run_id, "request_id": request.request_id,
+                "plan_id": request.plan_id, "plan_revision": request.plan_revision,
+                "tool": request.tool_name, "operation": request.operation,
+                "effect": request.effect, "target": request.target,
+                "arguments_hash": request.arguments_hash
+            }),
+            vec![],
+            Some(&format!("tool.permission_requested:{}", request.request_id)),
+        )?;
+        tx.commit()?;
+        Ok(request)
+    }
+
+    fn decide_tool_request(
+        &mut self,
+        request_id: &str,
+        decision: &str,
+        scope: &str,
+        actor: &str,
+    ) -> Result<ToolPermissionRequest> {
+        if decision != "allow" && decision != "deny" {
+            return Err(HliError::invalid(format!("decisión inválida: {decision}")));
+        }
+        if decision == "allow" && !approval_scope_valid(scope) {
+            return Err(HliError::new(
+                "permission_scope_invalid",
+                format!("scope inválido: {scope}"),
+            ));
+        }
+        let mut req = load_tool_request(&self.conn, request_id)?
+            .ok_or_else(|| HliError::new("permission_request_not_found", "solicitud inexistente"))?;
+        // Idempotencia: repetir la misma decisión devuelve el estado actual.
+        if req.status == "approved" && req.decision.as_deref() == Some("allow")
+            || req.status == "denied" && req.decision.as_deref() == Some("deny")
+        {
+            return Ok(req);
+        }
+        if req.is_terminal() {
+            return Err(HliError::new(
+                "permission_request_terminal",
+                format!("la solicitud ya está en {}", req.status),
+            ));
+        }
+        let now = now_iso();
+        req.status = if decision == "allow" { "approved" } else { "denied" }.into();
+        req.decision = Some(decision.to_string());
+        req.decision_scope = if decision == "allow" {
+            Some(scope.to_string())
+        } else {
+            Some("once".to_string())
+        };
+        req.decided_at = Some(now.clone());
+        req.decided_by = Some(actor.to_string());
+        req.seal();
+
+        let body = canonical_json(&serde_json::to_value(&req).unwrap_or(json!({})));
+        let kind = if decision == "allow" {
+            "tool.permission_approved"
+        } else {
+            "tool.permission_denied"
+        };
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE tool_permission_requests SET status = ?1, decision = ?2, decision_scope = ?3,
+                decided_at = ?4, decided_by = ?5, content_hash = ?6, body_json = ?7
+             WHERE request_id = ?8",
+            params![
+                req.status,
+                req.decision,
+                req.decision_scope,
+                req.decided_at,
+                req.decided_by,
+                req.content_hash,
+                body,
+                request_id
+            ],
+        )?;
+        if decision == "allow" && scope != "once" {
+            tx.execute(
+                "INSERT INTO tool_grants(grant_id, workspace_id, run_id, effect, tool_name,
+                    target, scope, created_at, created_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    new_id("tgrant"),
+                    req.workspace_id,
+                    if scope == "run" { Some(req.run_id.clone()) } else { None },
+                    req.effect,
+                    req.tool_name,
+                    if scope == "workspace" { None } else { req.target.clone() },
+                    scope,
+                    now,
+                    actor
+                ],
+            )?;
+        }
+        append_event(
+            &tx,
+            &req.workspace_id,
+            Some(&req.thread_id),
+            Some(&req.branch_id),
+            kind,
+            json!({"kind": "user", "id": actor}),
+            json!({
+                "run_id": req.run_id, "request_id": req.request_id,
+                "plan_id": req.plan_id, "plan_revision": req.plan_revision,
+                "tool": req.tool_name, "operation": req.operation,
+                "effect": req.effect, "target": req.target,
+                "arguments_hash": req.arguments_hash,
+                "decision_scope": req.decision_scope, "decision": req.decision
+            }),
+            vec![],
+            Some(&format!("{kind}:{}", req.request_id)),
+        )?;
+        tx.commit()?;
+        Ok(req)
+    }
+
+    fn cancel_tool_request(&mut self, request_id: &str, actor: &str) -> Result<ToolPermissionRequest> {
+        let mut req = load_tool_request(&self.conn, request_id)?
+            .ok_or_else(|| HliError::new("permission_request_not_found", "solicitud inexistente"))?;
+        if req.status == "cancelled" {
+            return Ok(req);
+        }
+        if req.is_terminal() {
+            return Err(HliError::new(
+                "permission_request_terminal",
+                format!("la solicitud ya está en {}", req.status),
+            ));
+        }
+        req.status = "cancelled".into();
+        req.decided_at = Some(now_iso());
+        req.decided_by = Some(actor.to_string());
+        req.seal();
+        let body = canonical_json(&serde_json::to_value(&req).unwrap_or(json!({})));
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE tool_permission_requests SET status = 'cancelled', decided_at = ?1,
+                decided_by = ?2, content_hash = ?3, body_json = ?4 WHERE request_id = ?5",
+            params![req.decided_at, req.decided_by, req.content_hash, body, request_id],
+        )?;
+        append_event(
+            &tx,
+            &req.workspace_id,
+            Some(&req.thread_id),
+            Some(&req.branch_id),
+            "tool.permission_cancelled",
+            json!({"kind": "user", "id": actor}),
+            json!({
+                "run_id": req.run_id, "request_id": req.request_id,
+                "plan_id": req.plan_id, "plan_revision": req.plan_revision,
+                "tool": req.tool_name, "operation": req.operation,
+                "effect": req.effect, "target": req.target,
+                "arguments_hash": req.arguments_hash
+            }),
+            vec![],
+            Some(&format!("tool.permission_cancelled:{}", req.request_id)),
+        )?;
+        tx.commit()?;
+        Ok(req)
     }
 
     fn save_plan(&mut self, mut plan: RunPlan, execution: Option<Value>) -> Result<RunPlan> {
@@ -2683,7 +3024,76 @@ pub(crate) fn load_events(conn: &Connection, workspace_id: &str) -> Result<Vec<E
 }
 
 pub(crate) const RUN_COLS: &str = "id, workspace_id, thread_id, branch_id, branch_revision, state,
-    prompt, started_at, ended_at, result_json, receipt_json";
+    prompt, started_at, ended_at, result_json, receipt_json, approval_kind";
+
+
+pub(crate) const TOOL_REQ_COLS: &str = "request_id, run_id, workspace_id, body_json,
+    invocation_json, invocation_redacted";
+
+pub(crate) fn row_to_tool_request(
+    r: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ToolPermissionRequest> {
+    let body: String = r.get(3)?;
+    serde_json::from_str::<ToolPermissionRequest>(&body).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
+
+pub(crate) fn load_tool_request(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<Option<ToolPermissionRequest>> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT {TOOL_REQ_COLS} FROM tool_permission_requests WHERE request_id = ?1"
+            ),
+            [request_id],
+            row_to_tool_request,
+        )
+        .optional()?)
+}
+
+pub(crate) fn load_invocation(
+    conn: &Connection,
+    request_id: &str,
+) -> Result<Option<Value>> {
+    let raw: Option<Option<String>> = conn
+        .query_row(
+            "SELECT invocation_json FROM tool_permission_requests WHERE request_id = ?1",
+            [request_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(raw.flatten().and_then(|s| serde_json::from_str(&s).ok()))
+}
+
+pub(crate) fn load_tool_grants(
+    conn: &Connection,
+    workspace_id: &str,
+    run_id: Option<&str>,
+) -> Result<Vec<ToolGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT grant_id, workspace_id, run_id, effect, tool_name, target, scope, created_at,
+                created_by
+         FROM tool_grants
+         WHERE workspace_id = ?1 AND (scope = 'workspace' OR run_id = ?2)",
+    )?;
+    let rows = stmt.query_map(params![workspace_id, run_id], |r| {
+        Ok(ToolGrant {
+            grant_id: r.get(0)?,
+            workspace_id: r.get(1)?,
+            run_id: r.get(2)?,
+            effect: r.get(3)?,
+            tool_name: r.get(4)?,
+            target: r.get(5)?,
+            scope: r.get(6)?,
+            created_at: r.get(7)?,
+            created_by: r.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
 
 pub(crate) const PLAN_COLS: &str = "plan_id, run_id, workspace_id, thread_id, branch_id,
     branch_revision, context_manifest_id, origin, status, content_hash, body_json,
@@ -2819,6 +3229,7 @@ pub(crate) fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         receipt: r
             .get::<_, Option<String>>(10)?
             .and_then(|s| serde_json::from_str(&s).ok()),
+        approval_kind: r.get(11)?,
     })
 }
 

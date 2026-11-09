@@ -89,6 +89,11 @@ fn steps() -> &'static [Step] {
             name: "0008_run_plans",
             apply: m0008_run_plans,
         },
+        Step {
+            version: 9,
+            name: "0009_tool_permissions",
+            apply: m0009_tool_permissions,
+        },
     ]
 }
 
@@ -628,6 +633,57 @@ CREATE TABLE IF NOT EXISTS module_signatures (
   signed_at    TEXT,
   PRIMARY KEY (module_name, version)
 );
+"#,
+    )?;
+    Ok(())
+}
+
+
+fn m0009_tool_permissions(tx: &Transaction<'_>) -> Result<()> {
+    add_column(tx, "runs", "approval_kind", "TEXT")?;
+    tx.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS tool_permission_requests (
+  request_id          TEXT PRIMARY KEY,
+  run_id              TEXT NOT NULL,
+  plan_id             TEXT NOT NULL,
+  plan_revision       INTEGER NOT NULL,
+  workspace_id        TEXT NOT NULL REFERENCES workspaces(id),
+  thread_id           TEXT NOT NULL,
+  branch_id           TEXT NOT NULL,
+  tool_name           TEXT NOT NULL,
+  operation           TEXT NOT NULL,
+  effect              TEXT NOT NULL,
+  target              TEXT,
+  arguments_hash      TEXT NOT NULL,
+  arguments_summary   TEXT NOT NULL,
+  reason              TEXT NOT NULL DEFAULT '',
+  requested_scope     TEXT,
+  status              TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  decided_at          TEXT,
+  decided_by          TEXT,
+  decision            TEXT,
+  decision_scope      TEXT,
+  content_hash        TEXT NOT NULL,
+  body_json           TEXT NOT NULL,
+  invocation_json     TEXT,
+  invocation_redacted INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_tool_requests_run ON tool_permission_requests(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_tool_requests_ws  ON tool_permission_requests(workspace_id, status);
+CREATE TABLE IF NOT EXISTS tool_grants (
+  grant_id     TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  run_id       TEXT,
+  effect       TEXT NOT NULL,
+  tool_name    TEXT NOT NULL,
+  target       TEXT,
+  scope        TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  created_by   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_grants_lookup ON tool_grants(workspace_id, tool_name, scope);
 "#,
     )?;
     Ok(())

@@ -647,6 +647,69 @@ impl Reader {
         })
     }
 
+
+    pub fn tool_request(&self, request_id: &str) -> Result<ToolPermissionRequest> {
+        self.with(|c| {
+            c.query_row(
+                &format!(
+                    "SELECT {} FROM tool_permission_requests WHERE request_id = ?1",
+                    crate::writer::TOOL_REQ_COLS
+                ),
+                [request_id],
+                crate::writer::row_to_tool_request,
+            )
+            .optional()?
+            .ok_or_else(|| {
+                HliError::new("permission_request_not_found", "solicitud inexistente")
+            })
+        })
+    }
+
+    pub fn pending_tool_request(&self, run_id: &str) -> Result<Option<ToolPermissionRequest>> {
+        self.with(|c| Ok(c.query_row(
+                &format!(
+                    "SELECT {} FROM tool_permission_requests
+                     WHERE run_id = ?1 AND status = 'pending'
+                     ORDER BY created_at DESC LIMIT 1",
+                    crate::writer::TOOL_REQ_COLS
+                ),
+                [run_id],
+                crate::writer::row_to_tool_request,
+            )
+            .optional()?))
+    }
+
+    pub fn tool_requests(
+        &self,
+        workspace_id: Option<&str>,
+        run_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Vec<ToolPermissionRequest>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {} FROM tool_permission_requests
+                 WHERE (?1 IS NULL OR workspace_id = ?1)
+                   AND (?2 IS NULL OR run_id = ?2)
+                   AND (?3 IS NULL OR status = ?3)
+                 ORDER BY created_at",
+                crate::writer::TOOL_REQ_COLS
+            ))?;
+            let rows = stmt.query_map(
+                rusqlite::params![workspace_id, run_id, status],
+                crate::writer::row_to_tool_request,
+            )?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn tool_invocation(&self, request_id: &str) -> Result<Option<Value>> {
+        self.with(|c| crate::writer::load_invocation(c, request_id))
+    }
+
+    pub fn tool_grants(&self, workspace_id: &str, run_id: Option<&str>) -> Result<Vec<ToolGrant>> {
+        self.with(|c| crate::writer::load_tool_grants(c, workspace_id, run_id))
+    }
+
     pub fn plans(&self, workspace_id: &str) -> Result<Vec<RunPlan>> {
         self.with(|c| {
             let mut stmt = c.prepare(&format!(
