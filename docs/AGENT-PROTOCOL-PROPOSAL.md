@@ -50,6 +50,12 @@ repos de sincronización de instrucciones entre CLIs.
 
 ## 3. Propuesta para HLI
 
+### Estado
+
+- `AGENTS.md` en la raíz del repo: **aprobado y creado**. Sirve a los agentes que trabajen *en* HLI.
+- Falta el paso de runtime: que **HLI lea** `AGENTS.md` como instrucciones de proyecto y las selle en
+  el `ContextManifest`. Es el punto 1 de P0 y sigue pendiente.
+
 ### P0 — lo que desbloquea el uso real
 
 1. **`AGENTS.md` jerárquico.** Leer `HLI_HOME/AGENTS.md`, `<workspace>/AGENTS.md` y los de los
