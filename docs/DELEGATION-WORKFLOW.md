@@ -92,8 +92,14 @@ que **no** es un evento durable. Código de salida 0 solo si el run terminó
 `completed`.
 
 `Ctrl+C` solicita `run.cancel` y espera el estado terminal; una segunda pulsación
-(o el timeout de cancelación) cierra el cliente sin matar el daemon. Si el
-consumidor cierra la tubería, el cliente termina sin cancelar el run.
+(o `--cancel-timeout-secs`, 10 s por defecto) cierra el cliente sin matar el
+daemon. `--timeout-secs` sigue siendo el timeout del provider y no se ve afectado
+por la espera de cancelación. Si el consumidor cierra la tubería, el cliente
+termina sin cancelar el run.
+
+Cada evento de un run lleva `run_id` en el payload y en el sobre
+(`run_id`/`correlation_id`), así que dos runs concurrentes en la misma rama
+producen streams separados.
 `--output jsonl` sin `--follow` sigue siendo una única línea terminal.
 
 ## Lo que este flujo no hace

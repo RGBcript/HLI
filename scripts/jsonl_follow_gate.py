@@ -16,6 +16,7 @@ HLI = ROOT / "target" / "debug" / "hli.exe"
 
 result = {"gate": "jsonl-follow", "ok": False, "ordered": False, "no_duplicates": False,
           "no_ansi": False, "receipt_projection": False, "cancel": False,
+          "concurrent_streams": False,
           "consumer_disconnect_safe": False, "backward_compatible": False}
 
 home = Path(tempfile.mkdtemp(prefix="hli-follow-gate-"))
@@ -63,8 +64,10 @@ try:
     failed_ok = p_timeout.returncode != 0 and "\"terminal_state\":\"timed_out\"" in p_timeout.stdout.replace(" ", "")
 
     # cancelación desde otro cliente mientras el consumidor sigue
+    cancel_started = time.time()
     proc = subprocess.Popen([str(HLI), "run", "tarea cancelable", "--async", "--output", "jsonl",
-                             "--follow", "--sim-delay-ms", "5000", "--timeout-secs", "8"],
+                             "--follow", "--sim-delay-ms", "6000", "--timeout-secs", "30",
+                             "--cancel-timeout-secs", "1"],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             env=env, cwd=project)
     run_id = None
@@ -86,7 +89,32 @@ try:
         bool(cancel_receipts)
         and cancel_receipts[-1]["terminal_state"] == "cancelled"
         and proc.returncode != 0
+        and (time.time() - cancel_started) < 10
     )
+
+    # dos runs concurrentes: cada stream contiene solo sus eventos
+    def start_follow(task: str, delay: int):
+        return subprocess.Popen([str(HLI), "run", task, "--async", "--output", "jsonl",
+                                 "--follow", "--sim-delay-ms", str(delay),
+                                 "--timeout-secs", "10"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                env=env, cwd=project)
+
+    pa = start_follow("concurrente A", 1500)
+    pb = start_follow("concurrente B", 300)
+    out_a, out_b = pa.communicate(timeout=40)[0], pb.communicate(timeout=40)[0]
+
+    def own_only(text: str) -> bool:
+        lines = [json.loads(l) for l in text.splitlines() if l.strip()]
+        evs = [x for x in lines if x.get("type") == "event"]
+        if not evs:
+            return False
+        rid = evs[0]["run_id"]
+        return all((e.get("data") or {}).get("run_id") == rid for e in evs) and all(
+            e["run_id"] == rid for e in evs
+        )
+
+    result["concurrent_streams"] = own_only(out_a) and own_only(out_b)
 
     # consumidor que cierra la tubería: el daemon sigue y el run termina
     p2 = subprocess.Popen([str(HLI), "run", "tarea pipe", "--async", "--output", "jsonl",
@@ -111,6 +139,7 @@ try:
     result["ok"] = all([
         result["ordered"], result["no_duplicates"], result["no_ansi"],
         result["receipt_projection"], completed_exit, failed_ok, result["cancel"],
+        result["concurrent_streams"],
         result["consumer_disconnect_safe"], result["backward_compatible"],
     ])
 except Exception as exc:  # noqa: BLE001

@@ -1025,6 +1025,12 @@ impl State {
             .optional()?
             .ok_or_else(|| HliError::not_found(&format!("run {run_id}")))?;
         let tx = self.conn.transaction()?;
+        let mut payload = payload;
+        if payload.get("run_id").is_none()
+            && let Some(obj) = payload.as_object_mut()
+        {
+            obj.insert("run_id".into(), json!(run_id));
+        }
         let ev = append_event(
             &tx,
             &ws,
@@ -2088,9 +2094,15 @@ fn append_event(
         workspace_id: workspace_id.to_string(),
         thread_id: thread_id.map(str::to_string),
         branch_id: branch_id.map(str::to_string),
-        run_id: None,
+        run_id: payload
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         causation_id: None,
-        correlation_id: None,
+        correlation_id: payload
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         idempotency_key: idempotency_key.map(str::to_string),
         sequence: seq,
         kind: kind.to_string(),

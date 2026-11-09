@@ -993,12 +993,12 @@ fn run_task(args: &[String], output: &str) -> Result<(), String> {
         if run_id.is_empty() {
             return Err("run.start no devolvió id".into());
         }
-        let timeout = args
+        let cancel_timeout = args
             .windows(2)
-            .find(|w| w[0] == "--timeout-secs")
+            .find(|w| w[0] == "--cancel-timeout-secs")
             .and_then(|w| w[1].parse::<u64>().ok())
             .unwrap_or(10);
-        return follow_run(&ws_id, &branch_id, &run_id, timeout);
+        return follow_run(&ws_id, &branch_id, &run_id, cancel_timeout);
     }
     print_value(&v, output)
 }
@@ -1049,7 +1049,7 @@ fn is_terminal_state(state: &str) -> bool {
     )
 }
 
-fn follow_run(ws: &str, br: &str, run_id: &str, timeout_secs: u64) -> Result<(), String> {
+fn follow_run(ws: &str, _br: &str, run_id: &str, timeout_secs: u64) -> Result<(), String> {
     use std::io::Write as _;
     sigint::install();
     let stdout = std::io::stdout();
@@ -1094,9 +1094,10 @@ fn follow_run(ws: &str, br: &str, run_id: &str, timeout_secs: u64) -> Result<(),
                     if seq <= last_seq || seq < start {
                         continue;
                     }
-                    let own = e["payload"]["run_id"].as_str() == Some(run_id);
-                    let same_branch = e["branch_id"].as_str() == Some(br);
-                    if !own && !same_branch {
+                    let own = e["payload"]["run_id"].as_str() == Some(run_id)
+                        || e["run_id"].as_str() == Some(run_id)
+                        || e["correlation_id"].as_str() == Some(run_id);
+                    if !own {
                         continue;
                     }
                     last_seq = seq;
