@@ -1021,11 +1021,15 @@ fn draw_agent(f: &mut Frame, app: &App) {
         ));
         tabs.push(Span::styled("│", Style::default().fg(t.artifact)));
     }
+    let state = if app.agent.transcript_loading {
+        "cargando".to_string()
+    } else {
+        app.agent.run_state.replace('_', " ")
+    };
     let right = format!(
         " {ws}/{th}/{br} · {p}/{m} · {sp}{state}{kind} ",
         p = app.agent.provider,
         m = app.agent.model,
-        state = app.agent.run_state.replace('_', " "),
     );
     tabs.push(Span::styled(right, Style::default().fg(t.artifact)));
     f.render_widget(

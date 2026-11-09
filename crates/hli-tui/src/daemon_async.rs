@@ -15,6 +15,10 @@ pub enum Request {
     Providers,
     Workspaces,
     Threads(String),
+    Transcript {
+        workspace_id: String,
+        branch_id: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -22,6 +26,7 @@ pub enum Reply {
     Providers(Result<Value, String>),
     Workspaces(Result<Value, String>),
     Threads(Result<Value, String>),
+    Transcript(Result<Value, String>),
 }
 
 pub struct AsyncDaemon {
@@ -46,6 +51,22 @@ impl AsyncDaemon {
                         "thread.list",
                         json!({ "workspace_id": workspace_id }),
                     )),
+                    Request::Transcript {
+                        workspace_id,
+                        branch_id,
+                    } => {
+                        let mut args = json!({ "workspace_id": workspace_id });
+                        if let Some(branch) = branch_id {
+                            args["branch_id"] = json!(branch);
+                        }
+                        let events = client::call_ui("event.list", args);
+                        let runs =
+                            client::call_ui("run.list", json!({ "workspace_id": workspace_id }));
+                        Reply::Transcript(match (runs, events) {
+                            (Ok(runs), Ok(events)) => Ok(json!({ "runs": runs, "events": events })),
+                            (Err(e), _) | (_, Err(e)) => Err(e),
+                        })
+                    }
                 };
                 if replies.send(reply).is_err() {
                     break;

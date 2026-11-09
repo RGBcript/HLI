@@ -2840,6 +2840,18 @@ fn model_picker_falls_back_to_sim_without_daemon() {
 }
 
 #[test]
+fn transcript_load_does_not_block() {
+    let mut app = App::demo();
+    app.agent.workspace = Some(serde_json::json!({"id": "ws_demo"}));
+    let start = std::time::Instant::now();
+    app.load_transcript();
+    assert!(start.elapsed() < std::time::Duration::from_millis(100));
+    assert!(app.agent.transcript_loading);
+    app.pump_daemon();
+    assert!(!app.agent.transcript_loading);
+}
+
+#[test]
 fn list_refresh_does_not_block_the_ui() {
     let mut app = App::demo();
     let start = std::time::Instant::now();

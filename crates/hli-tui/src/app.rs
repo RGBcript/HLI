@@ -203,6 +203,7 @@ pub struct AgentState {
     pub model_sel: usize,
     pub model_loading: bool,
     pub lists_loading: bool,
+    pub transcript_loading: bool,
     pub providers: Vec<Value>,
     pub offer: Offer,
     pub pending: Option<String>,
@@ -810,6 +811,7 @@ impl Default for AgentState {
             model_sel: 0,
             model_loading: false,
             lists_loading: false,
+            transcript_loading: false,
             providers: Vec::new(),
             offer: Offer::None,
             pending: None,
@@ -1761,43 +1763,27 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
 impl App {
     /// Reconstruye el transcript del thread activo desde el Event Store.
     pub fn load_transcript(&mut self) {
-        let Some(ws) = self
-            .agent
-            .workspace
-            .as_ref()
-            .and_then(|w| w["id"].as_str())
-            .map(str::to_string)
-        else {
+        let Some(ws) = self.agent.workspace.as_ref().and_then(|w| w["id"].as_str()) else {
             return;
         };
-        let Some(th) = self
+        let branch = self
             .agent
-            .thread
+            .branch
             .as_ref()
-            .and_then(|t| t["id"].as_str())
-            .map(str::to_string)
-        else {
-            return;
-        };
-        let mut runs = client::call_ui("run.list", json!({ "workspace_id": ws }))
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
-        runs.retain(|r| r["thread_id"].as_str() == Some(th.as_str()));
-        runs.sort_by(|a, b| {
-            a["started_at"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(b["started_at"].as_str().unwrap_or(""))
-        });
-        let mut args = json!({ "workspace_id": ws });
-        if let Some(br) = self.agent.branch.as_ref().and_then(|b| b["id"].as_str()) {
-            args["branch_id"] = json!(br);
-        }
-        let events = client::call_ui("event.list", args)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
+            .and_then(|b| b["id"].as_str())
+            .map(str::to_string);
+        self.agent.transcript_loading = true;
+        self.daemon_async
+            .request(crate::daemon_async::Request::Transcript {
+                workspace_id: ws.to_string(),
+                branch_id: branch,
+            });
+    }
+
+    /// Aplica el paquete que compone el worker (runs + eventos).
+    fn apply_transcript(&mut self, v: &Value) {
+        let runs = v["runs"].as_array().cloned().unwrap_or_default();
+        let events = v["events"].as_array().cloned().unwrap_or_default();
         self.agent.prompts = runs
             .iter()
             .filter_map(|r| r["prompt"].as_str().map(str::to_string))
@@ -1808,6 +1794,9 @@ impl App {
             .filter_map(|e| e["sequence"].as_i64())
             .max()
             .unwrap_or(0);
+        self.agent.transcript_loading = false;
+        self.agent.viewport.follow_mode = true;
+        self.agent.scroll_top = None;
     }
 
     /// Carga los threads recientes (con su último run) para el selector.
@@ -4329,6 +4318,13 @@ impl App {
                 self.agent.thread_sel = self.threads.len().saturating_sub(1);
                 self.agent.lists_loading = false;
             }
+            crate::daemon_async::Reply::Transcript(result) => match result {
+                Ok(v) => self.apply_transcript(&v),
+                Err(e) => {
+                    self.agent.transcript_loading = false;
+                    self.agent.push(AgentKind::Error, e);
+                }
+            },
         }
     }
 
@@ -4358,6 +4354,7 @@ impl App {
             self.ensure_known_providers();
             self.agent.model_loading = false;
             self.agent.lists_loading = false;
+            self.agent.transcript_loading = false;
         }
     }
 
