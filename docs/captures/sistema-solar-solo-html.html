@@ -113,7 +113,8 @@
       const planetGeometry = new THREE.SphereGeometry(radius, 32, 32);
       const planetMaterial = new THREE.MeshPhongMaterial({ color });
       const planet = new THREE.Mesh(planetGeometry, planetMaterial);
-      planet.position.set(distance, 0, 0);
+      const startAngle = (i - 1) * (Math.PI * 2 / 8);
+      planet.position.set(distance * Math.cos(startAngle), 0, distance * Math.sin(startAngle));
       scene.add(planet);
       planets.push({ mesh: planet, distance: distance, speed: planetData[i][5] });
 
@@ -193,6 +194,7 @@
       ring.rotation.z += delta * 0.02;
 
       // Actualizar posición de etiquetas en pantalla
+      scene.updateMatrixWorld(true);
       if (labelsToggle.checked) {
         for (let i = 0; i < labels.length; i++) {
           const planet = planets[i].mesh;
@@ -215,6 +217,7 @@
       renderer.render(scene, camera);
     }
 
+    scene.updateMatrixWorld(true);
     animate();
   </script>
 </body>

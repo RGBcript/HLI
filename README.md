@@ -91,6 +91,9 @@ primero; si vas a operar o desarrollar, lee el que corresponda.
 
 ## Documentación
 
+- [Propuesta de protocolo agéntico](docs/AGENT-PROTOCOL-PROPOSAL.md): AGENTS.md, modos de permiso,
+  skills, checkpoints y subagentes, con las referencias de Command Code y otros CLIs.
+
 - [QUICKSTART.md](QUICKSTART.md)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md)
