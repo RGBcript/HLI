@@ -77,3 +77,17 @@ Regla: exactamente un foco. `q` no sale si el command bar tiene el foco.
 - Cursor y edición dentro del command bar: solo se añade/borra al final.
 - Ratón.
 - Streaming de eventos.
+
+## Navegación (0.9)
+
+| Contexto | Entrada | Acción |
+|---|---|---|
+| Agent Mode | rueda | `wheel_speed` líneas |
+| Agent Mode | `PgUp`/`PgDn` | media pantalla |
+| Agent Mode | `Ctrl+Home`/`Ctrl+End` | inicio / final con follow |
+| Agent Mode | `Ctrl+O` | Transcript Mode |
+| Agent Mode | `Ctrl+I` | Inspector |
+| Transcript | `j`/`k`, `Ctrl+U/D`, `Ctrl+B/F`, `g`/`G` | desplazamiento |
+| Transcript | `/`, `n`/`N` | búsqueda y coincidencias |
+| Transcript | `{`/`}` | prompt anterior / siguiente |
+| Transcript | `Esc`/`q`/`Ctrl+O` | volver |

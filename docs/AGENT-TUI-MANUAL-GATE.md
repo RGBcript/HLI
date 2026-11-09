@@ -70,6 +70,32 @@ Tras un envío aceptado, el compositor queda vacío. Si `run.start` falla antes 
 crear el run, el texto se conserva para reintentar. `resume` nunca reinyecta el
 último prompt en el compositor.
 
+
+### Scroll y Transcript Mode
+
+| # | Acción | Resultado esperado | OK |
+|---|---|---|---|
+| 1 | Abrir una conversación con más de 100 líneas | transcript con scrollbar | |
+| 2 | Rueda física hacia arriba | la vista sube 3 líneas por muesca | |
+| 3 | Confirmar | scrollbar proporcional y visible | |
+| 4 | Generar actividad nueva mientras se revisa | el contenido llega sin mover la vista | |
+| 5 | Confirmar | la posición histórica se mantiene | |
+| 6 | Confirmar indicador | `↓ N new activity · Ctrl+End` | |
+| 7 | Bajar con la rueda hasta el final | auto-follow reactivado | |
+| 8 | Confirmar | el indicador desaparece | |
+| 9 | `PgUp` / `PgDn` | media pantalla | |
+| 10 | `Ctrl+Home` / `Ctrl+End` | inicio / final | |
+| 11 | `Ctrl+O` | Transcript Mode a pantalla completa | |
+| 12 | `/` y una cadena | coincidencias resaltadas | |
+| 13 | `n` / `N` | recorre coincidencias | |
+| 14 | `{` / `}` | prompt anterior / siguiente | |
+| 15 | `q` o `Esc` | vuelve a Agent Mode | |
+| 16 | Confirmar | compositor intacto | |
+| 17 | Salir de HLI | sin residuos | |
+| 18 | Confirmar | cursor visible, pantalla y raw mode restaurados, ratón liberado | |
+| 19 | Repetir con `HLI_DISABLE_MOUSE=1` | sin captura de ratón | |
+| 20 | Confirmar | selección nativa y navegación por teclado | |
+
 ## Parte C — Layouts y accesibilidad
 
 - Full, Medium, Compact y Reduced mantienen foco, overlay y compositor.

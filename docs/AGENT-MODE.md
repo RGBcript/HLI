@@ -318,3 +318,15 @@ vuelve a `waiting_approval` con `approval_kind = plan`. La revisión anterior
 queda sustituida y su aprobación no cubre la nueva. Sólo después de aprobar la
 revisión se resuelve la política de la invocación concreta (`ask` → solicitud de
 permiso). Plan approval y tool permission siguen siendo fronteras separadas.
+
+### Scroll y Transcript Mode (0.9)
+
+- El transcript se desplaza con la rueda (3 líneas, configurable con
+  `HLI_WHEEL_SCROLL_SPEED`), `PgUp`/`PgDn` y `Ctrl+Home`/`Ctrl+End`.
+- Subir desactiva el auto-follow; las novedades se cuentan en la barra de estado
+  (`↓ N new activity`) sin mover la vista.
+- La scrollbar sólo aparece si hay contenido fuera del viewport.
+- `Ctrl+O` abre el Transcript Mode (búsqueda `/`, `n/N`, `{`/`}`); el Inspector
+  pasa a `Ctrl+I`.
+- `HLI_DISABLE_MOUSE=1` no captura el ratón: Windows Terminal recupera su
+  selección nativa y el scroll por teclado sigue funcionando.

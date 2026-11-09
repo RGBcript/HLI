@@ -111,3 +111,12 @@ y ASCII.
 - Filtro de Events por substring de tipo, no por expresión.
 - La command bar ejecuta un subproceso por comando.
 - `Alt+1..6` documentado, no implementado (los dígitos simples cubren el caso).
+
+## Viewport y scroll (0.9)
+
+`TranscriptViewport` trabaja sobre líneas renderizadas (wrapping incluido):
+`first_visible_line`, `total_rendered_lines`, `viewport_height`, `follow_mode`,
+`unseen_activity_count` y `wheel_speed`. Cabecera, compositor y barra de estado
+quedan fuera del área desplazable. La scrollbar se deriva de `max_scroll` y no es
+decorativa. Los overlays de Plan y Permission se dibujan sobre el viewport sin
+moverlo.
