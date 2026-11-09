@@ -1748,8 +1748,19 @@ fn materialize_references(
                     )));
                 }
                 let path = Path::new(root).join(rel);
-                let bytes = std::fs::read(&path).map_err(|_| {
-                    HliError::not_found(&format!("reference_missing: {}", rf.stable_id))
+                let root_canon =
+                    std::fs::canonicalize(root).unwrap_or_else(|_| Path::new(root).to_path_buf());
+                let path_canon = std::fs::canonicalize(&path).map_err(|_| {
+                    HliError::not_found(&format!("reference_not_found: {}", rf.stable_id))
+                })?;
+                if !path_canon.starts_with(&root_canon) {
+                    return Err(HliError::conflict(format!(
+                        "reference_out_of_scope: {}",
+                        rf.stable_id
+                    )));
+                }
+                let bytes = std::fs::read(&path_canon).map_err(|_| {
+                    HliError::not_found(&format!("reference_not_found: {}", rf.stable_id))
                 })?;
                 let hash = format!("sha256:{}", hli_store::export::sha256_hex(&bytes));
                 if let Some(want) = &rf.content_hash
@@ -1781,7 +1792,7 @@ fn materialize_references(
                 let m = serde_json::to_value(r.memory(&rf.stable_id)?).unwrap_or(json!({}));
                 if m["workspace_id"].as_str() != Some(workspace_id) {
                     return Err(HliError::conflict(format!(
-                        "reference_scope_mismatch: {}",
+                        "reference_out_of_scope: {}",
                         rf.stable_id
                     )));
                 }
@@ -1819,6 +1830,13 @@ fn materialize_references(
                 });
             }
             "artifact" => {
+                let owner = r.artifact_workspace(&rf.stable_id)?;
+                if owner != workspace_id {
+                    return Err(HliError::conflict(format!(
+                        "reference_out_of_scope: {}",
+                        rf.stable_id
+                    )));
+                }
                 let a = serde_json::to_value(r.artifact(&rf.stable_id)?).unwrap_or(json!({}));
                 let sha = a["sha256"].as_str().unwrap_or("").to_string();
                 if let Some(want) = &rf.content_hash
@@ -1826,7 +1844,7 @@ fn materialize_references(
                     && want.trim_start_matches("sha256:") != sha.trim_start_matches("sha256:")
                 {
                     return Err(HliError::conflict(format!(
-                        "reference_hash_mismatch: {}",
+                        "reference_integrity_error: {}",
                         rf.stable_id
                     )));
                 }
@@ -1855,7 +1873,7 @@ fn materialize_references(
                 let run = serde_json::to_value(r.run(&rf.stable_id)?).unwrap_or(json!({}));
                 if run["workspace_id"].as_str() != Some(workspace_id) {
                     return Err(HliError::conflict(format!(
-                        "reference_scope_mismatch: {}",
+                        "reference_out_of_scope: {}",
                         rf.stable_id
                     )));
                 }
@@ -1873,7 +1891,8 @@ fn materialize_references(
                 }
                 e.detail = json!({
                     "state": run["state"],
-                    "receipt_hash": run["receipt"]["result_hash"]
+                    "receipt_hash": run["receipt"]["result_hash"],
+                    "result_artifacts": run["receipt"]["result_artifacts"]
                 });
             }
             "branch" => {
@@ -1882,7 +1901,7 @@ fn materialize_references(
                     .iter()
                     .find(|b| b.name == rf.stable_id || b.id == rf.stable_id)
                     .ok_or_else(|| {
-                        HliError::not_found(&format!("reference_missing: {}", rf.stable_id))
+                        HliError::not_found(&format!("reference_not_found: {}", rf.stable_id))
                     })?;
                 if let Some(rev) = rf.revision
                     && rev != found.head_sequence

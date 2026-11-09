@@ -347,6 +347,18 @@ impl Reader {
         })
     }
 
+    pub fn artifact_workspace(&self, id: &str) -> Result<String> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT workspace_id FROM artifacts WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| HliError::not_found(&format!("artifact {id}")))
+        })
+    }
+
     pub fn artifact(&self, id: &str) -> Result<crate::writer::ArtifactInfo> {
         self.with(|c| {
             let (id, sha, mime, bytes): (String, String, String, i64) = c
