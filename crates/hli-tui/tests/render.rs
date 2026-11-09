@@ -522,7 +522,8 @@ fn ctrl_o_switches_modes_without_losing_state() {
         KeyEventKind::Press,
         KeyModifiers::CONTROL,
     ));
-    assert_eq!(app.mode, TuiMode::Inspector);
+    // Ctrl+O abre el Transcript Mode; Inspector se abre con Ctrl+I.
+    assert_eq!(app.mode, TuiMode::Transcript);
     app.handle_key(key_with(
         KeyCode::Char('o'),
         KeyEventKind::Press,
@@ -1630,13 +1631,13 @@ fn mode_switch_preserves_plan_overlay() {
     tap(&mut app, KeyCode::Char('o'));
     assert_eq!(app.mode, TuiMode::Agent);
     app.handle_key(key_with(
-        KeyCode::Char('o'),
+        KeyCode::Char('i'),
         KeyEventKind::Press,
         KeyModifiers::CONTROL,
     ));
     assert_eq!(app.mode, TuiMode::Inspector);
     app.handle_key(key_with(
-        KeyCode::Char('o'),
+        KeyCode::Char('i'),
         KeyEventKind::Press,
         KeyModifiers::CONTROL,
     ));
@@ -1851,13 +1852,13 @@ fn permission_details_hide_secret_values() {
 fn mode_switch_preserves_permission_overlay() {
     let mut app = agent_with_permission(demo_perm());
     app.handle_key(key_with(
-        KeyCode::Char('o'),
+        KeyCode::Char('i'),
         KeyEventKind::Press,
         KeyModifiers::CONTROL,
     ));
     assert_eq!(app.mode, TuiMode::Inspector);
     app.handle_key(key_with(
-        KeyCode::Char('o'),
+        KeyCode::Char('i'),
         KeyEventKind::Press,
         KeyModifiers::CONTROL,
     ));
@@ -2026,6 +2027,681 @@ fn resume_does_not_restore_last_prompt_into_composer() {
     app.agent.composer.clear();
     app.load_transcript();
     assert!(app.agent.composer.is_empty());
+}
+
+// --- Scroll: rueda, teclado, follow y scrollbar ---------------------------
+
+fn mouse(kind: crossterm::event::MouseEventKind) -> crossterm::event::MouseEvent {
+    crossterm::event::MouseEvent {
+        kind,
+        column: 10,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn long_transcript(app: &mut App, n: usize) {
+    for i in 0..n {
+        app.agent
+            .push(AgentKind::Info, format!("linea historica {i}"));
+    }
+    app.observe_terminal(80, 40);
+}
+
+#[test]
+fn mouse_wheel_up_changes_visible_lines() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.viewport_bottom();
+    let before = app.agent.viewport.first_visible_line;
+    assert!(app.handle_mouse(mouse(crossterm::event::MouseEventKind::ScrollUp)));
+    assert_eq!(app.agent.viewport.first_visible_line, before - 3);
+}
+
+#[test]
+fn mouse_wheel_down_changes_visible_lines() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.viewport_scroll(-30);
+    let before = app.agent.viewport.first_visible_line;
+    assert!(app.handle_mouse(mouse(crossterm::event::MouseEventKind::ScrollDown)));
+    assert_eq!(app.agent.viewport.first_visible_line, before + 3);
+}
+
+#[test]
+fn mouse_wheel_clamps_at_bounds() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.viewport_start();
+    for _ in 0..50 {
+        app.handle_mouse(mouse(crossterm::event::MouseEventKind::ScrollUp));
+    }
+    assert_eq!(app.agent.viewport.first_visible_line, 0);
+    for _ in 0..400 {
+        app.handle_mouse(mouse(crossterm::event::MouseEventKind::ScrollDown));
+    }
+    assert_eq!(
+        app.agent.viewport.first_visible_line,
+        app.agent.viewport.max_scroll()
+    );
+}
+
+#[test]
+fn scroll_works_with_composer_focused() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.agent.composer = "texto en curso".into();
+    app.handle_mouse(mouse(crossterm::event::MouseEventKind::ScrollUp));
+    assert!(!app.agent.viewport.follow_mode);
+    assert_eq!(app.agent.composer, "texto en curso");
+}
+
+#[test]
+fn scrollbar_matches_viewport_position() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.observe_terminal(80, 40);
+    assert!(app.agent.viewport.total_rendered_lines > app.agent.viewport.viewport_height);
+    let text = render(&app, 80, 40);
+    assert!(
+        text.contains('█') || text.contains('│'),
+        "sin scrollbar visible"
+    );
+    assert!(app.agent.viewport.thumb_ratio() < 1.0);
+}
+
+#[test]
+fn scrollbar_hidden_when_content_fits() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.lines.clear();
+    app.agent.push(AgentKind::Info, "una linea");
+    app.observe_terminal(120, 40);
+    assert!(app.agent.viewport.total_rendered_lines <= app.agent.viewport.viewport_height);
+    assert_eq!(app.agent.viewport.thumb_ratio(), 1.0);
+}
+
+#[test]
+fn scroll_up_disables_follow_mode() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    assert!(app.agent.viewport.follow_mode);
+    tap(&mut app, KeyCode::PageUp);
+    assert!(!app.agent.viewport.follow_mode);
+}
+
+#[test]
+fn new_activity_preserves_historical_position() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    let before = app.agent.viewport.first_visible_line;
+    app.agent.push(AgentKind::Info, "evento nuevo");
+    assert_eq!(app.agent.viewport.first_visible_line, before);
+}
+
+#[test]
+fn new_activity_increments_unseen_count() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    app.agent.viewport.unseen_activity_count = 0;
+    app.agent.push(AgentKind::Info, "evento nuevo");
+    assert_eq!(app.agent.viewport.unseen_activity_count, 1);
+}
+
+#[test]
+fn jump_to_bottom_clears_unseen_count() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    app.agent.push(AgentKind::Info, "nuevo");
+    assert!(app.agent.viewport.unseen_activity_count > 0);
+    app.viewport_bottom();
+    assert_eq!(app.agent.viewport.unseen_activity_count, 0);
+    assert!(app.agent.viewport.follow_mode);
+}
+
+#[test]
+fn wheel_to_bottom_reenables_follow() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.viewport_scroll(-30);
+    for _ in 0..100 {
+        app.handle_mouse(mouse(crossterm::event::MouseEventKind::ScrollDown));
+    }
+    assert!(app.agent.viewport.follow_mode);
+}
+
+#[test]
+fn ctrl_end_reenables_follow() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.viewport_scroll(-30);
+    assert!(!app.agent.viewport.follow_mode);
+    app.handle_key(key_with(
+        KeyCode::End,
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert!(app.agent.viewport.follow_mode);
+    assert_eq!(app.agent.viewport.unseen_activity_count, 0);
+}
+
+#[test]
+fn page_up_scrolls_half_viewport() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.viewport_bottom();
+    let height = app.agent.viewport.viewport_height;
+    tap(&mut app, KeyCode::PageUp);
+    assert_eq!(
+        app.agent.viewport.first_visible_line,
+        app.agent.viewport.max_scroll() - height / 2
+    );
+}
+
+#[test]
+fn page_down_scrolls_half_viewport() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.viewport_start();
+    let height = app.agent.viewport.viewport_height;
+    tap(&mut app, KeyCode::PageDown);
+    assert_eq!(app.agent.viewport.first_visible_line, height / 2);
+}
+
+#[test]
+fn ctrl_home_moves_to_start() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.viewport_bottom();
+    app.handle_key(key_with(
+        KeyCode::Home,
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.agent.viewport.first_visible_line, 0);
+    assert!(!app.agent.viewport.follow_mode);
+}
+
+#[test]
+fn resize_recalculates_wrapped_lines() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.lines.clear();
+    app.agent.push(AgentKind::Info, "x".repeat(300));
+    app.observe_terminal(120, 40);
+    let wide = app.agent.viewport.total_rendered_lines;
+    app.observe_terminal(40, 40);
+    let narrow = app.agent.viewport.total_rendered_lines;
+    assert!(narrow > wide, "más líneas al estrechar: {narrow} vs {wide}");
+}
+
+#[test]
+fn resize_clamps_scroll_position() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.observe_terminal(40, 40);
+    app.viewport_bottom();
+    app.observe_terminal(120, 60);
+    assert!(app.agent.viewport.first_visible_line <= app.agent.viewport.max_scroll());
+}
+
+#[test]
+fn expanded_activity_changes_total_lines_safely() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.lines.clear();
+    app.agent.push_activity(
+        "tool.completed",
+        ActivityDetail {
+            kind: "tool".into(),
+            status: "success".into(),
+            started: "now".into(),
+            duration: Some(0.1),
+            input: "{}".into(),
+            output: "salida larga ".repeat(50),
+            causation: None,
+            correlation: None,
+            artifacts: vec![],
+            error: None,
+        },
+    );
+    app.observe_terminal(60, 40);
+    let collapsed = app.agent.viewport.total_rendered_lines;
+    app.toggle_selected_activity();
+    app.observe_terminal(60, 40);
+    assert!(app.agent.viewport.total_rendered_lines > collapsed);
+    assert!(app.agent.viewport.first_visible_line <= app.agent.viewport.max_scroll());
+}
+
+#[test]
+fn long_response_keeps_composer_visible() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 300);
+    let text = render(&app, 100, 40);
+    assert!(
+        text.contains("compose"),
+        "el compositor debe seguir visible"
+    );
+}
+
+// --- Transcript Mode y búsqueda ------------------------------------------
+
+fn agent_with_long_history() -> App {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.workspace = Some(serde_json::json!({"id": "ws", "name": "w"}));
+    app.agent.thread = Some(serde_json::json!({"id": "th", "title": "t"}));
+    app.agent.lines.clear();
+    for i in 0..60 {
+        app.agent.push(AgentKind::Info, format!("linea {i}"));
+    }
+    app.agent.push(AgentKind::User, "pregunta clave");
+    for i in 0..60 {
+        app.agent.push(AgentKind::Info, format!("respuesta {i}"));
+    }
+    app.observe_terminal(100, 40);
+    app
+}
+
+#[test]
+fn transcript_mode_opens_and_closes() {
+    let mut app = agent_with_long_history();
+    tap(&mut app, KeyCode::Char('q'));
+    // 'q' en Agent se escribe en el compositor; el modo se abre con Ctrl+O.
+    app.agent.composer.clear();
+    app.handle_key(key_with(
+        KeyCode::Char('o'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Transcript);
+    let text = render(&app, 100, 40);
+    assert!(text.contains("conversation"), "{text}");
+    app.handle_key(key_with(
+        KeyCode::Esc,
+        KeyEventKind::Press,
+        KeyModifiers::NONE,
+    ));
+    assert_eq!(app.mode, TuiMode::Agent);
+}
+
+#[test]
+fn transcript_search_finds_matches() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    tap(&mut app, KeyCode::Char('/'));
+    assert!(app.transcript.search_open);
+    for c in "clave".chars() {
+        tap(&mut app, KeyCode::Char(c));
+    }
+    app.handle_key(key_with(
+        KeyCode::Enter,
+        KeyEventKind::Press,
+        KeyModifiers::NONE,
+    ));
+    assert!(!app.transcript.matches.is_empty());
+    assert!(app.transcript.scroll > 0);
+}
+
+#[test]
+fn transcript_search_restores_position_on_cancel() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    app.transcript.scroll = 0;
+    tap(&mut app, KeyCode::Char('/'));
+    tap(&mut app, KeyCode::Char('x'));
+    app.handle_key(key_with(
+        KeyCode::Esc,
+        KeyEventKind::Press,
+        KeyModifiers::NONE,
+    ));
+    assert_eq!(app.transcript.scroll, 0);
+    assert!(app.transcript.query.is_empty());
+    assert!(app.transcript.matches.is_empty());
+}
+
+#[test]
+fn transcript_jump_between_prompts() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    app.transcript.scroll = 0;
+    tap(&mut app, KeyCode::Char('}'));
+    let at_prompt = app.transcript.scroll;
+    assert!(at_prompt > 0);
+    let lines = app.transcript_lines(app.transcript_width);
+    assert!(lines[at_prompt].2, "debe caer en un prompt");
+}
+
+#[test]
+fn transcript_mode_preserves_composer() {
+    let mut app = agent_with_long_history();
+    app.agent.composer = "borrador".into();
+    app.open_transcript();
+    tap(&mut app, KeyCode::Char('/'));
+    tap(&mut app, KeyCode::Char('l'));
+    app.close_transcript();
+    assert_eq!(app.agent.composer, "borrador");
+}
+
+#[test]
+fn transcript_mode_is_separate_from_inspector() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    app.open_inspector();
+    assert_eq!(app.mode, TuiMode::Inspector);
+    assert_ne!(app.mode, TuiMode::Transcript);
+}
+
+#[test]
+fn mouse_guard_can_be_disabled_by_env() {
+    // El flag se evalúa en el arranque; aquí se comprueba el contrato del
+    // helper sin tocar el entorno global del proceso.
+    let guard = hli_tui::terminal::MouseGuard::new(false).unwrap();
+    assert!(!guard.enabled());
+}
+
+#[test]
+fn mouse_release_is_idempotent() {
+    hli_tui::terminal::release_mouse();
+    hli_tui::terminal::release_mouse();
+}
+
+// --- Cobertura adicional del bloque scroll/transcript ---------------------
+
+#[test]
+fn mouse_wheel_clamps_at_start() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    app.agent.viewport.first_visible_line = 2;
+    for _ in 0..20 {
+        app.handle_mouse(mouse(crossterm::event::MouseEventKind::ScrollUp));
+    }
+    assert_eq!(app.agent.viewport.first_visible_line, 0);
+}
+
+#[test]
+fn mouse_wheel_clamps_at_end() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 200);
+    for _ in 0..400 {
+        app.handle_mouse(mouse(crossterm::event::MouseEventKind::ScrollDown));
+    }
+    assert_eq!(
+        app.agent.viewport.first_visible_line,
+        app.agent.viewport.max_scroll()
+    );
+}
+
+#[test]
+fn new_activity_indicator_is_visible() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    app.agent.push(AgentKind::Info, "evento nuevo");
+    let text = render(&app, 120, 40);
+    assert!(text.contains("new activity"), "{text}");
+    assert!(text.contains("Ctrl+End"), "{text}");
+}
+
+#[test]
+fn indicator_does_not_overlap_composer() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    app.agent.push(AgentKind::Info, "nuevo");
+    let text = render(&app, 100, 40);
+    let compose_at = text.find("compose").expect("compositor");
+    let indicator_at = text.find("new activity").expect("indicador");
+    assert!(
+        indicator_at > compose_at,
+        "el indicador va en la barra de estado"
+    );
+}
+
+#[test]
+fn plan_overlay_is_visible_while_scrolled_up() {
+    let mut app = agent_with_plan(demo_plan());
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    assert!(!app.agent.viewport.follow_mode);
+    let text = render(&app, 110, 40);
+    assert!(text.contains("Plan requires approval"), "{text}");
+}
+
+#[test]
+fn permission_overlay_is_visible_while_scrolled_up() {
+    let mut app = agent_with_permission(demo_perm());
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    let text = render(&app, 120, 45);
+    assert!(text.contains("Permission required"), "{text}");
+}
+
+#[test]
+fn overlay_does_not_enable_follow_mode() {
+    let mut app = agent_with_plan(demo_plan());
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    let _ = render(&app, 110, 40);
+    assert!(!app.agent.viewport.follow_mode);
+}
+
+#[test]
+fn closing_overlay_preserves_scroll_position() {
+    let mut app = agent_with_plan(demo_plan());
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-20);
+    let before = app.agent.viewport.first_visible_line;
+    app.handle_key(key_with(
+        KeyCode::Esc,
+        KeyEventKind::Press,
+        KeyModifiers::NONE,
+    ));
+    assert_eq!(app.agent.viewport.first_visible_line, before);
+}
+
+#[test]
+fn ctrl_o_opens_transcript_mode() {
+    let mut app = agent_with_long_history();
+    app.handle_key(key_with(
+        KeyCode::Char('o'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Transcript);
+}
+
+#[test]
+fn ctrl_i_opens_inspector_not_transcript() {
+    let mut app = agent_with_long_history();
+    app.handle_key(key_with(
+        KeyCode::Char('i'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.mode, TuiMode::Inspector);
+    assert_ne!(app.mode, TuiMode::Transcript);
+}
+
+#[test]
+fn transcript_scrolls_one_line() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    app.transcript.scroll = 5;
+    tap(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.transcript.scroll, 6);
+    tap(&mut app, KeyCode::Char('k'));
+    assert_eq!(app.transcript.scroll, 5);
+}
+
+#[test]
+fn transcript_scrolls_half_page() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    app.transcript.scroll = 10;
+    let page = app.transcript_height / 2;
+    app.handle_key(key_with(
+        KeyCode::Char('d'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.transcript.scroll, 10 + page.max(1));
+}
+
+#[test]
+fn transcript_scrolls_full_page() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    app.transcript.scroll = 10;
+    let page = app.transcript_height;
+    app.handle_key(key_with(
+        KeyCode::Char('f'),
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.transcript.scroll, 10 + page);
+}
+
+#[test]
+fn transcript_jumps_to_start_and_end() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    tap(&mut app, KeyCode::Char('G'));
+    let end = app.transcript.scroll;
+    assert!(end > 0);
+    tap(&mut app, KeyCode::Char('g'));
+    assert_eq!(app.transcript.scroll, 0);
+}
+
+#[test]
+fn transcript_search_finds_tool_activity() {
+    let mut app = agent_with_long_history();
+    app.agent
+        .push(AgentKind::Tool, "tool.completed · filesystem.write");
+    app.observe_terminal(100, 40);
+    app.open_transcript();
+    tap(&mut app, KeyCode::Char('/'));
+    for c in "filesystem".chars() {
+        tap(&mut app, KeyCode::Char(c));
+    }
+    app.handle_key(key_with(
+        KeyCode::Enter,
+        KeyEventKind::Press,
+        KeyModifiers::NONE,
+    ));
+    assert!(!app.transcript.matches.is_empty());
+}
+
+#[test]
+fn transcript_exit_preserves_composer() {
+    let mut app = agent_with_long_history();
+    app.agent.composer = "borrador".into();
+    app.open_transcript();
+    tap(&mut app, KeyCode::Char('q'));
+    assert_eq!(app.mode, TuiMode::Agent);
+    assert_eq!(app.agent.composer, "borrador");
+}
+
+#[test]
+fn transcript_exit_preserves_agent_scroll() {
+    let mut app = agent_with_long_history();
+    app.agent.viewport.scroll(-15);
+    let before = app.agent.viewport.first_visible_line;
+    app.open_transcript();
+    app.close_transcript();
+    assert_eq!(app.agent.viewport.first_visible_line, before);
+}
+
+#[test]
+fn resize_preserves_follow_mode() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    assert!(app.agent.viewport.follow_mode);
+    app.observe_terminal(50, 30);
+    assert!(app.agent.viewport.follow_mode);
+}
+
+#[test]
+fn narrow_terminal_keeps_jump_indicator_readable() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.agent.viewport.scroll(-10);
+    app.agent.push(AgentKind::Info, "nuevo");
+    let text = render(&app, 70, 30);
+    assert!(text.contains("new activity"), "{text}");
+}
+
+#[test]
+fn disable_mouse_preserves_keyboard_scroll() {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    long_transcript(&mut app, 100);
+    app.viewport_bottom();
+    tap(&mut app, KeyCode::PageUp);
+    assert!(!app.agent.viewport.follow_mode);
+    app.handle_key(key_with(
+        KeyCode::End,
+        KeyEventKind::Press,
+        KeyModifiers::CONTROL,
+    ));
+    assert!(app.agent.viewport.follow_mode);
+}
+
+#[test]
+fn disable_mouse_preserves_transcript_mode() {
+    let mut app = agent_with_long_history();
+    app.open_transcript();
+    assert_eq!(app.mode, TuiMode::Transcript);
+    tap(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, TuiMode::Agent);
+}
+
+#[test]
+fn accepted_prompt_clears_real_composer_state() {
+    let mut app = App::demo();
+    app.agent.composer = "aceptado".into();
+    app.apply_submission_outcome(true, "aceptado");
+    assert!(app.agent.composer.is_empty());
+    assert!(
+        app.agent.composer.is_empty(),
+        "seguir vacío en el follow-up"
+    );
+}
+
+#[test]
+fn failed_submission_preserves_real_composer_state() {
+    let mut app = App::demo();
+    app.agent.workspace = Some(serde_json::json!({"id": "ws"}));
+    app.agent.thread = Some(serde_json::json!({"id": "th"}));
+    app.agent.branch = Some(serde_json::json!({"id": "br"}));
+    app.agent.composer = "fallo".into();
+    assert!(!app.submit_prompt());
+    assert_eq!(app.agent.composer, "fallo");
 }
 
 #[test]

@@ -15,11 +15,7 @@ pub fn wrapped_lines(text: &str, width: usize) -> usize {
     text.split('\n')
         .map(|line| {
             let chars = line.chars().count();
-            if chars == 0 {
-                1
-            } else {
-                chars.div_ceil(width)
-            }
+            if chars == 0 { 1 } else { chars.div_ceil(width) }
         })
         .sum()
 }
@@ -136,13 +132,16 @@ impl TranscriptViewport {
     }
 }
 
+/// Velocidad válida: entero 1..=20. Cualquier otro valor cae al default.
+pub fn parse_wheel_speed(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| (1..=20).contains(v))
+        .unwrap_or(3)
+}
+
 /// Configuración de desplazamiento: `HLI_WHEEL_SCROLL_SPEED` (1..=20).
 pub fn wheel_speed_from_env() -> usize {
-    std::env::var("HLI_WHEEL_SCROLL_SPEED")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| v.clamp(1, 20))
-        .unwrap_or(3)
+    parse_wheel_speed(std::env::var("HLI_WHEEL_SCROLL_SPEED").ok().as_deref())
 }
 
 #[cfg(test)]
@@ -249,6 +248,16 @@ mod tests {
         assert_eq!(wrapped_lines(&"x".repeat(180), 80), 3);
         assert_eq!(wrapped_lines("a\nb\n", 80), 3);
         assert_eq!(wrapped_lines("", 80), 1);
+    }
+
+    #[test]
+    fn invalid_scroll_speed_uses_default() {
+        assert_eq!(parse_wheel_speed(Some("5")), 5);
+        assert_eq!(parse_wheel_speed(Some("20")), 20);
+        assert_eq!(parse_wheel_speed(Some("0")), 3);
+        assert_eq!(parse_wheel_speed(Some("21")), 3);
+        assert_eq!(parse_wheel_speed(Some("abc")), 3);
+        assert_eq!(parse_wheel_speed(None), 3);
     }
 
     #[test]

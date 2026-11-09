@@ -3045,8 +3045,6 @@ impl App {
         }
     }
 
-
-
     // -----------------------------------------------------------------------
     // Transcript Mode
     // -----------------------------------------------------------------------
@@ -3170,16 +3168,22 @@ impl App {
                 self.transcript.scroll = self.transcript.scroll.saturating_sub(1)
             }
             KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.transcript.scroll += 10
+                self.transcript.scroll += (self.transcript_height / 2).max(1)
             }
             KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.transcript.scroll = self.transcript.scroll.saturating_sub(10)
+                self.transcript.scroll = self
+                    .transcript
+                    .scroll
+                    .saturating_sub((self.transcript_height / 2).max(1))
             }
             KeyCode::Char('f') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.transcript.scroll += self.transcript_height
             }
             KeyCode::Char('b') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.transcript.scroll = self.transcript.scroll.saturating_sub(self.transcript_height)
+                self.transcript.scroll = self
+                    .transcript
+                    .scroll
+                    .saturating_sub(self.transcript_height)
             }
             KeyCode::PageDown => self.transcript.scroll += self.transcript_height / 2,
             KeyCode::PageUp => {
@@ -3205,14 +3209,12 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
                 let target = if forward {
-                    candidates
-                        .into_iter()
-                        .find(|i| *i > self.transcript.scroll)
+                    candidates.into_iter().find(|i| *i > self.transcript.scroll)
                 } else {
                     candidates
                         .into_iter()
-                        .filter(|i| *i < self.transcript.scroll)
-                        .next_back()
+                        .rev()
+                        .find(|i| *i < self.transcript.scroll)
                 };
                 if let Some(t) = target {
                     self.transcript.scroll = t;
