@@ -208,6 +208,12 @@ pub struct AgentState {
     pub lists_loading: bool,
     pub transcript_loading: bool,
     pub settings_sel: usize,
+    pub settings_cat: usize,
+    pub settings_loading: bool,
+    pub settings_providers: Vec<Value>,
+    pub settings_modules: Vec<Value>,
+    pub settings_mchs: Vec<Value>,
+    pub settings_prices: usize,
     pub providers: Vec<Value>,
     pub offer: Offer,
     pub pending: Option<String>,
@@ -817,6 +823,12 @@ impl Default for AgentState {
             lists_loading: false,
             transcript_loading: false,
             settings_sel: 0,
+            settings_cat: 0,
+            settings_loading: false,
+            settings_providers: Vec::new(),
+            settings_modules: Vec::new(),
+            settings_mchs: Vec::new(),
+            settings_prices: 0,
             providers: Vec::new(),
             offer: Offer::None,
             pending: None,
@@ -1203,14 +1215,19 @@ impl App {
 
     pub fn tick(&mut self) {
         self.drain_daemon();
-        if self.last_runs.elapsed() >= Duration::from_millis(500) {
-            self.refresh_runs();
-        }
-        if self.last_events.elapsed() >= Duration::from_secs(1) {
-            self.refresh_events();
-        }
-        if self.last_lists.elapsed() >= Duration::from_secs(4) {
-            self.refresh_lists();
+        // El refresco del Inspector solo corre cuando se está mirando: en
+        // Agent o Settings haría 8 llamadas síncronas cada 4 s y congelaría
+        // el dibujo.
+        if self.mode == TuiMode::Inspector {
+            if self.last_runs.elapsed() >= Duration::from_millis(500) {
+                self.refresh_runs();
+            }
+            if self.last_events.elapsed() >= Duration::from_secs(1) {
+                self.refresh_events();
+            }
+            if self.last_lists.elapsed() >= Duration::from_secs(4) {
+                self.refresh_lists();
+            }
         }
         if self.mode == TuiMode::Agent {
             self.poll_agent();
@@ -4158,21 +4175,34 @@ impl App {
 
     // --- Vista de configuración -------------------------------------------
 
+    pub const SETTINGS_CATEGORIES: [&'static str; 6] = [
+        "Sesión",
+        "Proveedores",
+        "Apariencia",
+        "Módulos",
+        "MCH",
+        "Datos",
+    ];
+
     pub fn open_settings(&mut self) {
         self.agent.palette = false;
         self.agent.composer.clear();
+        self.agent.settings_cat = 0;
         self.agent.settings_sel = 0;
+        self.agent.settings_loading = true;
         self.mode = TuiMode::Settings;
+        self.daemon_async
+            .request(crate::daemon_async::Request::Settings);
     }
 
-    /// Filas de la vista. El valor sale del estado real, no de constantes.
-    pub fn settings_items(&self) -> Vec<(&'static str, String)> {
+    /// Filas de la categoría activa. Todo sale del estado o del daemon.
+    pub fn settings_rows(&self) -> Vec<(String, String)> {
         let ws = self
             .agent
             .workspace
             .as_ref()
             .and_then(|w| w["name"].as_str())
-            .unwrap_or("—")
+            .unwrap_or("sin vincular")
             .to_string();
         let th = self
             .agent
@@ -4181,65 +4211,231 @@ impl App {
             .and_then(|t| t["title"].as_str())
             .unwrap_or("—")
             .to_string();
-        vec![
-            (
-                "Modelo",
-                format!("{}/{}", self.agent.provider, self.agent.model),
-            ),
-            ("Proveedores", "catálogo de /model".to_string()),
-            (
-                "Workspace",
-                if ws == "—" {
-                    "sin vincular".to_string()
-                } else {
-                    ws
-                },
-            ),
-            ("Sesión", th),
-            (
-                "Daemon",
-                if self.daemon {
-                    "en marcha".to_string()
-                } else {
-                    "detenido".to_string()
-                },
-            ),
-            ("HLI_HOME", self.home.display().to_string()),
-            ("Versión", env!("CARGO_PKG_VERSION").to_string()),
-            (
-                "Inspector",
-                "runs · contexto · memoria · artefactos · MCH".to_string(),
-            ),
-            ("Transcript", "Ctrl+O".to_string()),
-            ("Ayuda", "? y /help".to_string()),
-        ]
+        match self.agent.settings_cat {
+            0 => vec![
+                (
+                    "Modelo".into(),
+                    format!("{}/{}", self.agent.provider, self.agent.model),
+                ),
+                ("Workspace".into(), ws),
+                ("Sesión".into(), th),
+                (
+                    "Daemon".into(),
+                    if self.daemon {
+                        "en marcha".into()
+                    } else {
+                        "detenido".into()
+                    },
+                ),
+                ("Inspector".into(), "↵ abrir".into()),
+                ("Transcript".into(), "Ctrl+O".into()),
+                ("Ayuda".into(), "? y /help".into()),
+            ],
+            1 => {
+                let mut rows: Vec<(String, String)> = self
+                    .agent
+                    .settings_providers
+                    .iter()
+                    .map(|p| {
+                        let name = p["name"].as_str().unwrap_or("-").to_string();
+                        let kind = p["kind"].as_str().unwrap_or("-");
+                        let model = p["model"].as_str().unwrap_or("-");
+                        let state = if p["has_secret"].as_bool() == Some(true) {
+                            "con secreto"
+                        } else if name == "sim" {
+                            "local"
+                        } else {
+                            "sin secreto"
+                        };
+                        (name, format!("{kind} · {model} · {state}"))
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    rows.push((
+                        "(ninguno)".into(),
+                        if self.agent.settings_loading {
+                            "cargando…".into()
+                        } else {
+                            "sin proveedores en providers.toml".into()
+                        },
+                    ));
+                }
+                rows.push(("Añadir proveedor".into(), "hli provider add".into()));
+                rows
+            }
+            2 => vec![
+                (
+                    "Color".into(),
+                    if self.no_color {
+                        "desactivado".into()
+                    } else {
+                        "activo".into()
+                    },
+                ),
+                (
+                    "ASCII".into(),
+                    if self.ascii {
+                        "sí".into()
+                    } else {
+                        "no".into()
+                    },
+                ),
+                (
+                    "Ratón".into(),
+                    if self.mouse_enabled {
+                        "activo".into()
+                    } else {
+                        "desactivado".into()
+                    },
+                ),
+                (
+                    "Rueda".into(),
+                    format!("{} líneas", self.agent.viewport.wheel_speed),
+                ),
+                (
+                    "Statusline".into(),
+                    if Self::statusline_command().is_some() {
+                        "configurada".into()
+                    } else {
+                        "sin ui.toml".into()
+                    },
+                ),
+            ],
+            3 => {
+                let mut rows: Vec<(String, String)> = self
+                    .agent
+                    .settings_modules
+                    .iter()
+                    .map(|m| {
+                        let name = m["name"].as_str().unwrap_or("-").to_string();
+                        let version = m["version"].as_str().unwrap_or("-");
+                        let signed = m["signed"].as_bool().unwrap_or(false);
+                        (
+                            name,
+                            format!(
+                                "{version} · {}",
+                                if signed { "firmado" } else { "sin firma" }
+                            ),
+                        )
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    rows.push((
+                        "(ninguno)".into(),
+                        if self.agent.settings_loading {
+                            "cargando…".into()
+                        } else {
+                            "sin módulos instalados".into()
+                        },
+                    ));
+                }
+                rows.push(("Instalar módulo".into(), "hli module install".into()));
+                rows
+            }
+            4 => {
+                let mut rows: Vec<(String, String)> = self
+                    .agent
+                    .settings_mchs
+                    .iter()
+                    .map(|m| {
+                        (
+                            m["name"].as_str().unwrap_or("-").to_string(),
+                            m["state"].as_str().unwrap_or("-").to_string(),
+                        )
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    rows.push((
+                        "(ninguno)".into(),
+                        if self.agent.settings_loading {
+                            "cargando…".into()
+                        } else {
+                            "sin procesos MCH".into()
+                        },
+                    ));
+                }
+                rows.push(("Abrir Inspector MCH".into(), "↵ abrir".into()));
+                rows
+            }
+            _ => vec![
+                ("HLI_HOME".into(), self.home.display().to_string()),
+                ("Versión".into(), env!("CARGO_PKG_VERSION").to_string()),
+                (
+                    "Precios".into(),
+                    if self.agent.settings_prices == 0 {
+                        "sin prices.yaml".into()
+                    } else {
+                        format!("{} entradas", self.agent.settings_prices)
+                    },
+                ),
+                (
+                    "Base de datos".into(),
+                    self.home.join("hli.db").display().to_string(),
+                ),
+            ],
+        }
     }
 
-    /// Teclado de la vista. Devuelve `true` para salir de HLI.
     pub fn settings_key(&mut self, k: KeyEvent) -> bool {
-        let n = self.settings_items().len();
+        let rows = self.settings_rows().len();
         match k.code {
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.agent.settings_cat = self.agent.settings_cat.saturating_sub(1);
+                self.agent.settings_sel = 0;
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
+                let last = Self::SETTINGS_CATEGORIES.len() - 1;
+                self.agent.settings_cat = (self.agent.settings_cat + 1).min(last);
+                self.agent.settings_sel = 0;
+            }
             KeyCode::Up => {
                 self.agent.settings_sel = self.agent.settings_sel.saturating_sub(1);
             }
-            KeyCode::Down if self.agent.settings_sel + 1 < n => {
+            KeyCode::Down if self.agent.settings_sel + 1 < rows => {
                 self.agent.settings_sel += 1;
             }
             KeyCode::Enter => {
-                let label = self
-                    .settings_items()
-                    .get(self.agent.settings_sel)
-                    .map(|(l, _)| *l);
-                match label {
-                    Some("Modelo") | Some("Proveedores") => {
+                let row = self.settings_rows().get(self.agent.settings_sel).cloned();
+                let Some((label, _)) = row else { return false };
+                match (self.agent.settings_cat, label.as_str()) {
+                    (0, "Modelo") => {
                         self.mode = TuiMode::Agent;
                         self.open_model_picker();
                     }
-                    Some("Inspector") => self.mode = TuiMode::Inspector,
-                    Some("Transcript") => self.open_transcript(),
-                    Some("Ayuda") => {
+                    (0, "Inspector") => self.mode = TuiMode::Inspector,
+                    (0, "Transcript") => self.open_transcript(),
+                    (0, "Ayuda") => {
                         self.mode = TuiMode::Agent;
                         self.help = true;
+                    }
+                    (1, "Añadir proveedor") => {
+                        self.agent.push(
+                            AgentKind::Info,
+                            "hli provider add <nombre> --kind openai --base-url URL --model M"
+                                .to_string(),
+                        );
+                    }
+                    (1, name) => {
+                        if let Some(p) = self
+                            .agent
+                            .settings_providers
+                            .iter()
+                            .find(|p| p["name"].as_str() == Some(name))
+                        {
+                            self.agent.provider = name.to_string();
+                            self.agent.model =
+                                p["model"].as_str().unwrap_or(&self.agent.model).to_string();
+                        }
+                    }
+                    (3, "Instalar módulo") => {
+                        self.agent.push(
+                            AgentKind::Info,
+                            "hli module install <archivo.hlimod>".to_string(),
+                        );
+                    }
+                    (4, _) => {
+                        self.mode = TuiMode::Inspector;
+                        self.tab = 5;
                     }
                     _ => {}
                 }
@@ -4423,6 +4619,23 @@ impl App {
                 self.agent.thread_sel = self.threads.len().saturating_sub(1);
                 self.agent.lists_loading = false;
             }
+            crate::daemon_async::Reply::Settings(result) => {
+                if let Ok(v) = result {
+                    self.agent.settings_providers = v["providers"]["providers"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    self.agent.settings_modules =
+                        v["modules"].as_array().cloned().unwrap_or_default();
+                    self.agent.settings_mchs = v["mchs"].as_array().cloned().unwrap_or_default();
+                    self.agent.settings_prices = v["prices"]
+                        .as_array()
+                        .map(|a| a.len())
+                        .or_else(|| v["prices"].as_object().map(|o| o.len()))
+                        .unwrap_or(0);
+                }
+                self.agent.settings_loading = false;
+            }
             crate::daemon_async::Reply::Transcript(result) => match result {
                 Ok(v) => self.apply_transcript(&v),
                 Err(e) => {
@@ -4460,6 +4673,7 @@ impl App {
             self.agent.model_loading = false;
             self.agent.lists_loading = false;
             self.agent.transcript_loading = false;
+            self.agent.settings_loading = false;
         }
     }
 

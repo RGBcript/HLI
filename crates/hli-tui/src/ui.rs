@@ -1325,25 +1325,74 @@ fn draw_model(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// Vista de configuración. No es una pestaña: se abre con `/settings` y
-/// vuelve al chat con Esc. Todo lo que muestra sale del estado real.
+/// Vista de configuración: dos paneles, categorías a la izquierda y valores
+/// a la derecha. Se abre con `/settings` y vuelve al chat con Esc.
 fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
     let t = Theme::for_app(app);
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        "configuración de HLI",
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(22),
+            Constraint::Length(2),
+            Constraint::Min(20),
+        ])
+        .split(area);
+
+    let mut nav: Vec<Line> = Vec::new();
+    nav.push(Line::from(Span::styled(
+        "configuración",
         Style::default().fg(t.artifact),
     )));
-    lines.push(Line::from(""));
-    for (i, (label, value)) in app.settings_items().iter().enumerate() {
-        let active = i == app.agent.settings_sel;
-        lines.push(Line::from(vec![
+    nav.push(Line::from(""));
+    for (i, name) in App::SETTINGS_CATEGORIES.iter().enumerate() {
+        let active = i == app.agent.settings_cat;
+        nav.push(Line::from(vec![
             Span::styled(
                 if active { " ▸ " } else { "   " },
                 Style::default().fg(t.primary),
             ),
             Span::styled(
-                format!("{label:<13}"),
+                *name,
+                if active {
+                    Style::default().fg(t.primary).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.memory)
+                },
+            ),
+        ]));
+    }
+    nav.push(Line::from(""));
+    nav.push(Line::from(Span::styled(
+        "←→ categoría",
+        Style::default().fg(t.artifact),
+    )));
+    f.render_widget(
+        Paragraph::new(nav).block(Block::default().borders(Borders::ALL).title(" settings ")),
+        cols[0],
+    );
+
+    let rows = app.settings_rows();
+    let mut body: Vec<Line> = Vec::new();
+    body.push(Line::from(Span::styled(
+        App::SETTINGS_CATEGORIES[app.agent.settings_cat],
+        Style::default().fg(t.artifact).add_modifier(Modifier::BOLD),
+    )));
+    body.push(Line::from(""));
+    if app.agent.settings_loading && rows.len() <= 1 {
+        body.push(Line::from(Span::styled(
+            "cargando…",
+            Style::default().fg(t.artifact),
+        )));
+    }
+    for (i, (label, value)) in rows.iter().enumerate() {
+        let active = i == app.agent.settings_sel;
+        body.push(Line::from(vec![
+            Span::styled(
+                if active { " ▸ " } else { "   " },
+                Style::default().fg(t.primary),
+            ),
+            Span::styled(
+                format!("{label:<22}"),
                 if active {
                     Style::default().fg(t.primary).add_modifier(Modifier::BOLD)
                 } else {
@@ -1353,16 +1402,16 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(value.clone(), Style::default().fg(t.artifact)),
         ]));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
+    body.push(Line::from(""));
+    body.push(Line::from(Span::styled(
         "↑↓ mover · ↵ abrir · esc volver al chat",
         Style::default().fg(t.artifact),
     )));
     f.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(" settings "))
+        Paragraph::new(body)
+            .block(Block::default().borders(Borders::ALL).title(" opciones "))
             .wrap(Wrap { trim: false }),
-        area,
+        cols[2],
     );
 }
 

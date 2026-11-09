@@ -19,6 +19,7 @@ pub enum Request {
         workspace_id: String,
         branch_id: Option<String>,
     },
+    Settings,
 }
 
 #[derive(Debug)]
@@ -27,6 +28,7 @@ pub enum Reply {
     Workspaces(Result<Value, String>),
     Threads(Result<Value, String>),
     Transcript(Result<Value, String>),
+    Settings(Result<Value, String>),
 }
 
 pub struct AsyncDaemon {
@@ -51,6 +53,24 @@ impl AsyncDaemon {
                         "thread.list",
                         json!({ "workspace_id": workspace_id }),
                     )),
+                    Request::Settings => {
+                        // Lo que la vista necesita, en un solo viaje y en un
+                        // hilo aparte.
+                        // Consultas de sólo lectura para una vista: techo corto
+                        // para que cuatro llamadas no sumen 16 s.
+                        let budget = std::time::Duration::from_millis(800);
+                        let providers =
+                            client::call_with_timeout("provider.list", json!({}), budget);
+                        let modules = client::call_with_timeout("module.list", json!({}), budget);
+                        let mchs = client::call_with_timeout("mch.list", json!({}), budget);
+                        let prices = client::call_with_timeout("prices.list", json!({}), budget);
+                        Reply::Settings(Ok(json!({
+                            "providers": providers.unwrap_or(Value::Null),
+                            "modules": modules.unwrap_or(Value::Null),
+                            "mchs": mchs.unwrap_or(Value::Null),
+                            "prices": prices.unwrap_or(Value::Null),
+                        })))
+                    }
                     Request::Transcript {
                         workspace_id,
                         branch_id,

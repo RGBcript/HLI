@@ -2934,6 +2934,10 @@ fn settings_view_shows_real_state() {
     let text = render(&app, 100, 30);
     assert!(text.contains("settings"));
     assert!(text.contains("Modelo"));
+    assert!(text.contains("Proveedores"));
+    // Datos es la última categoría.
+    app.agent.settings_cat = 5;
+    let text = render(&app, 100, 30);
     assert!(text.contains("HLI_HOME"));
     assert!(text.contains("Versión"));
 }
