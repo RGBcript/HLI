@@ -50,6 +50,81 @@ pub struct Prepared {
     pub sim_delay_ms: Option<u64>,
 }
 
+/// Plan declarado por el provider de prueba: sólo la tool declarada, nunca la
+/// que emitirá durante la ejecución.
+#[cfg(feature = "fixture-provider")]
+fn fixture_declared_plan(
+    run: &Run,
+    manifest: &ContextManifest,
+    kind: &str,
+    granted: &[String],
+) -> Result<Option<RunPlan>, HliError> {
+    if kind != "fixture" {
+        return Ok(None);
+    }
+    let f = crate::fixture::FixtureProvider::from_env();
+    let step = PlanStep::new(
+        1,
+        "Declared operation",
+        &f.declared_tool,
+        &f.declared_effect,
+        Some(&f.declared_tool),
+        None,
+    );
+    Ok(Some(hli_agent::plan_from_provider(
+        run,
+        manifest,
+        "fixture plan",
+        vec![step],
+        granted,
+    )?))
+}
+
+#[cfg(not(feature = "fixture-provider"))]
+fn fixture_declared_plan(
+    _run: &Run,
+    _manifest: &ContextManifest,
+    _kind: &str,
+    _granted: &[String],
+) -> Result<Option<RunPlan>, HliError> {
+    Ok(None)
+}
+
+/// Resultado interno del provider de prueba.
+#[allow(dead_code)]
+type FixtureCall = (
+    String,
+    hli_provider::Usage,
+    String,
+    String,
+    String,
+    Option<ToolCall>,
+);
+
+#[cfg(feature = "fixture-provider")]
+fn fixture_complete(run: &Run, manifest: &ContextManifest) -> Result<FixtureCall, HliError> {
+    let f = crate::fixture::FixtureProvider::from_env();
+    let req = hli_agent::ProviderRequest {
+        run_id: run.id.clone(),
+        prompt: run.prompt.clone(),
+        manifest: manifest.clone(),
+    };
+    let resp = hli_agent::Provider::complete(&f, &req)?;
+    Ok((
+        resp.text,
+        hli_provider::Usage::default(),
+        "fixture".into(),
+        "fixture-1".into(),
+        "fixture".into(),
+        resp.tool_call,
+    ))
+}
+
+#[cfg(not(feature = "fixture-provider"))]
+fn fixture_complete(_run: &Run, _manifest: &ContextManifest) -> Result<FixtureCall, HliError> {
+    Err(HliError::invalid("provider fixture no compilado"))
+}
+
 fn permission_label(tool: &str) -> &'static str {
     match hli_agent::permission_for(tool) {
         hli_agent::Permission::Allow => "allow",
@@ -218,7 +293,10 @@ pub fn plan_and_maybe_execute(
     p: Prepared,
 ) -> Result<Value, HliError> {
     let granted = effect_grants(r, &p.run.workspace_id);
-    let mut plan = hli_agent::build_run_plan(&p.run, &p.manifest, &p.prompt, &granted)?;
+    let mut plan = match fixture_declared_plan(&p.run, &p.manifest, &p.provider_kind, &granted)? {
+        Some(plan) => plan,
+        None => hli_agent::build_run_plan(&p.run, &p.manifest, &p.prompt, &granted)?,
+    };
 
     let (snapshot, problems) = build_snapshot(
         home,
@@ -434,6 +512,12 @@ pub fn execute_prepared_run(
     let mut tool_call = None;
     let call: Result<(String, hli_provider::Usage, String, String, String), HliError> =
         match snapshot.provider_kind.as_str() {
+            "fixture" => {
+                let (text, usage, provider, model, adapter, call) =
+                    fixture_complete(&run, &manifest)?;
+                tool_call = call;
+                Ok((text, usage, provider, model, adapter))
+            }
             "sim" => {
                 let p = hli_agent::SimProvider;
                 let req = hli_agent::ProviderRequest {
@@ -719,7 +803,15 @@ pub fn execute_prepared_run(
                 snap2.plan_id = revised.plan_id.clone();
                 snap2.created_at = hli_core::time::now_iso();
                 snap2.seal();
+                let new_id = revised.plan_id.clone();
                 let _ = w.revise_plan(revised, Some(serde_json::to_value(&snap2)?))?;
+                let _ = w.set_plan_status(
+                    &plan.plan_id,
+                    "cancelled",
+                    None,
+                    None,
+                    Some(format!("superseded_by:{new_id}")),
+                );
                 state = "waiting_approval";
                 result["pending_tool"] = serde_json::to_value(&call)?;
             }
@@ -766,6 +858,15 @@ pub fn execute_prepared_run(
         .iter()
         .filter_map(|e| e["event_id"].as_str().map(str::to_string))
         .collect();
+
+    // Una revisión pendiente no es un estado terminal: el run espera la
+    // aprobación del plan nuevo y no genera receipt.
+    if state == "waiting_approval" {
+        let run = w.set_run_state(run_id, "waiting_approval")?;
+        let _ = w.set_approval_kind(run_id, Some("plan"));
+        cancels().lock().unwrap().remove(run_id);
+        return Ok(run);
+    }
 
     // El estado del plan se fija antes del receipt para que la procedencia
     // registrada sea el estado terminal real, no `executing`.
@@ -963,7 +1064,7 @@ fn stale_reasons(
             env!("CARGO_PKG_VERSION")
         ));
     }
-    if s.provider_kind != "sim" {
+    if s.provider_kind != "sim" && s.provider_kind != "fixture" {
         let cfg = providers::load(home);
         match cfg.providers.get(&s.provider_id) {
             Some(e) => {

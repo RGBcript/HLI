@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use hli_core::{HliError, time::now_iso};
+#[cfg(feature = "fixture-provider")]
+mod fixture;
 mod providers;
 mod runs;
 mod supervisor;

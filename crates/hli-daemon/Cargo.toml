@@ -20,5 +20,10 @@ sha2.workspace = true
 hex.workspace = true
 toml = "0.8"
 
+[features]
+# Provider de prueba para el gate de revisión de plan. Nunca se activa en el
+# build de producción ni en `dist`.
+fixture-provider = []
+
 [dev-dependencies]
 hli-module-fixture = { path = "../hli-module-fixture" }
