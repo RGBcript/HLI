@@ -1242,8 +1242,8 @@ fn draw_agent(f: &mut Frame, app: &App) {
 /// y lo que se envía en `run.start`.
 fn draw_model(f: &mut Frame, area: Rect, app: &App) {
     let t = Theme::for_app(app);
-    let height = (app.agent.providers.len() as u16 + 5).min(area.height.saturating_sub(2));
-    let rect = overlay_rect(area, area.width.saturating_sub(8), height);
+    let height = (app.agent.providers.len() as u16 + 8).min(area.height.saturating_sub(2));
+    let rect = overlay_rect(area, 72.min(area.width), height);
     f.render_widget(Clear, rect);
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
@@ -1284,6 +1284,10 @@ fn draw_model(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "↑↓ elegir · ↵ aplicar · esc cerrar",
+        Style::default().fg(t.artifact),
+    )));
+    lines.push(Line::from(Span::styled(
+        "más proveedores: hli provider set",
         Style::default().fg(t.artifact),
     )));
     f.render_widget(
