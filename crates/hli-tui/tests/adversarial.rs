@@ -144,6 +144,42 @@ fn mouse_events_outside_the_screen_are_ignored() {
     assert!(draw_no_panic(&app, 100, 30));
 }
 
+// --- Hallazgos de la auditoría --------------------------------------------
+
+#[test]
+fn sanitize_strips_ansi_and_control_characters() {
+    let dirty = "\u{1b}[31mrojo\u{1b}[0m\u{0}\u{7}ok\nlinea\tdato";
+    assert_eq!(hli_tui::app::sanitize(dirty), "rojook\nlinea\tdato");
+}
+
+#[test]
+fn orphan_events_are_not_dropped() {
+    let events = vec![
+        json!({"sequence": 1, "type": "plan.created"}),
+        json!({"sequence": 2, "type": "permission.requested", "run_id": "run_x"}),
+    ];
+    let lines = hli_tui::app::project_thread(&[], &events);
+    assert!(!lines.is_empty(), "los eventos sin run se perdieron");
+}
+
+#[test]
+fn worker_closed_clears_loading_state() {
+    let mut app = App::demo();
+    app.agent.lists_loading = true;
+    app.agent.settings_loading = true;
+    app.daemon_async = hli_tui::daemon_async::AsyncDaemon::closed();
+    app.drain_daemon();
+    assert!(!app.agent.lists_loading);
+    assert!(!app.agent.settings_loading);
+    assert!(app.agent.daemon_closed);
+}
+
+#[test]
+fn wrapped_lines_uses_the_real_width_below_twenty() {
+    // 25 columnas de texto en un terminal de 10: 3 filas, no 2.
+    assert_eq!(wrapped_lines(&"x".repeat(25), 10), 3);
+}
+
 #[test]
 fn click_on_first_list_row_selects_index_zero() {
     use hli_tui::app::AgentTab;

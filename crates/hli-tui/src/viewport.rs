@@ -12,7 +12,7 @@ pub const MIN_WIDTH: usize = 20;
 /// Es determinista y no depende del terminal: mismas entradas, mismo total.
 /// Filas que ocupa un detalle expandido con el mismo ancho que el render.
 pub fn detail_rows(input: &str, output: &str, artifacts: bool, error: bool, width: usize) -> usize {
-    let inner = width.saturating_sub(4).max(8);
+    let inner = width.saturating_sub(4).max(1);
     let mut n = 5; // type, status, started, duration, causation
     n += wrapped_lines(input, inner);
     n += wrapped_lines(output, inner);
@@ -27,7 +27,9 @@ pub fn detail_rows(input: &str, output: &str, artifacts: bool, error: bool, widt
 
 pub fn wrapped_lines(text: &str, width: usize) -> usize {
     use unicode_width::UnicodeWidthStr;
-    let width = width.max(MIN_WIDTH);
+    // El render envuelve al ancho real del cuerpo: no se fuerza un mínimo,
+    // o en terminales estrechos el conteo y lo pintado divergen.
+    let width = width.max(1);
     text.split('\n')
         .map(|line| {
             // Ancho de pantalla, no número de caracteres: CJK y emoji ocupan

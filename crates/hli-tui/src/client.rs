@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 
@@ -42,10 +42,16 @@ pub fn call_with_timeout(
     let req = json!({"id": "tui", "cmd": cmd, "args": args});
     writeln!(s, "{}", req).map_err(|e| e.to_string())?;
     s.flush().map_err(|e| e.to_string())?;
+    // Techo de 16 MiB: una respuesta corrupta o maliciosa no debe agotar la
+    // memoria del cliente.
+    const MAX_LINE: u64 = 16 * 1024 * 1024;
     let mut line = String::new();
-    BufReader::new(s)
+    BufReader::new(s.take(MAX_LINE))
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
+    if line.len() as u64 >= MAX_LINE {
+        return Err("respuesta del daemon demasiado grande".into());
+    }
     let resp: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     if resp["ok"].as_bool() == Some(true) {
         Ok(resp["data"].clone())

@@ -214,6 +214,7 @@ pub struct AgentState {
     pub settings_modules: Vec<Value>,
     pub settings_mchs: Vec<Value>,
     pub settings_prices: usize,
+    pub daemon_closed: bool,
     pub providers: Vec<Value>,
     pub offer: Offer,
     pub pending: Option<String>,
@@ -829,6 +830,7 @@ impl Default for AgentState {
             settings_modules: Vec::new(),
             settings_mchs: Vec::new(),
             settings_prices: 0,
+            daemon_closed: false,
             providers: Vec::new(),
             offer: Offer::None,
             pending: None,
@@ -874,7 +876,7 @@ impl AgentState {
         self.note_push();
         self.lines.push(AgentLine {
             kind,
-            text: text.into(),
+            text: sanitize(&text.into()),
             detail: None,
             expanded: false,
         });
@@ -949,6 +951,7 @@ pub struct App {
     pub statusline_at: Instant,
     pub spinner_at: Instant,
     pub terminal_width: usize,
+    pub terminal_height: usize,
     pub transcript_top: usize,
     /// Filas renderizadas → índice de línea lógica.
     pub hit_rows: Vec<(usize, usize)>,
@@ -1016,6 +1019,7 @@ impl App {
             statusline_at: Instant::now() - Duration::from_secs(60),
             spinner_at: Instant::now(),
             terminal_width: 80,
+            terminal_height: 30,
             transcript_top: 3,
             hit_rows: Vec::new(),
             sel: None,
@@ -1104,6 +1108,7 @@ impl App {
             statusline_at: Instant::now() - Duration::from_secs(60),
             spinner_at: Instant::now(),
             terminal_width: 80,
+            terminal_height: 30,
             transcript_top: 3,
             hit_rows: Vec::new(),
             sel: None,
@@ -1699,17 +1704,51 @@ pub fn terminal_summary(run: &Value) -> String {
     lines.join("\n")
 }
 
+/// Quita secuencias de control (ESC/ANSI, NUL, BEL) y conserva saltos y tabs.
+/// El texto viene de un modelo o de un receipt y no debe poder inyectar
+/// secuencias en el terminal ni al exportar.
+pub fn sanitize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => {
+                // ESC [ ... letra final
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    for n in chars.by_ref() {
+                        if n.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            }
+            '\n' | '\t' => out.push(c),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Proyecta el transcript de un thread desde runs y eventos durables.
 ///
-/// Orden: runs por `started_at`; dentro de cada run, eventos por `sequence`.
-/// Es puro y determinista: proyectar dos veces el mismo dato da lo mismo.
+/// Orden: runs por `started_at` y, en empate, por id; dentro de cada run,
+/// eventos por `sequence`. Los eventos sin run no se descartan.
 pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
     let mut ordered: Vec<&Value> = runs.iter().collect();
+    // Orden estable: por inicio y, si coincide o falta, por id.
     ordered.sort_by(|a, b| {
         a["started_at"]
             .as_str()
             .unwrap_or("")
             .cmp(b["started_at"].as_str().unwrap_or(""))
+            .then_with(|| {
+                a["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(b["id"].as_str().unwrap_or(""))
+            })
     });
     let mut out = Vec::new();
     for run in ordered {
@@ -1719,7 +1758,7 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
         {
             out.push(AgentLine {
                 kind: AgentKind::User,
-                text: prompt.to_string(),
+                text: sanitize(prompt),
                 detail: None,
                 expanded: false,
             });
@@ -1747,7 +1786,7 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
             if is_terminal_event(e) && !answer_placed && !answer.is_empty() {
                 out.push(AgentLine {
                     kind: AgentKind::Hli,
-                    text: answer.to_string(),
+                    text: sanitize(answer),
                     detail: None,
                     expanded: false,
                 });
@@ -1765,7 +1804,7 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
         if !answer_placed && !answer.is_empty() {
             out.push(AgentLine {
                 kind: AgentKind::Hli,
-                text: answer.to_string(),
+                text: sanitize(answer),
                 detail: None,
                 expanded: false,
             });
@@ -1781,6 +1820,26 @@ pub fn project_thread(runs: &[Value], events: &[Value]) -> Vec<AgentLine> {
             detail: None,
             expanded: false,
         });
+    }
+    // Eventos sin run asociado (plan, permisos sueltos): no se descartan, se
+    // muestran al final en orden de secuencia.
+    let mut orphans: Vec<&Value> = events
+        .iter()
+        .filter(|e| {
+            let rid = e["run_id"].as_str().unwrap_or("");
+            !runs.iter().any(|r| r["id"].as_str() == Some(rid))
+        })
+        .collect();
+    orphans.sort_by_key(|e| e["sequence"].as_i64().unwrap_or(0));
+    for e in orphans {
+        if let Some(line) = event_line(e) {
+            out.push(AgentLine {
+                kind: AgentKind::Tool,
+                text: sanitize(&line),
+                detail: event_detail(e),
+                expanded: false,
+            });
+        }
     }
     out
 }
@@ -3217,9 +3276,25 @@ impl App {
             self.statusline_cache = None;
             return;
         };
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
             let _ = writeln!(stdin, "{payload}");
+            // Cerrar stdin: el comando debe terminar por sí mismo.
+            drop(stdin);
+        }
+        // Un statusline colgado no puede colgar la TUI: techo de un segundo.
+        let start = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() < std::time::Duration::from_secs(1) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                _ => {
+                    let _ = child.kill();
+                    break;
+                }
+            }
         }
         let out = child.wait_with_output().ok();
         let text = out
@@ -3431,6 +3506,7 @@ impl App {
     /// Área aproximada del transcript: cabecera (3), compositor (3) y estado (1)
     /// quedan fuera del área desplazable.
     pub fn observe_terminal(&mut self, width: u16, height: u16) {
+        let total_height = height as usize;
         let area = ratatui::layout::Rect::new(0, 0, width, height);
         let regions = crate::layout::agent_regions(area, self.agent.offer != Offer::None);
         // El cuerpo no lleva bordes laterales; se reserva una columna para la
@@ -3440,6 +3516,7 @@ impl App {
         self.transcript_width = inner_w;
         self.transcript_height = height;
         self.terminal_width = width as usize;
+        self.terminal_height = total_height;
         self.transcript_top = crate::layout::body_content_top(regions.body);
         let mut rows: Vec<(usize, usize)> = Vec::new();
         let mut y = 0usize;
@@ -3664,8 +3741,8 @@ impl App {
             && line.detail.is_some()
         {
             line.expanded = !line.expanded;
-            let (w, h) = (self.transcript_width, self.transcript_height + 9);
-            self.observe_terminal(w as u16, h as u16);
+            // El layout se recalcula con el tamaño real, no con un +9 fijo.
+            self.observe_terminal(self.terminal_width as u16, self.terminal_height as u16);
         }
     }
 
@@ -4648,10 +4725,28 @@ impl App {
         }
     }
 
-    /// Aplica lo que el worker haya terminado. Sin esperas.
+    /// Aplica lo que el worker haya terminado. Sin esperas. Si el worker
+    /// murió, limpia los estados de carga: nunca se queda en `cargando…`.
     pub fn drain_daemon(&mut self) {
-        while let Some(reply) = self.daemon_async.try_recv() {
-            self.apply_daemon_reply(reply);
+        loop {
+            match self.daemon_async.poll() {
+                crate::daemon_async::Poll::Reply(reply) => self.apply_daemon_reply(reply),
+                crate::daemon_async::Poll::Empty => break,
+                crate::daemon_async::Poll::Closed => {
+                    self.agent.model_loading = false;
+                    self.agent.lists_loading = false;
+                    self.agent.transcript_loading = false;
+                    self.agent.settings_loading = false;
+                    if !self.agent.daemon_closed {
+                        self.agent.daemon_closed = true;
+                        self.agent.push(
+                            AgentKind::Error,
+                            "el worker del daemon se detuvo; reinicia hli".to_string(),
+                        );
+                    }
+                    break;
+                }
+            }
         }
     }
 

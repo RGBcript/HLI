@@ -4,7 +4,7 @@
 //! `drain`. Si el daemon tarda, como mucho se ve "cargando…", nunca una
 //! pantalla congelada.
 
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use serde_json::{Value, json};
 
@@ -31,6 +31,14 @@ pub enum Reply {
     Settings(Result<Value, String>),
 }
 
+#[derive(Debug)]
+pub enum Poll {
+    Empty,
+    Reply(Reply),
+    /// El worker terminó: no habrá más respuestas.
+    Closed,
+}
+
 pub struct AsyncDaemon {
     tx: Sender<Request>,
     rx: Receiver<Reply>,
@@ -53,24 +61,7 @@ impl AsyncDaemon {
                         "thread.list",
                         json!({ "workspace_id": workspace_id }),
                     )),
-                    Request::Settings => {
-                        // Lo que la vista necesita, en un solo viaje y en un
-                        // hilo aparte.
-                        // Consultas de sólo lectura para una vista: techo corto
-                        // para que cuatro llamadas no sumen 16 s.
-                        let budget = std::time::Duration::from_millis(800);
-                        let providers =
-                            client::call_with_timeout("provider.list", json!({}), budget);
-                        let modules = client::call_with_timeout("module.list", json!({}), budget);
-                        let mchs = client::call_with_timeout("mch.list", json!({}), budget);
-                        let prices = client::call_with_timeout("prices.list", json!({}), budget);
-                        Reply::Settings(Ok(json!({
-                            "providers": providers.unwrap_or(Value::Null),
-                            "modules": modules.unwrap_or(Value::Null),
-                            "mchs": mchs.unwrap_or(Value::Null),
-                            "prices": prices.unwrap_or(Value::Null),
-                        })))
-                    }
+                    Request::Settings => Reply::Settings(load_settings()),
                     Request::Transcript {
                         workspace_id,
                         branch_id,
@@ -96,13 +87,35 @@ impl AsyncDaemon {
         Self { tx, rx }
     }
 
+    /// Solo para tests: un cliente cuyo worker ya no existe.
+    #[doc(hidden)]
+    pub fn closed() -> Self {
+        let (tx, jobs) = channel::<Request>();
+        drop(jobs);
+        let (replies, rx) = channel::<Reply>();
+        drop(replies);
+        Self { tx, rx }
+    }
+
     pub fn request(&self, req: Request) {
         let _ = self.tx.send(req);
     }
 
-    /// Sin bloquear: lo que haya listo, nada más.
+    /// Sin bloquear. Distingue «nada todavía» de «el worker murió»: sin eso,
+    /// la UI se quedaba en `cargando…` para siempre.
+    pub fn poll(&self) -> Poll {
+        match self.rx.try_recv() {
+            Ok(reply) => Poll::Reply(reply),
+            Err(TryRecvError::Empty) => Poll::Empty,
+            Err(TryRecvError::Disconnected) => Poll::Closed,
+        }
+    }
+
     pub fn try_recv(&self) -> Option<Reply> {
-        self.rx.try_recv().ok()
+        match self.poll() {
+            Poll::Reply(reply) => Some(reply),
+            _ => None,
+        }
     }
 
     /// Solo para tests y arranques: espera un resultado con un techo.
@@ -115,4 +128,35 @@ impl Default for AsyncDaemon {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Las cuatro consultas de Settings en paralelo: 800 ms de techo total, no por
+/// consulta. Antes, un daemon lento sumaba 3,2 s antes de pintar la vista.
+fn load_settings() -> Result<Value, String> {
+    let budget = std::time::Duration::from_millis(800);
+    let calls: [(&'static str, Value); 4] = [
+        ("provider.list", json!({})),
+        ("module.list", json!({})),
+        ("mch.list", json!({})),
+        ("prices.list", json!({})),
+    ];
+    let handles: Vec<_> = calls
+        .into_iter()
+        .map(|(cmd, args)| std::thread::spawn(move || client::call_with_timeout(cmd, args, budget)))
+        .collect();
+    let mut results = Vec::with_capacity(4);
+    for handle in handles {
+        results.push(handle.join().unwrap_or_else(|_| Err("worker caído".into())));
+    }
+    let mut it = results.into_iter();
+    let providers = it.next().unwrap_or_else(|| Err("sin resultado".into()))?;
+    let modules = it.next().unwrap_or_else(|| Err("sin resultado".into()))?;
+    let mchs = it.next().unwrap_or_else(|| Err("sin resultado".into()))?;
+    let prices = it.next().unwrap_or_else(|| Err("sin resultado".into()))?;
+    Ok(json!({
+        "providers": providers,
+        "modules": modules,
+        "mchs": mchs,
+        "prices": prices,
+    }))
 }
