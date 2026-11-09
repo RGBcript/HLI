@@ -151,3 +151,17 @@ hli run status <run_id>      # → completed y receipt con procedencia
 
 Si el proveedor o el modelo cambian entre el plan y la aprobación, HLI invalida
 la aprobación y exige `hli run replan <run_id>` antes de ejecutar.
+
+---
+
+## Aprobar una invocación concreta
+
+Tras aprobar el plan, la herramienta pide su propio permiso:
+
+```bash
+hli permission list --run <run_id> --status pending
+hli permission approve <request_id> --scope once
+```
+
+`once` se consume, `run` dura hasta que el run termina y `workspace` persiste
+para ese workspace. `shell.execute` nunca se ejecuta.

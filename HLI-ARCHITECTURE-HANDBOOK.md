@@ -519,3 +519,17 @@ base desde un cliente rompe el modelo y debe rechazarse.
   `replan`.
 - La aprobación se liga a `plan_id`; si la instantánea dejó de ser válida se
   emite `plan.invalidated` y se exige `run.replan`.
+
+---
+
+## Permisos por invocación (0.10)
+
+- `hli-agent/src/permissions.rs`: resolución deny/allow/ask, normalización de
+  target, `arguments_hash`, redacción y resumen.
+- `hli-store`: migración `0009_tool_permissions` (`tool_permission_requests`,
+  `tool_grants`, `runs.approval_kind`).
+- `hli-daemon/src/runs.rs`: creación de la solicitud antes de ejecutar,
+  reanudación con verificación de hash y receipt de la decisión.
+- La invocación congelada se guarda en `invocation_json` (privada). Si hubo
+  redacción de claves sensibles, no se persiste y la solicitud no puede
+  reanudarse: se exige replanificar.

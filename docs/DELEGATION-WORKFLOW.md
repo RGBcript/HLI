@@ -126,3 +126,21 @@ prompt → run durable → ContextManifest → RunPlan
 La aprobación cubre el conjunto declarado de efectos. Si durante la ejecución
 aparece una herramienta no declarada, se crea una revisión y el run vuelve a
 esperar. Los permisos interactivos por tool call son el bloque siguiente.
+
+---
+
+## Permisos por invocación
+
+```
+plan aprobado
+→ tool declarada
+→ política (deny | ask | allow)
+→ ask: ToolPermissionRequest durable
+→ waiting_approval (approval_kind = tool)
+→ decisión (once | run | workspace)
+→ verificación de arguments_hash
+→ ejecución exactamente una vez
+```
+
+Una herramienta no declarada obliga a revisar el plan antes de pedir permiso:
+no se autoriza por la vía del permiso concreto.

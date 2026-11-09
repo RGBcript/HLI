@@ -205,6 +205,46 @@ esta tabla verifica la experiencia real en Windows Terminal.
 - El replan no reutiliza la aprobación anterior.
 - Los valores de secreto no aparecen en detalles ni en el receipt.
 
+
+---
+
+## 5. Permisos por invocación (pasos 97–118)
+
+Se ejecutan después del bloque anterior. Cada paso usa un workspace limpio salvo
+donde se indique.
+
+| # | Acción | Qué debe verse | Registro |
+|---|---|---|---|
+| 97 | Aprobar un Plan con `write` | el plan pasa a aprobado | |
+| 98 | Estado | overlay `Permission required` con tool y target | |
+| 99 | `v` detalles | `arguments_hash`, resumen, política y grants | |
+| 100 | Confirmar | target normalizado y hash con prefijo `sha256:` | |
+| 101 | `y` allow once | el overlay se cierra y la tool ejecuta | |
+| 102 | Confirmar ejecución única | un solo `tool.completed` | |
+| 103 | Iniciar otro run | plan nuevo, permiso nuevo | |
+| 104 | `a` allow for run | ejecuta sin pedir de nuevo en ese run | |
+| 105 | Confirmar | no aparece una segunda pregunta dentro del run | |
+| 106 | Confirmar expiración | un run nuevo vuelve a preguntar | |
+| 107 | `w` allow in workspace | tool ejecutada | |
+| 108 | Nuevo run en el mismo workspace | no pregunta por la misma herramienta | |
+| 109 | `n` denegar | run falla, tool no ejecuta | |
+| 110 | Confirmar no ejecución | sin fichero, evento `tool.permission_denied` | |
+| 111 | Cerrar la TUI con permiso pendiente | el daemon conserva la solicitud | |
+| 112 | `resume` | overlay recuperado | |
+| 113 | Confirmar | mismo `request_id`, sin duplicar | |
+| 114 | Aprobar desde otra CLI | `hli permission approve <id> --scope once` | |
+| 115 | Overlay | se cierra solo | |
+| 116 | Receipt | `permission_decisions`, hash y scope | |
+| 117 | JSONL | `tool.permission_requested/approved/execution_resumed` | |
+| 118 | Inspector | solicitud, decisión, actor y timestamps | |
+
+### Resultado esperado
+
+- El plan aprobado no autoriza la invocación: siempre se resuelve la política.
+- `once` se consume; `run` expira con el run; `workspace` persiste.
+- `shell.execute` nunca se ejecuta.
+- Ningún valor de secreto aparece en overlay, Inspector, CLI, MCP ni receipt.
+
 ---
 
 ## 3. Resultado firmable
@@ -217,7 +257,7 @@ Commit evaluado:
 Dimensiones probadas:
 Fecha:
 Paso 0 (teclado):       OK / REGRESIÓN
-Pasos ejecutados:       68 + 28 (planificación)
+Pasos ejecutados:       68 + 28 (planificación) + 22 (permisos)
 Resultado:              PENDIENTE / PASA / FALLA
 Observaciones:
 Firma:

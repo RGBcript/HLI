@@ -266,8 +266,35 @@ prompt → run queued → planning → plan durable
 
 La aprobación de plan autoriza el **conjunto declarado de efectos** (leer,
 escribir, red, servicio externo, destructivo, desconocido). No autoriza una
-invocación concreta de herramienta: los permisos interactivos por tool call no
-están implementados en este bloque.
+invocación concreta.
+
+### Permiso por invocación
+
+Cuando una herramienta declarada requiere permiso, el run pasa a
+`waiting_approval` con `approval_kind = tool` y se crea una solicitud durable:
+
+```
+Permission required
+Request: perm_…
+Tool: filesystem.write
+Target: crates/hli-store/src/lib.rs
+Effect: write
+[y] once  [a] run  [w] workspace  [n] deny  [v] details  [Esc] cancel
+```
+
+- `y` autoriza **esa** invocación y se consume; `a` cubre el run; `w` crea un
+  grant persistente del workspace para esa herramienta y efecto.
+- Al decidir se verifica `arguments_hash`: si los argumentos cambiaron, la
+  solicitud antigua no autoriza la nueva.
+- `deny` no ejecuta la herramienta y cierra el run como fallido.
+- `Esc` cancela la solicitud y el run.
+- Los detalles muestran hash, resumen redactado, target normalizado, política y
+  grants, nunca valores de secreto.
+- `shell.execute` se deniega siempre, aunque haya grant.
+
+La aprobación del plan sigue siendo previa: plan aprobado → herramienta
+declarada → política → `allow | deny | ask` → solicitud → decisión → ejecución
+exactamente una vez.
 
 ## Límites de este slice
 

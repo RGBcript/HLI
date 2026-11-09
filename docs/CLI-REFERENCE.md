@@ -18,6 +18,11 @@ hli run plan <run_id>
 hli run approve <run_id> [--scope once|run|workspace] [--plan PLAN_ID]
 hli run reject <run_id> --reason TEXTO [--plan PLAN_ID]
 hli run replan <run_id> [--plan PLAN_ID] [--reason TEXTO]...
+hli permission list [--run ID] [--status pending]
+hli permission inspect <request_id>
+hli permission approve <request_id> --scope once|run|workspace
+hli permission deny <request_id> [--reason TEXTO]
+hli permission cancel <request_id>
 hli manifest get <manifest_id>
 hli prices list
 hli module install <file.hlimod> | list | inspect <name> | test <name> | remove <name>

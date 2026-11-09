@@ -24,3 +24,17 @@ repositorio de forma privada y describe versión, impacto y reproducción.
 
 No se promete aislamiento del sistema operativo ni resistencia a un atacante con
 control del usuario. Ver `THREAT-MODEL.md`.
+
+---
+
+## Permisos por invocación
+
+- El plan aprobado autoriza efectos; cada invocación concreta se resuelve con la
+  política (`deny` → `ask` → grants `once|run|workspace`).
+- `arguments_hash` congela la invocación: una solicitud antigua no autoriza
+  argumentos nuevos.
+- `shell.execute` se deniega siempre en HLI 1.0.
+- La invocación privada nunca se expone por CLI, MCP ni TUI; el receipt guarda
+  sólo hash, resumen y decisión.
+- Los valores de secreto no se persisten en la solicitud: si aparecen claves
+  sensibles en los argumentos, se redactan y la solicitud no se reanuda.

@@ -14,3 +14,7 @@
 
 Fuera de alcance: atacante con privilegios de administrador, malware local,
 canales encubiertos de red, aislamiento de CPU/memoria.
+
+| Permiso de tool | aprobar argumentos distintos | `arguments_hash` congelado y verificación al reanudar | el usuario debe leer el target |
+| Grant | cruzarse entre workspaces o efectos | grant por workspace/run, herramienta, efecto y target | grants de workspace cubren el efecto entero |
+| shell | ejecución destructiva | `shell.execute` denegado incondicionalmente | ninguna vía de aprobación |

@@ -309,3 +309,15 @@ mete lógica de negocio en el despacho, se está engordando el monolito.
   `crates/hli-tui/tests/render.rs` y `scripts/planning_approval_gate.py`.
 - No añadir campos privados al plan: la instantánea de ejecución es el único
   lugar para configuración, y nunca guarda valores de secreto.
+
+---
+
+## Permisos por invocación
+
+- La política vive en `hli-agent`; el daemon sólo la aplica.
+- Toda decisión debe pasar por `decide_tool_request`: validar estado, sellar el
+  request, crear grant (run/workspace) y emitir evento en la misma transacción.
+- Al reanudar, comparar `invocation_hash` con `arguments_hash`; nunca confiar en
+  los argumentos sin verificar.
+- Pruebas: `hli-agent/src/permissions.rs`, `planning_approval` del daemon,
+  `render` de la TUI y `scripts/tool_permission_gate.py`.

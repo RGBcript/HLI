@@ -362,3 +362,19 @@ hli run replan  <run_id> [--reason "motivo"]
 Diagnóstico: `hli event list --workspace <id>` muestra `plan.created`,
 `run.waiting_approval`, `plan.approved|rejected|invalidated|revised` y el resto
 de la traza. Un run `waiting_approval` sobrevive al reinicio del daemon.
+
+---
+
+## Decidir un permiso
+
+```bash
+hli permission list --run <run_id> --status pending
+hli permission inspect <request_id>
+hli permission approve <request_id> --scope once|run|workspace
+hli permission deny <request_id> --reason "motivo"
+hli permission cancel <request_id>
+```
+
+Un run en `waiting_approval` con `approval_kind=tool` conserva la solicitud
+aunque se reinicie el daemon. Aprobar ejecuta una sola vez; repetir la misma
+decisión es idempotente.

@@ -319,3 +319,26 @@ Actualizarlo **solo** cuando cambie el commit de referencia o el estado de un
 gate. Cada afirmación debe poder rastrearse a un archivo, una prueba o una salida
 de gate. Si algo no se puede verificar, va a "No probado" en
 `HLI-BETA-REVIEW.md`, no aquí.
+
+---
+
+## 3.c Permisos por invocación (esquema 9)
+
+- `ToolPermissionRequest` durable: run, plan y revisión, tool, operación, efecto,
+  target normalizado, `arguments_hash`, resumen sin secretos y decisión.
+- `ToolGrant` por invocación con scopes `once | run | workspace`; `once` no se
+  persiste, se consume al decidir.
+- `runs.approval_kind` distingue `plan` de `tool`.
+- Política: deny explícito → deny; grant válido → allow; sin regla → ask;
+  `shell.execute` siempre denegado.
+- Daemon: `permission.list/get/approve/deny/cancel`; al aprobar se verifica el
+  hash y se ejecuta exactamente la invocación congelada.
+- TUI: overlay `Permission required`, detalles y acciones; Inspector con la
+  solicitud y su decisión.
+- MCP: `permission_list/get/approve/deny`, sin `invocation_json`.
+- Receipt: decisiones, solicitudes, invocaciones y grants once consumidos.
+- Gate `scripts/tool_permission_gate.py`.
+
+Pendiente conocido: el caso «herramienta no declarada» (`plan.revised` durante
+la ejecución) no es reproducible con el proveedor `sim`; el código existe, pero
+el gate no puede demostrarlo sin un proveedor que emita una tool fuera del plan.
