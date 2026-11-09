@@ -144,3 +144,18 @@ plan aprobado
 
 Una herramienta no declarada obliga a revisar el plan antes de pedir permiso:
 no se autoriza por la vía del permiso concreto.
+
+### Revisión por herramienta no declarada
+
+```
+running → provider emite tool no declarada
+        → no se ejecuta
+        → plan.revised (revision + 1, supersedes)
+        → waiting_approval (approval_kind = plan)
+        → aprobación de la revisión
+        → política ask → ToolPermissionRequest
+        → aprobación del permiso
+        → ejecución exactamente una vez
+```
+
+La aprobación de la revisión anterior nunca cubre la nueva.

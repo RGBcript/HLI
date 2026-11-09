@@ -1703,9 +1703,19 @@ impl State {
             json!({
                 "run_id": plan.run_id,
                 "plan_id": plan.plan_id,
+                "new_plan_id": plan.plan_id,
+                "old_plan_id": plan.supersedes_plan_id,
                 "revision": plan.revision,
+                "new_revision": plan.revision,
+                "old_revision": prev.revision,
                 "supersedes_plan_id": plan.supersedes_plan_id,
                 "invalidation_reasons": plan.invalidation_reasons,
+                "new_effects": plan.requested_effects,
+                "reason": plan
+                    .invalidation_reasons
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "undeclared_tool".into()),
                 "content_hash": plan.content_hash,
                 "status": plan.status
             }),

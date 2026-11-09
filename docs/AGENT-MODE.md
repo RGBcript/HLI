@@ -309,3 +309,12 @@ exactamente una vez.
 - JSONL `--follow` no está implementado; `--output jsonl` es salida terminal.
 - El título del thread es el prompt truncado; se puede renombrar por CLI en una
   iteración posterior.
+
+### Herramienta no declarada
+
+Si el proveedor emite una herramienta o un efecto que el plan no declara, HLI
+**no la ejecuta**: crea una nueva revisión del plan, emite `plan.revised` y
+vuelve a `waiting_approval` con `approval_kind = plan`. La revisión anterior
+queda sustituida y su aprobación no cubre la nueva. Sólo después de aprobar la
+revisión se resuelve la política de la invocación concreta (`ask` → solicitud de
+permiso). Plan approval y tool permission siguen siendo fronteras separadas.

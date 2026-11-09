@@ -63,9 +63,9 @@ def jrun(*args, cwd=PROJECT, env=None):
     return json.loads(p.stdout)
 
 
-def start_daemon(env):
+def start_daemon(env, binary=None):
     proc = subprocess.Popen(
-        [str(DAEMON)], env=env, stdin=subprocess.DEVNULL,
+        [str(binary or DAEMON)], env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     for _ in range(200):
@@ -308,8 +308,104 @@ try:
 
     # plan.revised: sólo es reproducible con una tool no declarada; el runtime
     # sim construye el plan desde el prompt.
-    RESULT["plan_revision"] = False
+    # 10) Revisión de plan por herramienta no declarada (provider fixture)
+    fixture_bin = ROOT / "target" / "fixture" / "debug" / (
+        "hli-daemon.exe" if os.name == "nt" else "hli-daemon"
+    )
+    build = subprocess.run(
+        ["cargo", "build", "-p", "hli-daemon", "--features", "fixture-provider",
+         "--target-dir", "target/fixture"],
+        cwd=str(ROOT), capture_output=True, text=True,
+    )
+    assert build.returncode == 0, build.stderr[-2000:]
+    assert fixture_bin.exists(), "binario fixture no construido"
+
+    fhome = Path(tempfile.mkdtemp(prefix="hli-rev-gate-"))
+    fproj = Path(tempfile.mkdtemp(prefix="hli-rev-proj-"))
+    fenv = {**os.environ, "HLI_HOME": str(fhome)}
+    fdaemon = start_daemon(fenv, fixture_bin)
+    try:
+        fws = jrun("workspace", "create", "rev", "--root", str(fproj), env=fenv)["id"]
+        fth = jrun("thread", "create", "rev", "--workspace", fws, env=fenv)["id"]
+        fbr = jrun("branch", "create", "main", "--thread", fth, env=fenv)["id"]
+        rev_run = jrun("run", "start", "--workspace", fws, "--thread", fth,
+                       "--branch", fbr, "--prompt", "fixture task",
+                       "--provider", "fixture", env=fenv)["id"]
+        deadline = time.time() + 15
+        state = None
+        while time.time() < deadline:
+            state = jrun("run", "status", rev_run, env=fenv)["run"]
+            if state["state"] == "waiting_approval" and state.get("approval_kind") == "plan":
+                break
+            time.sleep(0.1)
+        plan_now = jrun("run", "plan", rev_run, env=fenv)
+        target_rev = fproj / "revision-test.txt"
+        before_ok = not target_rev.exists()
+        v1_id = plan_now["plan"]["supersedes_plan_id"]
+        old_approval = run("run", "approve", rev_run, "--scope", "once",
+                           "--plan", v1_id, env=fenv)
+        jrun("run", "approve", rev_run, "--scope", "once",
+             "--plan", plan_now["plan"]["plan_id"], env=fenv)
+        deadline = time.time() + 15
+        tool_wait = None
+        while time.time() < deadline:
+            tool_wait = jrun("run", "status", rev_run, env=fenv)["run"]
+            if tool_wait["state"] == "waiting_approval" and tool_wait.get("approval_kind") == "tool":
+                break
+            time.sleep(0.1)
+        before_perm_ok = not target_rev.exists()
+        pend = jrun("permission", "list", "--run", rev_run, "--status", "pending",
+                    env=fenv)
+        jrun("permission", "approve", pend[0]["request_id"], "--scope", "once", env=fenv)
+        done_rev = None
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            done_rev = jrun("run", "status", rev_run, env=fenv)["run"]
+            if done_rev["state"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(0.1)
+        content_ok = target_rev.exists() and target_rev.read_text(encoding="utf-8") == "written-after-revision"
+        receipt = done_rev.get("receipt") or {}
+        events = jrun("event", "list", "--workspace", fws, env=fenv)
+        revised_event = next((e for e in events if e["type"] == "plan.revised"
+                              and e.get("run_id") == rev_run), {})
+        payload = revised_event.get("payload") or {}
+        stop_daemon(fenv, fdaemon)
+        fdaemon = start_daemon(fenv, fixture_bin)
+        after_restart = jrun("run", "plan", rev_run, env=fenv)
+        perm_after = jrun("permission", "list", "--run", rev_run, env=fenv)
+        RESULT["plan_revision"] = bool(
+            state
+            and state["approval_kind"] == "plan"
+            and plan_now["plan"]["revision"] == 2
+            and len(plan_now["revisions"]) == 2
+            and before_ok
+            and old_approval.returncode != 0
+            and tool_wait
+            and tool_wait["approval_kind"] == "tool"
+            and before_perm_ok
+            and content_ok
+            and receipt.get("plan_revision") == 2
+            and receipt.get("superseded_plan_ids") == [v1_id]
+            and receipt.get("permission_request_ids")
+            and payload.get("old_plan_id") == v1_id
+            and payload.get("new_revision") == 2
+            and payload.get("reason", "").startswith("new_effect")
+            and len(after_restart["revisions"]) == 2
+            and perm_after
+            and perm_after[0]["status"] == "approved"
+        )
+        RESULT["receipt"] = RESULT["receipt"] and bool(
+            receipt.get("permission_decisions")
+            and receipt["permission_decisions"][0]["arguments_hash"]
+        )
+    finally:
+        stop_daemon(fenv, fdaemon)
+        shutil.rmtree(fhome, ignore_errors=True)
+        shutil.rmtree(fproj, ignore_errors=True)
+
     RESULT["ok"] = all(v for k, v in RESULT.items() if k not in ("gate", "ok"))
+
 finally:
     try:
         stop_daemon(ENV, daemon)

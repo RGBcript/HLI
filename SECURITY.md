@@ -38,3 +38,10 @@ control del usuario. Ver `THREAT-MODEL.md`.
   sólo hash, resumen y decisión.
 - Los valores de secreto no se persisten en la solicitud: si aparecen claves
   sensibles en los argumentos, se redactan y la solicitud no se reanuda.
+
+### Herramientas no declaradas
+
+Una invocación cuya herramienta o efecto no figura en el plan aprobado no se
+ejecuta bajo ninguna circunstancia. HLI crea una revisión del plan, la somete a
+una aprobación nueva y sólo después resuelve el permiso concreto. Esto impide
+que una aprobación antigua autorice una operación que el usuario nunca revisó.

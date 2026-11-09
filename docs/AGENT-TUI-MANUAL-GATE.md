@@ -265,3 +265,11 @@ Firma:
 
 Estado actual: **PENDIENTE**. El script `scripts/agent_tui_gate.ps1` automatiza
 la parte no interactiva; **no** sustituye esta firma.
+
+### Nota sobre herramientas no declaradas (97–118)
+
+Si el proveedor emite una herramienta que el plan no declara, la TUI muestra
+`Plan requires approval` con una revisión nueva (`Revision: N+1`) antes de
+cualquier solicitud de permiso. El archivo no existe hasta aprobar la revisión y,
+después, el permiso concreto. El proveedor `fixture` (feature
+`fixture-provider`, fuera de `dist`) reproduce ese caso para el gate automático.
