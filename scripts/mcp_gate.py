@@ -17,7 +17,20 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HLI = os.path.join(ROOT, "target", "debug", "hli.exe")
 DAEMON = os.path.join(ROOT, "target", "debug", "hli-daemon.exe")
-MCP = os.path.join(ROOT, "target", "debug", "hli-mcp.exe")
+def _binary(name: str) -> str:
+    base = os.path.join(ROOT, "target", "debug", name)
+    for candidate in (base + ".exe", base):
+        if os.path.exists(candidate):
+            return candidate
+    # CI puede no haber construido aún este crate.
+    subprocess.run(["cargo", "build", "-p", "hli-mcp"], cwd=ROOT, check=True)
+    for candidate in (base + ".exe", base):
+        if os.path.exists(candidate):
+            return candidate
+    raise SystemExit(f"no se encontró el binario {name} en target/debug")
+
+
+MCP = _binary("hli-mcp")
 
 
 def run(env, *args):
