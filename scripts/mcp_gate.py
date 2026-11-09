@@ -179,6 +179,23 @@ def main():
             "run_id": planned_run["id"], "plan_id": payload["plan"]["plan_id"],
             "scope": "once"}})
         assert approved["isError"] is False, "mcp_run_approve"
+        # El plan autoriza efectos; la invocación pide su propio permiso.
+        pending = []
+        for _ in range(100):
+            state = run(env, "run", "status", planned_run["id"])["run"]
+            if state["state"] == "waiting_approval" and state.get("approval_kind") == "tool":
+                listed = mcp.call("tools/call", {"name": "permission_list", "arguments": {
+                    "run_id": planned_run["id"], "status": "pending"}})
+                pending = json.loads(listed["content"][0]["text"])
+                if pending:
+                    break
+            if state["state"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(0.05)
+        assert pending, "mcp_permission_requested"
+        decided = mcp.call("tools/call", {"name": "permission_approve", "arguments": {
+            "request_id": pending[0]["request_id"], "scope": "once"}})
+        assert decided["isError"] is False, "mcp_permission_approve"
         run(env, "run", "wait", planned_run["id"], "--timeout-secs", "10")
         assert run(env, "run", "get", planned_run["id"])["run"]["state"] == "completed"
         mcp.close()

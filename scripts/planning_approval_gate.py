@@ -411,7 +411,24 @@ try:
             if obj.get("event_type") == "plan.created":
                 saw_plan_created = True
     if follow_id:
-        jrun("run", "approve", follow_id, "--scope", "once")
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            st = jrun("run", "status", follow_id)["run"]
+            if st["state"] == "waiting_approval" and st.get("approval_kind") == "plan":
+                break
+            time.sleep(0.05)
+        follow_plan = jrun("run", "plan", follow_id)["plan"]
+        jrun("run", "approve", follow_id, "--scope", "once",
+             "--plan", follow_plan["plan_id"])
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            now = jrun("run", "status", follow_id)["run"]
+            if now["state"] == "waiting_approval" and now.get("approval_kind") == "tool":
+                approve_pending_permissions(ENV, follow_id)
+                break
+            if now["state"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(0.1)
         terminal = None
         deadline = time.time() + 20
         while time.time() < deadline:
