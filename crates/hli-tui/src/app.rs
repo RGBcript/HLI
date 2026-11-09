@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::client;
 
@@ -177,6 +178,70 @@ pub struct AgentState {
     pub resume_open: bool,
     pub resume_index: usize,
     pub resume_items: Vec<ResumeItem>,
+    pub references: Vec<Reference>,
+    pub ref_open: bool,
+    pub ref_query: String,
+    pub ref_index: usize,
+    pub ref_category: usize,
+    pub ref_items: Vec<Vec<RefItem>>,
+    pub ref_start: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefKind {
+    File,
+    Artifact,
+    Memory,
+    Run,
+    Branch,
+}
+
+impl RefKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Artifact => "artifact",
+            Self::Memory => "memory",
+            Self::Run => "run",
+            Self::Branch => "branch",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::File => "Files",
+            Self::Artifact => "Artifacts",
+            Self::Memory => "Memories",
+            Self::Run => "Runs",
+            Self::Branch => "Branches",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Reference {
+    pub kind: RefKind,
+    pub stable_id: String,
+    pub display: String,
+    pub content_hash: Option<String>,
+    pub revision: Option<i64>,
+    pub size: Option<u64>,
+    pub selected_at: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct RefItem {
+    pub kind: RefKind,
+    pub stable_id: String,
+    pub display: String,
+    pub subtitle: String,
+    pub content_hash: Option<String>,
+    pub revision: Option<i64>,
+    pub size: Option<u64>,
+}
+
+pub fn reference_token(r: &Reference) -> String {
+    format!("@{}:{}", r.kind.label(), r.stable_id)
 }
 
 #[derive(Clone, Debug)]
@@ -222,6 +287,13 @@ impl Default for AgentState {
             resume_open: false,
             resume_index: 0,
             resume_items: Vec::new(),
+            references: Vec::new(),
+            ref_open: false,
+            ref_query: String::new(),
+            ref_index: 0,
+            ref_category: 0,
+            ref_items: vec![Vec::new(); 5],
+            ref_start: 0,
         }
     }
 }
@@ -1148,7 +1220,343 @@ impl App {
         }
         false
     }
+}
 
+// ---------------------------------------------------------------------------
+// Slice 3b: referencias estables con @
+// ---------------------------------------------------------------------------
+
+fn file_hash(path: &std::path::Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut h = Sha256::new();
+    h.update(&bytes);
+    let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    Some(format!("sha256:{hex}"))
+}
+
+fn walk_files(root: &std::path::Path, rel: &str, out: &mut Vec<(String, u64)>, depth: usize) {
+    const CAP: usize = 400;
+    if out.len() >= CAP || depth > 6 {
+        return;
+    }
+    let dir = if rel.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel)
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= CAP {
+            return;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || matches!(name.as_str(), "target" | "dist" | "node_modules") {
+            continue;
+        }
+        let child = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => walk_files(root, &child, out, depth + 1),
+            Ok(t) if t.is_file() => {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push((child, size));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl App {
+    pub fn open_reference_selector(&mut self, at: usize) {
+        self.agent.ref_open = true;
+        self.agent.ref_start = at;
+        self.agent.ref_query.clear();
+        self.agent.ref_index = 0;
+        self.agent.ref_category = 0;
+        self.load_reference_sources();
+    }
+
+    pub fn load_reference_sources(&mut self) {
+        let mut cats: Vec<Vec<RefItem>> = vec![Vec::new(); 5];
+        let ws = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["id"].as_str())
+            .map(str::to_string);
+        let thread = self
+            .agent
+            .thread
+            .as_ref()
+            .and_then(|t| t["id"].as_str())
+            .map(str::to_string);
+        let root = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["root_path"].as_str())
+            .map(std::path::PathBuf::from);
+
+        if let Some(root) = root {
+            let mut files = Vec::new();
+            walk_files(&root, "", &mut files, 0);
+            for (path, size) in files {
+                cats[0].push(RefItem {
+                    kind: RefKind::File,
+                    stable_id: path.clone(),
+                    display: path,
+                    subtitle: format!("{size} bytes"),
+                    content_hash: None,
+                    revision: None,
+                    size: Some(size),
+                });
+            }
+        }
+
+        if let Some(ws) = ws {
+            if let Ok(list) = client::call("artifact.list", json!({ "workspace_id": ws }))
+                && let Some(arr) = list.as_array()
+            {
+                for a in arr {
+                    let id = a["id"].as_str().unwrap_or("").to_string();
+                    if id.is_empty() {
+                        continue;
+                    }
+                    cats[1].push(RefItem {
+                        kind: RefKind::Artifact,
+                        stable_id: id.clone(),
+                        display: id.clone(),
+                        subtitle: format!(
+                            "{} · {} bytes",
+                            a["mime"].as_str().unwrap_or("-"),
+                            a["bytes"].as_i64().unwrap_or(0)
+                        ),
+                        content_hash: a["sha256"].as_str().map(str::to_string),
+                        revision: None,
+                        size: a["bytes"].as_u64(),
+                    });
+                }
+            }
+            if let Ok(list) = client::call("memory.list", json!({ "workspace_id": ws }))
+                && let Some(arr) = list.as_array()
+            {
+                for m in arr {
+                    if m["status"].as_str() != Some("active") {
+                        continue;
+                    }
+                    let id = m["id"].as_str().unwrap_or("").to_string();
+                    let content = m["content"].as_str().unwrap_or("");
+                    let brief: String = content.chars().take(60).collect();
+                    cats[2].push(RefItem {
+                        kind: RefKind::Memory,
+                        stable_id: id.clone(),
+                        display: brief,
+                        subtitle: format!(
+                            "{} · {}",
+                            id,
+                            m["source_authority"].as_str().unwrap_or("user")
+                        ),
+                        content_hash: None,
+                        revision: None,
+                        size: None,
+                    });
+                }
+            }
+            if let Ok(list) = client::call("run.list", json!({ "workspace_id": ws }))
+                && let Some(arr) = list.as_array()
+            {
+                for r in arr {
+                    if let Some(t) = thread.as_deref()
+                        && r["thread_id"].as_str() != Some(t)
+                    {
+                        continue;
+                    }
+                    let id = r["id"].as_str().unwrap_or("").to_string();
+                    let prompt = r["prompt"].as_str().unwrap_or("");
+                    let brief: String = prompt.chars().take(50).collect();
+                    cats[3].push(RefItem {
+                        kind: RefKind::Run,
+                        stable_id: id.clone(),
+                        display: brief,
+                        subtitle: format!("{id} · {}", r["state"].as_str().unwrap_or("-")),
+                        content_hash: None,
+                        revision: None,
+                        size: None,
+                    });
+                }
+            }
+        }
+
+        if let Some(thread) = thread
+            && let Ok(list) = client::call("branch.list", json!({ "thread_id": thread }))
+            && let Some(arr) = list.as_array()
+        {
+            for b in arr {
+                let name = b["name"].as_str().unwrap_or("").to_string();
+                cats[4].push(RefItem {
+                    kind: RefKind::Branch,
+                    stable_id: name.clone(),
+                    display: name,
+                    subtitle: format!("seq {}", b["head_sequence"].as_i64().unwrap_or(0)),
+                    content_hash: None,
+                    revision: b["head_sequence"].as_i64(),
+                    size: None,
+                });
+            }
+        }
+
+        self.agent.ref_items = cats;
+    }
+
+    pub fn ref_category_kind(&self) -> RefKind {
+        match self.agent.ref_category {
+            0 => RefKind::File,
+            1 => RefKind::Artifact,
+            2 => RefKind::Memory,
+            3 => RefKind::Run,
+            _ => RefKind::Branch,
+        }
+    }
+
+    pub fn ref_filtered(&self) -> Vec<&RefItem> {
+        let q = self.agent.ref_query.to_lowercase();
+        self.agent
+            .ref_items
+            .get(self.agent.ref_category)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|i| {
+                q.is_empty()
+                    || i.display.to_lowercase().contains(&q)
+                    || i.stable_id.to_lowercase().contains(&q)
+            })
+            .collect()
+    }
+
+    pub fn reference_insert(&mut self) {
+        let picked = self
+            .ref_filtered()
+            .get(self.agent.ref_index)
+            .map(|i| (*i).clone());
+        let Some(item) = picked else {
+            return;
+        };
+        let root = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["root_path"].as_str())
+            .map(std::path::PathBuf::from);
+        let (hash, size) = match item.kind {
+            RefKind::File => {
+                let path = root.map(|r| r.join(&item.stable_id));
+                match path.as_deref().map(file_hash) {
+                    Some(h) => (h, item.size),
+                    None => (None, item.size),
+                }
+            }
+            _ => (item.content_hash.clone(), item.size),
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let r = Reference {
+            kind: item.kind,
+            stable_id: item.stable_id.clone(),
+            display: item.display.clone(),
+            content_hash: hash,
+            revision: item.revision,
+            size,
+            selected_at: now,
+        };
+        self.agent.composer.truncate(self.agent.ref_start);
+        self.agent.composer.push_str(&reference_token(&r));
+        self.agent.composer.push(' ');
+        self.agent.references.push(r);
+        self.agent.ref_open = false;
+        self.agent.ref_query.clear();
+    }
+
+    pub fn reference_close(&mut self) {
+        self.agent.composer.truncate(self.agent.ref_start);
+        self.agent.ref_open = false;
+        self.agent.ref_query.clear();
+    }
+
+    /// Referencias de archivo que ya no coinciden con lo seleccionado.
+    /// No sustituye contenido: informa.
+    pub fn stale_references(&self) -> Vec<String> {
+        let root = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["root_path"].as_str())
+            .map(std::path::PathBuf::from);
+        let mut out = Vec::new();
+        for r in &self.agent.references {
+            if r.kind != RefKind::File {
+                continue;
+            }
+            let Some(root) = root.clone() else {
+                continue;
+            };
+            let path = root.join(&r.stable_id);
+            match file_hash(&path) {
+                None => out.push(format!("reference missing: {}", r.stable_id)),
+                Some(h) if Some(&h) != r.content_hash.as_ref() => out.push(format!(
+                    "reference changed: {} (se conserva la revisión seleccionada)",
+                    r.stable_id
+                )),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[allow(clippy::collapsible_match)]
+    fn handle_ref_key(&mut self, k: KeyEvent) -> bool {
+        let n = self.ref_filtered().len();
+        match k.code {
+            KeyCode::Esc => self.reference_close(),
+            KeyCode::Enter => self.reference_insert(),
+            KeyCode::Up => {
+                self.agent.ref_index = self.agent.ref_index.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if n > 0 && self.agent.ref_index + 1 < n {
+                    self.agent.ref_index += 1;
+                }
+            }
+            KeyCode::Tab => {
+                self.agent.ref_category = (self.agent.ref_category + 1) % 5;
+                self.agent.ref_index = 0;
+            }
+            KeyCode::BackTab => {
+                self.agent.ref_category = (self.agent.ref_category + 4) % 5;
+                self.agent.ref_index = 0;
+            }
+            KeyCode::Backspace => {
+                self.agent.ref_query.pop();
+                self.agent.ref_index = 0;
+            }
+            KeyCode::Char(c) => {
+                self.agent.ref_query.push(c);
+                self.agent.ref_index = 0;
+            }
+            _ => {}
+        }
+        false
+    }
+}
+
+impl App {
     #[allow(clippy::collapsible_match)]
     fn handle_resume_key(&mut self, k: KeyEvent) -> bool {
         let n = self.agent.resume_items.len();
@@ -1545,6 +1953,9 @@ impl App {
         {
             args["sim_delay_ms"] = json!(ms);
         }
+        for warning in self.stale_references() {
+            self.agent.push(AgentKind::Error, warning);
+        }
         self.agent.busy = true;
         self.agent.run_state = "starting".into();
         match client::call("run.start", args) {
@@ -1807,6 +2218,9 @@ impl App {
         if !matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return false;
         }
+        if self.agent.ref_open {
+            return self.handle_ref_key(k);
+        }
         if self.agent.resume_open {
             return self.handle_resume_key(k);
         }
@@ -1875,7 +2289,11 @@ impl App {
                 self.agent.palette = true;
                 self.agent.composer.push('/');
             }
-            KeyCode::Char('@') => self.agent.composer.push('@'),
+            KeyCode::Char('@') => {
+                let at = self.agent.composer.len();
+                self.agent.composer.push('@');
+                self.open_reference_selector(at);
+            }
             KeyCode::Backspace => {
                 self.agent.composer.pop();
                 if !self.agent.composer.starts_with('/') {

@@ -5,8 +5,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use hli_tui::app::{
-    AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, TuiMode, layout_mode,
-    project_thread, split_command, terminal_summary,
+    AgentKind, App, FeedbackKind, FocusArea, LayoutMode, Offer, RefItem, RefKind, Reference,
+    TuiMode, layout_mode, project_thread, reference_token, split_command, terminal_summary,
 };
 use hli_tui::ui;
 
@@ -586,14 +586,22 @@ fn slash_command_reuses_existing_contract() {
 #[test]
 fn at_reference_resolves_stable_id() {
     let mut app = agent_app();
-    for c in ["@", "a", "r", "t", "_", "0", "9", "1"] {
-        app.handle_key(key_with(
-            KeyCode::Char(c.chars().next().unwrap()),
-            KeyEventKind::Press,
-            KeyModifiers::NONE,
-        ));
-    }
-    assert_eq!(app.agent.composer, "@art_091");
+    app.agent.ref_items[2] = vec![RefItem {
+        kind: RefKind::Memory,
+        stable_id: "mem_018".into(),
+        display: "la fuente es SQLite".into(),
+        subtitle: "mem_018 · user".into(),
+        content_hash: None,
+        revision: None,
+        size: None,
+    }];
+    app.agent.ref_category = 2;
+    app.agent.ref_open = true;
+    app.agent.composer = "@".into();
+    app.agent.ref_start = 0;
+    app.reference_insert();
+    assert_eq!(app.agent.references[0].stable_id, "mem_018");
+    assert!(app.agent.composer.contains("@memory:mem_018"));
 }
 
 // --- Slice 2: ejecución observada -------------------------------------------
@@ -839,4 +847,210 @@ fn history_is_scoped_to_thread() {
     let text: String = lines.iter().map(|l| l.text.clone()).collect();
     assert!(text.contains("de uno"));
     assert!(!text.contains("de dos"));
+}
+
+// --- Slice 3b: referencias @ ------------------------------------------------
+
+fn agent_with_root(root: &std::path::Path) -> App {
+    let mut app = App::demo();
+    app.mode = TuiMode::Agent;
+    app.agent.workspace = Some(serde_json::json!({
+        "id": "ws_1", "name": "demo", "root_path": root.to_string_lossy()
+    }));
+    app.agent.thread = Some(serde_json::json!({"id": "thr_1", "title": "session"}));
+    app.agent.branch = Some(serde_json::json!({"id": "br_1", "name": "main"}));
+    app
+}
+
+fn tmp_dir(name: &str) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("hli-ref-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&p);
+    std::fs::create_dir_all(&p).unwrap();
+    p
+}
+
+fn sha_of(path: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(std::fs::read(path).unwrap());
+    format!(
+        "sha256:{}",
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn file_ref(id: &str, hash: &str) -> Reference {
+    Reference {
+        kind: RefKind::File,
+        stable_id: id.into(),
+        display: id.into(),
+        content_hash: Some(hash.into()),
+        revision: None,
+        size: None,
+        selected_at: 0,
+    }
+}
+
+#[test]
+fn at_opens_reference_selector() {
+    let mut app = agent_with_root(&tmp_dir("open"));
+    app.handle_key(key_with(
+        KeyCode::Char('@'),
+        KeyEventKind::Press,
+        KeyModifiers::NONE,
+    ));
+    assert!(app.agent.ref_open);
+    assert_eq!(app.agent.composer, "@");
+}
+
+#[test]
+fn at_file_resolves_stable_reference() {
+    let r = Reference {
+        kind: RefKind::File,
+        stable_id: "crates/hli-store/src/lib.rs".into(),
+        display: "lib.rs".into(),
+        content_hash: Some("sha256:aa".into()),
+        revision: None,
+        size: Some(10),
+        selected_at: 0,
+    };
+    assert_eq!(reference_token(&r), "@file:crates/hli-store/src/lib.rs");
+}
+
+#[test]
+fn at_artifact_preserves_hash() {
+    let mut app = agent_with_root(&tmp_dir("artifact"));
+    app.agent.ref_items[1] = vec![RefItem {
+        kind: RefKind::Artifact,
+        stable_id: "art_091".into(),
+        display: "art_091".into(),
+        subtitle: "text/plain".into(),
+        content_hash: Some("sha256:beef".into()),
+        revision: None,
+        size: Some(4),
+    }];
+    app.agent.ref_category = 1;
+    app.agent.ref_open = true;
+    app.reference_insert();
+    assert_eq!(app.agent.references[0].stable_id, "art_091");
+    assert_eq!(
+        app.agent.references[0].content_hash.as_deref(),
+        Some("sha256:beef")
+    );
+}
+
+#[test]
+fn at_memory_uses_memory_id() {
+    let mut app = agent_with_root(&tmp_dir("memory"));
+    app.agent.ref_items[2] = vec![RefItem {
+        kind: RefKind::Memory,
+        stable_id: "mem_018".into(),
+        display: "SQLite es la fuente".into(),
+        subtitle: "mem_018 · user".into(),
+        content_hash: None,
+        revision: None,
+        size: None,
+    }];
+    app.agent.ref_category = 2;
+    app.agent.ref_open = true;
+    app.reference_insert();
+    assert_eq!(app.agent.references[0].kind, RefKind::Memory);
+    assert_eq!(app.agent.references[0].stable_id, "mem_018");
+    assert!(app.agent.composer.contains("@memory:mem_018"));
+}
+
+#[test]
+fn at_run_uses_run_id() {
+    let mut app = agent_with_root(&tmp_dir("run"));
+    app.agent.ref_items[3] = vec![RefItem {
+        kind: RefKind::Run,
+        stable_id: "run_028".into(),
+        display: "revisa el store".into(),
+        subtitle: "run_028 · completed".into(),
+        content_hash: None,
+        revision: None,
+        size: None,
+    }];
+    app.agent.ref_category = 3;
+    app.agent.ref_open = true;
+    app.reference_insert();
+    assert_eq!(app.agent.references[0].stable_id, "run_028");
+}
+
+#[test]
+fn at_branch_records_revision() {
+    let mut app = agent_with_root(&tmp_dir("branch"));
+    app.agent.ref_items[4] = vec![RefItem {
+        kind: RefKind::Branch,
+        stable_id: "alternative".into(),
+        display: "alternative".into(),
+        subtitle: "seq 7".into(),
+        content_hash: None,
+        revision: Some(7),
+        size: None,
+    }];
+    app.agent.ref_category = 4;
+    app.agent.ref_open = true;
+    app.reference_insert();
+    assert_eq!(app.agent.references[0].revision, Some(7));
+    assert!(app.agent.composer.contains("@branch:alternative"));
+}
+
+#[test]
+fn at_selector_escape_preserves_composer() {
+    let mut app = agent_with_root(&tmp_dir("escape"));
+    app.agent.composer = "hola ".into();
+    app.handle_key(key_with(
+        KeyCode::Char('@'),
+        KeyEventKind::Press,
+        KeyModifiers::NONE,
+    ));
+    assert_eq!(app.agent.composer, "hola @");
+    tap(&mut app, KeyCode::Esc);
+    assert_eq!(app.agent.composer, "hola ");
+    assert!(!app.agent.ref_open);
+}
+
+#[test]
+fn missing_reference_is_reported() {
+    let root = tmp_dir("missing");
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![file_ref("nope.rs", "sha256:00")];
+    let warnings = app.stale_references();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("missing"), "{:?}", warnings);
+}
+
+#[test]
+fn renamed_file_does_not_change_reference_identity() {
+    let root = tmp_dir("rename");
+    let a = root.join("a.txt");
+    std::fs::write(&a, "contenido").unwrap();
+    let hash = sha_of(&a);
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![file_ref("a.txt", &hash)];
+    std::fs::rename(&a, root.join("b.txt")).unwrap();
+    let warnings = app.stale_references();
+    assert!(warnings[0].contains("missing"));
+    assert_eq!(app.agent.references[0].stable_id, "a.txt");
+}
+
+#[test]
+fn changed_file_is_reported_without_substitution() {
+    let root = tmp_dir("changed");
+    let a = root.join("a.txt");
+    std::fs::write(&a, "uno").unwrap();
+    let hash = sha_of(&a);
+    let mut app = agent_with_root(&root);
+    app.agent.references = vec![file_ref("a.txt", &hash)];
+    std::fs::write(&a, "dos").unwrap();
+    let warnings = app.stale_references();
+    assert!(warnings[0].contains("changed"), "{:?}", warnings);
+    assert_eq!(
+        app.agent.references[0].content_hash.as_deref(),
+        Some(hash.as_str())
+    );
 }

@@ -763,6 +763,42 @@ fn draw_agent(f: &mut Frame, app: &App) {
     if app.agent.resume_open {
         draw_resume(f, area, app);
     }
+    if app.agent.ref_open {
+        draw_reference(f, area, app);
+    }
+}
+
+fn draw_reference(f: &mut Frame, area: Rect, app: &App) {
+    let rect = overlay_rect(area, 100, 18);
+    f.render_widget(Clear, rect);
+    let mut lines = vec![Line::from(format!(
+        "categoría {} · búsqueda: {}",
+        app.ref_category_kind().title(),
+        app.agent.ref_query
+    ))];
+    let items = app.ref_filtered();
+    for (i, item) in items.iter().take(12).enumerate() {
+        let mark = if i == app.agent.ref_index {
+            "▸ "
+        } else {
+            "  "
+        };
+        lines.push(Line::from(format!(
+            "{mark}{}  ·  {}",
+            item.display, item.subtitle
+        )));
+    }
+    if items.is_empty() {
+        lines.push(Line::from("  (sin coincidencias)"));
+    }
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" @ reference · Tab cambia categoría "),
+        ),
+        rect,
+    );
 }
 
 fn overlay_rect(area: Rect, w: u16, h: u16) -> Rect {
