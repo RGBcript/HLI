@@ -12,7 +12,8 @@ y lo que falta, con la fuente de cada afirmación.
 
 ## 1. Objetivo
 
-HLI es un **agent harness local de peso medio, CLI-first, MCP-native y autónomo**.
+HLI (**Harness-Line Interface**) es un agent harness local de peso medio, CLI-first,
+MCP-native y autónomo.
 Convierte sesiones, modelos, herramientas y proveedores heterogéneos en
 workspaces persistentes, ramificables y reutilizables: contexto trazable, memoria
 con autoridad y supersesión, event log verificable, artefactos con hash, módulos

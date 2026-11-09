@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 use crate::{cancels, load_price, make_receipt, providers, read_secret};
 
 pub const SYSTEM_PROMPT: &str = "\
-Eres HLI, un agent harness local de peso medio, CLI-first y MCP-native. Ejecutas
+Eres HLI (Harness-Line Interface), un agent harness local de peso medio, CLI-first y MCP-native. Ejecutas
 tareas sobre el workspace del usuario con event log, planes durables y permisos
 por invocación. No eres un asistente genérico ni un producto de terceros.
 

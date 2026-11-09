@@ -1,4 +1,4 @@
-# HLI
+# HLI — Harness-Line Interface
 
 > **Beta privada · 0.9.0-beta.1**
 >
@@ -18,13 +18,16 @@
 > versión estable ni paquete publicado. Si necesitas algo que puedas desplegar sin
 > supervisión, esto no es.
 
-HLI es un **agent harness local de peso medio, CLI-first, MCP-native y autónomo**.
-Convierte sesiones, modelos, herramientas y proveedores heterogéneos en
-workspaces persistentes, ramificables y reutilizables. El mismo núcleo se expone
-por CLI, MCP y, opcionalmente, ACP.
+HLI (**Harness-Line Interface**) es un agent harness local de peso medio, CLI-first,
+MCP-native y autónomo. Convierte sesiones, modelos, herramientas y proveedores
+heterogéneos en workspaces persistentes, ramificables y reutilizables. El mismo
+núcleo se expone por CLI, MCP y, opcionalmente, ACP.
 
-- **MCH**: instancia especializada administrada por HLI (proceso persistente con
-  lifecycle, health y límite de reinicios).
+El nombre describe el punto medio: la interacción directa de una interfaz de
+línea sobre la persistencia, modularidad y observabilidad de un harness completo.
+
+- **MCH** (Modular Capability Harness): instancia especializada administrada por
+  HLI, con proceso persistente, lifecycle, health y límite de reinicios.
 - **MCP**: protocolo de interoperabilidad para clientes externos.
 - **ACP**: adaptador opcional como agente para editores y hosts (experimental).
 - **CLI**: interfaz textual (`hli`), cliente del daemon.
