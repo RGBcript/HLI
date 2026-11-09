@@ -309,6 +309,7 @@ mod tests {
             branch_id: "br_1".into(),
             branch_revision: 3,
             state: "queued".into(),
+            approval_kind: None,
             prompt: "hola".into(),
             started_at: "2026-11-09T00:00:00.000Z".into(),
             ended_at: None,

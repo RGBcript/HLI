@@ -1,7 +1,9 @@
 //! Agent runtime de HLI 0.2: manifiesto de contexto, proveedor determinista y
 //! ejecución de herramientas con permisos. Sin red y sin coste externo.
 
+pub mod permissions;
 pub mod plan;
+pub use permissions::*;
 pub use plan::*;
 
 use std::path::{Path, PathBuf};
@@ -411,6 +413,7 @@ mod tests {
             branch_id: "br_1".into(),
             branch_revision: rev,
             state: "queued".into(),
+            approval_kind: None,
             prompt: "hola".into(),
             started_at: "2026-11-07T00:00:00.000Z".into(),
             ended_at: None,
