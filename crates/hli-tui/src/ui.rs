@@ -1279,6 +1279,14 @@ fn draw_model(f: &mut Frame, area: Rect, app: &App) {
                 if current { "  actual" } else { "" },
                 Style::default().fg(t.success),
             ),
+            Span::styled(
+                if p["available"].as_bool() == Some(false) {
+                    "  sin configurar"
+                } else {
+                    ""
+                },
+                Style::default().fg(t.error),
+            ),
         ]));
     }
     lines.push(Line::from(""));

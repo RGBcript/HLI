@@ -1118,25 +1118,31 @@ impl App {
     }
 
     pub fn refresh_lists(&mut self) {
-        self.daemon = client::call("daemon.ping", json!({})).is_ok();
-        self.workspaces = arr(client::call("workspace.list", json!({})));
+        self.daemon = client::call_ui("daemon.ping", json!({})).is_ok();
+        self.workspaces = arr(client::call_ui("workspace.list", json!({})));
         if let Some(ws) = self.workspaces.first() {
             let id = ws["id"].as_str().unwrap_or("");
-            self.threads = arr(client::call("thread.list", json!({"workspace_id": id})));
-            self.memories = arr(client::call("memory.list", json!({"workspace_id": id})));
-            self.artifacts = arr(client::call("artifact.list", json!({"workspace_id": id})));
+            self.threads = arr(client::call_ui("thread.list", json!({"workspace_id": id})));
+            self.memories = arr(client::call_ui("memory.list", json!({"workspace_id": id})));
+            self.artifacts = arr(client::call_ui(
+                "artifact.list",
+                json!({"workspace_id": id}),
+            ));
             if let Some(th) = self.threads.first() {
-                self.branches = arr(client::call("branch.list", json!({"thread_id": th["id"]})));
+                self.branches = arr(client::call_ui(
+                    "branch.list",
+                    json!({"thread_id": th["id"]}),
+                ));
             }
         }
-        self.mchs = arr(client::call("mch.list", json!({})));
+        self.mchs = arr(client::call_ui("mch.list", json!({})));
         self.last_lists = Instant::now();
     }
 
     pub fn refresh_runs(&mut self) {
         if let Some(ws) = self.workspaces.first() {
             let id = ws["id"].as_str().unwrap_or("");
-            self.runs = arr(client::call("run.list", json!({"workspace_id": id})));
+            self.runs = arr(client::call_ui("run.list", json!({"workspace_id": id})));
         }
         if self.runs.is_empty() {
             self.selected_run = None;
@@ -1157,15 +1163,15 @@ impl App {
         let run = self.runs.get(idx).cloned();
         if let Some(id) = run.as_ref().and_then(|r| r["id"].as_str()) {
             self.selected_run_id = Some(id.to_string());
-            if let Ok(got) = client::call("run.get", json!({"run_id": id})) {
+            if let Ok(got) = client::call_ui("run.get", json!({"run_id": id})) {
                 self.selected_run = Some(got["run"].clone());
                 self.manifest = Some(got["manifest"].clone());
             }
             // El plan del Inspector también se lee del daemon, nunca de SQLite.
-            self.inspector_plan = client::call("run.plan", json!({"run_id": id}))
+            self.inspector_plan = client::call_ui("run.plan", json!({"run_id": id}))
                 .ok()
                 .and_then(|v| PlanView::from_value(&v));
-            self.inspector_perm = client::call("permission.list", json!({"run_id": id}))
+            self.inspector_perm = client::call_ui("permission.list", json!({"run_id": id}))
                 .ok()
                 .and_then(|v| v.as_array().and_then(|a| a.last()).cloned())
                 .and_then(|v| PermissionView::from_value(&v));
@@ -1176,7 +1182,7 @@ impl App {
     pub fn refresh_events(&mut self) {
         if let Some(ws) = self.workspaces.first() {
             let id = ws["id"].as_str().unwrap_or("");
-            self.events = arr(client::call("event.list", json!({"workspace_id": id})));
+            self.events = arr(client::call_ui("event.list", json!({"workspace_id": id})));
         }
         self.last_events = Instant::now();
     }
@@ -1765,7 +1771,7 @@ impl App {
         else {
             return;
         };
-        let mut runs = client::call("run.list", json!({ "workspace_id": ws }))
+        let mut runs = client::call_ui("run.list", json!({ "workspace_id": ws }))
             .ok()
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default();
@@ -1780,7 +1786,7 @@ impl App {
         if let Some(br) = self.agent.branch.as_ref().and_then(|b| b["id"].as_str()) {
             args["branch_id"] = json!(br);
         }
-        let events = client::call("event.list", args)
+        let events = client::call_ui("event.list", args)
             .ok()
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default();
@@ -1801,24 +1807,24 @@ impl App {
         self.agent.resume_items.clear();
         self.agent.resume_index = 0;
         self.agent.resume_open = true;
-        let Some(list) = client::call("workspace.list", json!({})).ok() else {
+        let Some(list) = client::call_ui("workspace.list", json!({})).ok() else {
             return;
         };
         for ws in list.as_array().cloned().unwrap_or_default().iter().take(5) {
             let wid = ws["id"].as_str().unwrap_or("");
             let wname = ws["name"].as_str().unwrap_or("-").to_string();
-            let threads = client::call("thread.list", json!({ "workspace_id": wid }))
+            let threads = client::call_ui("thread.list", json!({ "workspace_id": wid }))
                 .ok()
                 .and_then(|v| v.as_array().cloned())
                 .unwrap_or_default();
-            let runs = client::call("run.list", json!({ "workspace_id": wid }))
+            let runs = client::call_ui("run.list", json!({ "workspace_id": wid }))
                 .ok()
                 .and_then(|v| v.as_array().cloned())
                 .unwrap_or_default();
             for th in threads.iter().rev().take(8) {
                 let tid = th["id"].as_str().unwrap_or("").to_string();
                 let title = th["title"].as_str().unwrap_or("-").to_string();
-                let branches = client::call("branch.list", json!({ "thread_id": tid }))
+                let branches = client::call_ui("branch.list", json!({ "thread_id": tid }))
                     .ok()
                     .and_then(|v| v.as_array().cloned())
                     .unwrap_or_default();
@@ -2841,7 +2847,7 @@ impl App {
         let Some(root) = self.agent.root.clone() else {
             return;
         };
-        let list = client::call("workspace.list", json!({})).unwrap_or(Value::Null);
+        let list = client::call_ui("workspace.list", json!({})).unwrap_or(Value::Null);
         let items = list.as_array().cloned().unwrap_or_default();
         let want = normalize_path(&root);
         let found = items
@@ -2925,7 +2931,7 @@ impl App {
         };
         let id = ws["id"].as_str().unwrap_or("").to_string();
         let list =
-            client::call("thread.list", json!({ "workspace_id": id })).unwrap_or(Value::Null);
+            client::call_ui("thread.list", json!({ "workspace_id": id })).unwrap_or(Value::Null);
         self.threads = list.as_array().cloned().unwrap_or_default();
         self.workspaces = vec![ws];
     }
@@ -2943,7 +2949,8 @@ impl App {
             return;
         };
         let id = t["id"].as_str().unwrap_or("").to_string();
-        let list = client::call("branch.list", json!({ "thread_id": id })).unwrap_or(Value::Null);
+        let list =
+            client::call_ui("branch.list", json!({ "thread_id": id })).unwrap_or(Value::Null);
         self.branches = list.as_array().cloned().unwrap_or_default();
     }
 
@@ -2959,7 +2966,8 @@ impl App {
             return;
         };
         let id = ws["id"].as_str().unwrap_or("").to_string();
-        let list = client::call("run.list", json!({ "workspace_id": id })).unwrap_or(Value::Null);
+        let list =
+            client::call_ui("run.list", json!({ "workspace_id": id })).unwrap_or(Value::Null);
         let runs = list.as_array().cloned().unwrap_or_default();
         if let Some(run) = runs.iter().rev().find(|r| {
             r["receipt"]["provider"]
@@ -2991,7 +2999,7 @@ impl App {
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| ".".into());
-                match client::call("workspace.create", json!({ "name": name, "root": root })) {
+                match client::call_ui("workspace.create", json!({ "name": name, "root": root })) {
                     Ok(w) => {
                         self.agent.workspace = Some(w.clone());
                         self.workspaces = vec![w.clone()];
@@ -3017,7 +3025,7 @@ impl App {
                     return false;
                 };
                 let tid = t["id"].as_str().unwrap_or("").to_string();
-                match client::call("branch.create", json!({ "thread_id": tid, "name": name })) {
+                match client::call_ui("branch.create", json!({ "thread_id": tid, "name": name })) {
                     Ok(b) => {
                         self.agent.branch = Some(b.clone());
                         self.branches.push(b.clone());
@@ -3084,7 +3092,7 @@ impl App {
             .as_str()?
             .to_string();
         let title: String = text.chars().take(48).collect();
-        match client::call(
+        match client::call_ui(
             "thread.create",
             json!({ "workspace_id": ws, "title": title }),
         ) {
@@ -3117,7 +3125,7 @@ impl App {
             return Some(b.to_string());
         }
         let tid = self.agent.thread.as_ref()?.get("id")?.as_str()?.to_string();
-        match client::call("branch.create", json!({ "thread_id": tid, "name": "main" })) {
+        match client::call_ui("branch.create", json!({ "thread_id": tid, "name": "main" })) {
             Ok(b) => {
                 let id = b["id"].as_str().unwrap_or("").to_string();
                 self.agent.branch = Some(b.clone());
@@ -4065,14 +4073,14 @@ impl App {
             if let Some(br) = br {
                 args["branch_id"] = json!(br);
             }
-            if let Ok(list) = client::call("event.list", args)
+            if let Ok(list) = client::call_ui("event.list", args)
                 && let Some(arr) = list.as_array()
             {
                 self.ingest_events(arr);
             }
         }
         // 2) Después el estado del run.
-        if let Ok(v) = client::call("run.status", json!({ "run_id": id })) {
+        if let Ok(v) = client::call_ui("run.status", json!({ "run_id": id })) {
             self.apply_run_status(&v);
         }
 
@@ -4107,7 +4115,7 @@ impl App {
     pub fn request_cancel(&mut self) {
         if let Some(id) = self.agent.last_run.clone() {
             self.mark_cancelling();
-            let _ = client::call("run.cancel", json!({ "run_id": id }));
+            let _ = client::call_ui("run.cancel", json!({ "run_id": id }));
         }
     }
 
@@ -4160,7 +4168,7 @@ impl App {
     }
 
     pub fn refresh_workspaces(&mut self) {
-        let list = client::call("workspace.list", json!({})).unwrap_or(Value::Null);
+        let list = client::call_ui("workspace.list", json!({})).unwrap_or(Value::Null);
         self.workspaces = list.as_array().cloned().unwrap_or_default();
         let current = self
             .agent
@@ -4216,7 +4224,7 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("workspace")
             .to_string();
-        match client::call(
+        match client::call_ui(
             "workspace.create",
             json!({ "name": name, "root": cwd.to_string_lossy() }),
         ) {
@@ -4235,7 +4243,7 @@ impl App {
             return;
         };
         let ws = ws.to_string();
-        match client::call(
+        match client::call_ui(
             "thread.create",
             json!({ "workspace_id": ws, "title": "session" }),
         ) {
@@ -4256,12 +4264,28 @@ impl App {
 
     /// `/model`: proveedores reales del daemon, no una lista inventada.
     pub fn open_model_picker(&mut self) {
-        let v = client::call("provider.list", json!({})).unwrap_or(Value::Null);
+        let v = client::call_ui("provider.list", json!({})).unwrap_or(Value::Null);
         self.agent.providers = v["providers"].as_array().cloned().unwrap_or_default();
-        if self.agent.providers.is_empty() {
-            self.agent.providers = vec![json!({
-                "name": "sim", "kind": "sim", "model": "sim-1", "default": true
-            })];
+        // HLI sabe hablar con estos tres; si no están configurados se ofrecen
+        // igualmente para que el selector no parezca vacío.
+        for (name, kind, model) in [
+            ("sim", "sim", "sim-1"),
+            ("ollama", "ollama", "llama3.1:8b"),
+            ("openai", "openai", "gpt-4o-mini"),
+        ] {
+            if !self
+                .agent
+                .providers
+                .iter()
+                .any(|p| p["name"].as_str() == Some(name))
+            {
+                self.agent.providers.push(json!({
+                    "name": name,
+                    "kind": kind,
+                    "model": model,
+                    "available": name == "sim",
+                }));
+            }
         }
         self.agent.model_sel = self
             .agent
@@ -4275,11 +4299,21 @@ impl App {
     }
 
     pub fn apply_model(&mut self) {
-        if let Some(p) = self.agent.providers.get(self.agent.model_sel) {
+        let chosen = self.agent.providers.get(self.agent.model_sel).cloned();
+        if let Some(p) = chosen {
             self.agent.provider = p["name"].as_str().unwrap_or("sim").to_string();
             self.agent.model = p["model"].as_str().unwrap_or("sim-1").to_string();
             let line = format!("Modelo: {}/{}", self.agent.provider, self.agent.model);
             self.agent.push(AgentKind::Info, line);
+            if p["available"].as_bool() == Some(false) {
+                self.agent.push(
+                    AgentKind::Info,
+                    format!(
+                        "{} sin configurar · hli provider set {}",
+                        self.agent.provider, self.agent.provider
+                    ),
+                );
+            }
         }
         self.agent.model_open = false;
     }
@@ -4345,7 +4379,7 @@ impl App {
                     .and_then(|w| w["id"].as_str())
                     .map(str::to_string)
                 {
-                    match client::call(
+                    match client::call_ui(
                         "thread.create",
                         json!({ "workspace_id": ws, "title": "session" }),
                     ) {
