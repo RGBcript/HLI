@@ -1,4 +1,5 @@
 pub mod app;
+pub mod classic;
 pub mod client;
 pub mod terminal;
 pub mod ui;

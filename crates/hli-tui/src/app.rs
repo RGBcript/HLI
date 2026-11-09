@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 
 use crate::viewport::{TranscriptViewport, wheel_speed_from_env, wrapped_lines};
 use serde_json::{Value, json};
@@ -894,8 +896,22 @@ pub struct App {
     pub mode: TuiMode,
     pub agent: AgentState,
     pub transcript: TranscriptReview,
+    pub mouse_enabled: bool,
+    /// Salida del comando de statusline configurado en `HLI_HOME/ui.toml`.
+    pub statusline_cache: Option<String>,
+    pub statusline_at: Instant,
+    pub terminal_width: usize,
+    pub transcript_top: usize,
+    /// Filas renderizadas → índice de línea lógica.
+    pub hit_rows: Vec<(usize, usize)>,
+    pub sel: Option<usize>,
+    pub sel_end: Option<usize>,
     pub transcript_width: usize,
     pub transcript_height: usize,
+    /// Petición de volcar el transcript al scrollback (se atiende en main).
+    pub transcript_dump: bool,
+    /// Ruta de exportación solicitada desde Transcript Mode.
+    pub transcript_export: Option<std::path::PathBuf>,
     pub help: bool,
     pub filter: Option<String>,
     pub history: Vec<String>,
@@ -946,8 +962,18 @@ impl App {
             mode: TuiMode::Inspector,
             agent: AgentState::default(),
             transcript: TranscriptReview::default(),
+            mouse_enabled: crate::terminal::mouse_enabled_from_env(),
+            statusline_cache: None,
+            statusline_at: Instant::now() - Duration::from_secs(60),
+            terminal_width: 80,
+            transcript_top: 3,
+            hit_rows: Vec::new(),
+            sel: None,
+            sel_end: None,
             transcript_width: 80,
             transcript_height: 20,
+            transcript_dump: false,
+            transcript_export: None,
             help: false,
             filter: None,
             history: vec![],
@@ -1022,8 +1048,18 @@ impl App {
             mode: TuiMode::Inspector,
             agent: AgentState::default(),
             transcript: TranscriptReview::default(),
+            mouse_enabled: crate::terminal::mouse_enabled_from_env(),
+            statusline_cache: None,
+            statusline_at: Instant::now() - Duration::from_secs(60),
+            terminal_width: 80,
+            transcript_top: 3,
+            hit_rows: Vec::new(),
+            sel: None,
+            sel_end: None,
             transcript_width: 80,
             transcript_height: 20,
+            transcript_dump: false,
+            transcript_export: None,
             help: false,
             filter: None,
             history: vec![],
@@ -1131,6 +1167,10 @@ impl App {
         }
         if self.mode == TuiMode::Agent {
             self.poll_agent();
+        }
+        if self.statusline_at.elapsed() >= Duration::from_secs(5) {
+            self.statusline_at = Instant::now();
+            self.refresh_statusline();
         }
         if self
             .feedback
@@ -2684,7 +2724,7 @@ fn event_detail(e: &Value) -> Option<ActivityDetail> {
     })
 }
 
-fn event_line(e: &Value) -> Option<String> {
+pub fn event_line(e: &Value) -> Option<String> {
     let kind = e["type"].as_str()?;
     if !(kind.starts_with("tool.")
         || kind.starts_with("run.")
@@ -2825,10 +2865,14 @@ impl App {
             .as_ref()
             .and_then(|b| b["name"].as_str())
             .unwrap_or("no-branch");
-        format!(
+        let base = format!(
             "{ws}/{th}/{br} │ {}/{} │ {} │ ctx - │ tools 0 │ unpriced",
             self.agent.provider, self.agent.model, self.agent.run_state
-        )
+        );
+        match &self.statusline_cache {
+            Some(extra) => format!("{base} │ {extra}"),
+            None => base,
+        }
     }
 
     pub fn load_threads(&mut self) {
@@ -3059,6 +3103,78 @@ impl App {
         self.mode = TuiMode::Transcript;
     }
 
+    /// `HLI_HOME/ui.toml` admite `statusline = "comando"`. Es el mismo
+    /// mecanismo que Claude Code: un comando recibe JSON y devuelve una línea.
+    pub fn statusline_command() -> Option<String> {
+        let text = std::fs::read_to_string(crate::client::home().join("ui.toml")).ok()?;
+        Self::parse_statusline(&text)
+    }
+
+    fn refresh_statusline(&mut self) {
+        let Some(cmd) = Self::statusline_command() else {
+            self.statusline_cache = None;
+            return;
+        };
+        let payload = json!({
+            "state": self.agent.run_state,
+            "provider": self.agent.provider,
+            "model": self.agent.model,
+            "workspace": self.agent.workspace.as_ref().and_then(|w| w["name"].as_str()),
+            "thread": self.agent.thread.as_ref().and_then(|t| t["title"].as_str()),
+            "mode": format!("{:?}", self.mode),
+        });
+        let mut command;
+        #[cfg(windows)]
+        {
+            command = std::process::Command::new("cmd");
+            command.args(["/C", &cmd]);
+        }
+        #[cfg(not(windows))]
+        {
+            command = std::process::Command::new("sh");
+            command.args(["-c", &cmd]);
+        }
+        let child = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(mut child) = child else {
+            self.statusline_cache = None;
+            return;
+        };
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write;
+            let _ = writeln!(stdin, "{payload}");
+        }
+        let out = child.wait_with_output().ok();
+        let text = out
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        self.statusline_cache = text;
+    }
+
+    /// Texto completo del transcript para volcar o exportar.
+    pub fn transcript_text(&self) -> String {
+        let mut out = String::new();
+        for (_, text, _) in self.transcript_lines(self.transcript_width) {
+            out.push_str(&text);
+            out.push('\n');
+        }
+        out
+    }
+
+    pub fn transcript_export_path(&self) -> std::path::PathBuf {
+        let dir = crate::client::home().join("transcripts");
+        let _ = std::fs::create_dir_all(&dir);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        dir.join(format!("transcript-{stamp}.txt"))
+    }
+
     pub fn close_transcript(&mut self) {
         self.transcript.search_open = false;
         self.mode = TuiMode::Agent;
@@ -3146,6 +3262,14 @@ impl App {
                 self.transcript.saved_scroll = Some(self.transcript.scroll);
                 self.transcript.search_open = true;
                 self.transcript.query.clear();
+            }
+            KeyCode::Char('[') => {
+                self.transcript_dump = true;
+                self.close_transcript();
+            }
+            KeyCode::Char('v') => {
+                self.transcript_export = Some(self.transcript_export_path());
+                self.close_transcript();
             }
             KeyCode::Char('n') => {
                 if !self.transcript.matches.is_empty() {
@@ -3237,6 +3361,20 @@ impl App {
         let height = height.saturating_sub(9).max(1) as usize;
         self.transcript_width = inner_w;
         self.transcript_height = height;
+        self.terminal_width = width as usize;
+        self.transcript_top = 3;
+        let mut rows: Vec<(usize, usize)> = Vec::new();
+        let mut y = 0usize;
+        for (idx, line) in self.agent.lines.iter().enumerate() {
+            rows.push((y, idx));
+            y += wrapped_lines(&line.text, inner_w);
+            if line.expanded
+                && let Some(d) = &line.detail
+            {
+                y += 6 + wrapped_lines(&d.output, inner_w);
+            }
+        }
+        self.hit_rows = rows;
         let total = self.rendered_line_count(inner_w);
         self.agent.viewport.sync(total, height);
         self.sync_scroll_top();
@@ -3287,7 +3425,7 @@ impl App {
         self.agent.new_activity = 0;
     }
 
-    /// Rueda del mouse o trackpad traducido a wheel por Windows Terminal.
+    /// Rueda, clic en scrollbar, clic para expandir y selección por arrastre.
     pub fn handle_mouse(&mut self, m: MouseEvent) -> bool {
         match m.kind {
             MouseEventKind::ScrollUp => {
@@ -3302,9 +3440,148 @@ impl App {
                     self.viewport_scroll(step);
                 }
             }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.on_scrollbar(m.column) {
+                    self.scrollbar_to(m.row);
+                } else if let Some(idx) = self.row_to_line(m.row) {
+                    self.selection_start(idx);
+                    self.toggle_line(idx);
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.on_scrollbar(m.column) {
+                    self.scrollbar_to(m.row);
+                } else if let Some(idx) = self.row_to_line(m.row) {
+                    self.selection_update(idx);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.selection_copy();
+            }
             _ => return false,
         }
         true
+    }
+
+    fn on_scrollbar(&self, column: u16) -> bool {
+        self.mode == TuiMode::Agent
+            && (column as usize) + 3 >= self.terminal_width
+            && self.agent.viewport.total_rendered_lines > self.agent.viewport.viewport_height
+    }
+
+    fn scrollbar_to(&mut self, row: u16) {
+        let top = self.transcript_top as u16;
+        let local = row.saturating_sub(top) as usize;
+        let height = self.agent.viewport.viewport_height.max(1);
+        let max = self.agent.viewport.max_scroll();
+        let line = (local.saturating_mul(max) / height).min(max);
+        self.agent.viewport.first_visible_line = line;
+        self.agent.viewport.follow_mode = line >= max;
+        if self.agent.viewport.follow_mode {
+            self.agent.viewport.unseen_activity_count = 0;
+        }
+        self.sync_scroll_top();
+    }
+
+    /// Fila del terminal → índice de línea lógica, según el mapa del render.
+    fn row_to_line(&self, row: u16) -> Option<usize> {
+        let local = row.saturating_sub(self.transcript_top as u16) as usize
+            + self.agent.viewport.first_visible_line;
+        self.hit_rows
+            .iter()
+            .rev()
+            .find(|(y, _)| *y <= local)
+            .map(|(_, idx)| *idx)
+    }
+
+    pub fn selection_start(&mut self, idx: usize) {
+        self.sel = Some(idx);
+        self.sel_end = Some(idx);
+    }
+
+    pub fn selection_update(&mut self, idx: usize) {
+        if self.sel.is_some() {
+            self.sel_end = Some(idx);
+        }
+    }
+
+    pub fn selection_copy(&mut self) {
+        let (Some(a), Some(b)) = (self.sel, self.sel_end) else {
+            return;
+        };
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let text: String = self
+            .agent
+            .lines
+            .iter()
+            .skip(lo)
+            .take(hi - lo + 1)
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !text.is_empty() {
+            Self::copy_to_clipboard(&text);
+        }
+        self.sel = None;
+        self.sel_end = None;
+    }
+
+    fn toggle_line(&mut self, idx: usize) {
+        if let Some(line) = self.agent.lines.get_mut(idx)
+            && line.detail.is_some()
+        {
+            line.expanded = !line.expanded;
+            let (w, h) = (self.transcript_width, self.transcript_height + 9);
+            self.observe_terminal(w as u16, h as u16);
+        }
+    }
+
+    /// `ui.toml` mínimo: `statusline = "comando"`. Se ignora el resto.
+    pub fn parse_statusline(text: &str) -> Option<String> {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("statusline") {
+                let rest = rest.trim_start().strip_prefix('=')?.trim();
+                let cmd = rest.trim_matches('"').trim();
+                if !cmd.is_empty() {
+                    return Some(cmd.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Copia texto al portapapeles del sistema. Silencioso si no hay herramienta.
+    fn copy_to_clipboard(text: &str) {
+        use std::io::Write;
+        #[cfg(windows)]
+        let command = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "clip"]);
+            c
+        };
+        #[cfg(not(windows))]
+        let command = {
+            let mut c = std::process::Command::new("sh");
+            c.args([
+                "-c",
+                "wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null || xsel -b",
+            ]);
+            c
+        };
+        let mut command = command;
+        if let Ok(mut child) = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            && let Some(stdin) = child.stdin.as_mut()
+        {
+            let _ = stdin.write_all(text.as_bytes());
+        }
     }
 
     /// Regla única del compositor: sólo un `run.start` aceptado lo vacía.

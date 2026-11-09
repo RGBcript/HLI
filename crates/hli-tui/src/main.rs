@@ -12,6 +12,19 @@ fn main() -> io::Result<()> {
     let mode = TuiMode::from_arg(args.first().map(String::as_str));
     let root = flag(&args, "--root");
 
+    let classic = args.iter().any(|a| a == "--classic")
+        || std::env::var("HLI_DISABLE_ALTERNATE_SCREEN")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+        // Modo lector de pantalla: texto plano, sin alternate screen ni cajas.
+        || matches!(
+            std::env::var("HLI_SCREEN_READER").as_deref(),
+            Ok("1") | Ok("true")
+        );
+    if classic {
+        return hli_tui::classic::run(root.map(std::path::PathBuf::from));
+    }
+
     let mut terminal = ratatui::init();
     // RAII: la captura de ratón se libera al salir por cualquier vía. Con
     // HLI_DISABLE_MOUSE=1 Windows Terminal conserva su selección nativa.
@@ -45,6 +58,31 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
                 Event::Key(k) => {
                     if app.handle_key(k) {
                         break;
+                    }
+                    // Volcado al scrollback y export: se sale del alternate
+                    // screen, se escribe y se vuelve con Enter.
+                    if app.transcript_dump || app.transcript_export.is_some() {
+                        let text = app.transcript_text();
+                        let export = app.transcript_export.take();
+                        let dump = std::mem::take(&mut app.transcript_dump);
+                        ratatui::restore();
+                        if let Some(path) = export {
+                            let _ = std::fs::write(&path, &text);
+                            println!("Transcript exportado: {}", path.display());
+                        }
+                        if dump {
+                            println!("{text}");
+                        }
+                        println!("--- Enter para volver a la interfaz ---");
+                        let mut line = String::new();
+                        let _ = std::io::stdin().read_line(&mut line);
+                        *terminal = ratatui::init();
+                        if app.mouse_enabled {
+                            let _ = crossterm::execute!(
+                                std::io::stdout(),
+                                crossterm::event::EnableMouseCapture
+                            );
+                        }
                     }
                 }
                 Event::Mouse(m) => {
