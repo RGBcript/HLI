@@ -94,6 +94,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_transcript(f, app);
         return;
     }
+    if app.mode == TuiMode::Settings {
+        draw_settings(f, area, app);
+        return;
+    }
     match layout_mode(area.width, area.height) {
         LayoutMode::TooSmall => draw_too_small(f, area),
         LayoutMode::Reduced => draw_reduced(f, area, app),
@@ -1318,6 +1322,47 @@ fn draw_model(f: &mut Frame, area: Rect, app: &App) {
             .block(Block::default().borders(Borders::ALL).title(" model "))
             .wrap(Wrap { trim: false }),
         rect,
+    );
+}
+
+/// Vista de configuración. No es una pestaña: se abre con `/settings` y
+/// vuelve al chat con Esc. Todo lo que muestra sale del estado real.
+fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
+    let t = Theme::for_app(app);
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "configuración de HLI",
+        Style::default().fg(t.artifact),
+    )));
+    lines.push(Line::from(""));
+    for (i, (label, value)) in app.settings_items().iter().enumerate() {
+        let active = i == app.agent.settings_sel;
+        lines.push(Line::from(vec![
+            Span::styled(
+                if active { " ▸ " } else { "   " },
+                Style::default().fg(t.primary),
+            ),
+            Span::styled(
+                format!("{label:<13}"),
+                if active {
+                    Style::default().fg(t.primary).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.memory)
+                },
+            ),
+            Span::styled(value.clone(), Style::default().fg(t.artifact)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "↑↓ mover · ↵ abrir · esc volver al chat",
+        Style::default().fg(t.artifact),
+    )));
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" settings "))
+            .wrap(Wrap { trim: false }),
+        area,
     );
 }
 

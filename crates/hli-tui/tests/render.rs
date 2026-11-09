@@ -2924,6 +2924,38 @@ fn footer_has_no_invented_placeholders() {
     assert!(!text.contains("unpriced"), "{text}");
 }
 
+// --- Vista de configuración -----------------------------------------------
+
+#[test]
+fn settings_view_shows_real_state() {
+    let mut app = App::demo();
+    app.open_settings();
+    assert_eq!(app.mode, TuiMode::Settings);
+    let text = render(&app, 100, 30);
+    assert!(text.contains("settings"));
+    assert!(text.contains("Modelo"));
+    assert!(text.contains("HLI_HOME"));
+    assert!(text.contains("Versión"));
+}
+
+#[test]
+fn settings_enter_on_model_opens_the_picker() {
+    let mut app = App::demo();
+    app.open_settings();
+    app.agent.settings_sel = 0;
+    tap(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, TuiMode::Agent);
+    assert!(app.agent.model_open);
+}
+
+#[test]
+fn settings_escape_returns_to_chat() {
+    let mut app = App::demo();
+    app.open_settings();
+    app.handle_key(key(KeyCode::Esc, KeyEventKind::Press));
+    assert_eq!(app.mode, TuiMode::Agent);
+}
+
 #[test]
 fn missing_file_requires_cancel_only() {
     let root = tmp_dir("preflight-missing");

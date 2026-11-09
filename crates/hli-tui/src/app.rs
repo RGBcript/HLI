@@ -131,12 +131,15 @@ pub enum TuiMode {
     /// Revisión de la conversación a pantalla completa, separada del
     /// Inspector (que administra runs, contexto y memoria).
     Transcript,
+    /// Vista de configuración: no es una pestaña, se abre con `/settings`.
+    Settings,
 }
 
 impl TuiMode {
     pub fn from_arg(arg: Option<&str>) -> Self {
         match arg {
             Some("inspect") => Self::Inspector,
+            Some("settings") => Self::Settings,
             _ => Self::Agent,
         }
     }
@@ -204,6 +207,7 @@ pub struct AgentState {
     pub model_loading: bool,
     pub lists_loading: bool,
     pub transcript_loading: bool,
+    pub settings_sel: usize,
     pub providers: Vec<Value>,
     pub offer: Offer,
     pub pending: Option<String>,
@@ -812,6 +816,7 @@ impl Default for AgentState {
             model_loading: false,
             lists_loading: false,
             transcript_loading: false,
+            settings_sel: 0,
             providers: Vec::new(),
             offer: Offer::None,
             pending: None,
@@ -1390,6 +1395,9 @@ impl App {
         }
         if self.mode == TuiMode::Agent {
             return self.handle_agent_key(k);
+        }
+        if self.mode == TuiMode::Settings {
+            return self.settings_key(k);
         }
         let in_command = self.focus == FocusArea::CommandBar;
         // Acciones del Inspector sobre el plan seleccionado: reutilizan las
@@ -2627,7 +2635,7 @@ impl App {
 // Agent Mode
 // ---------------------------------------------------------------------------
 
-pub const SLASH_COMMANDS: [(&str, &str); 19] = [
+pub const SLASH_COMMANDS: [(&str, &str); 21] = [
     ("help", "comandos y atajos"),
     ("status", "estado de la sesión"),
     ("model", "elegir proveedor y modelo"),
@@ -2646,6 +2654,8 @@ pub const SLASH_COMMANDS: [(&str, &str); 19] = [
     ("cancel", "cancelar el run activo"),
     ("clear", "limpiar el transcript"),
     ("export", "exportar la conversación"),
+    ("settings", "configuración de HLI"),
+    ("config", "igual que /settings"),
     ("exit", "salir de HLI"),
 ];
 
@@ -4124,6 +4134,7 @@ impl App {
             }
             TuiMode::Transcript => self.close_transcript(),
             TuiMode::Inspector => self.mode = TuiMode::Agent,
+            TuiMode::Settings => self.mode = TuiMode::Agent,
         }
     }
 
@@ -4144,6 +4155,100 @@ impl App {
     }
 
     // --- Pestañas: workspace → sesión → chat -------------------------------
+
+    // --- Vista de configuración -------------------------------------------
+
+    pub fn open_settings(&mut self) {
+        self.agent.palette = false;
+        self.agent.composer.clear();
+        self.agent.settings_sel = 0;
+        self.mode = TuiMode::Settings;
+    }
+
+    /// Filas de la vista. El valor sale del estado real, no de constantes.
+    pub fn settings_items(&self) -> Vec<(&'static str, String)> {
+        let ws = self
+            .agent
+            .workspace
+            .as_ref()
+            .and_then(|w| w["name"].as_str())
+            .unwrap_or("—")
+            .to_string();
+        let th = self
+            .agent
+            .thread
+            .as_ref()
+            .and_then(|t| t["title"].as_str())
+            .unwrap_or("—")
+            .to_string();
+        vec![
+            (
+                "Modelo",
+                format!("{}/{}", self.agent.provider, self.agent.model),
+            ),
+            ("Proveedores", "catálogo de /model".to_string()),
+            (
+                "Workspace",
+                if ws == "—" {
+                    "sin vincular".to_string()
+                } else {
+                    ws
+                },
+            ),
+            ("Sesión", th),
+            (
+                "Daemon",
+                if self.daemon {
+                    "en marcha".to_string()
+                } else {
+                    "detenido".to_string()
+                },
+            ),
+            ("HLI_HOME", self.home.display().to_string()),
+            ("Versión", env!("CARGO_PKG_VERSION").to_string()),
+            (
+                "Inspector",
+                "runs · contexto · memoria · artefactos · MCH".to_string(),
+            ),
+            ("Transcript", "Ctrl+O".to_string()),
+            ("Ayuda", "? y /help".to_string()),
+        ]
+    }
+
+    /// Teclado de la vista. Devuelve `true` para salir de HLI.
+    pub fn settings_key(&mut self, k: KeyEvent) -> bool {
+        let n = self.settings_items().len();
+        match k.code {
+            KeyCode::Up => {
+                self.agent.settings_sel = self.agent.settings_sel.saturating_sub(1);
+            }
+            KeyCode::Down if self.agent.settings_sel + 1 < n => {
+                self.agent.settings_sel += 1;
+            }
+            KeyCode::Enter => {
+                let label = self
+                    .settings_items()
+                    .get(self.agent.settings_sel)
+                    .map(|(l, _)| *l);
+                match label {
+                    Some("Modelo") | Some("Proveedores") => {
+                        self.mode = TuiMode::Agent;
+                        self.open_model_picker();
+                    }
+                    Some("Inspector") => self.mode = TuiMode::Inspector,
+                    Some("Transcript") => self.open_transcript(),
+                    Some("Ayuda") => {
+                        self.mode = TuiMode::Agent;
+                        self.help = true;
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.mode = TuiMode::Agent,
+            _ => {}
+        }
+        false
+    }
 
     pub fn cycle_tab(&mut self, forward: bool) {
         self.agent.palette = false;
@@ -4430,6 +4535,7 @@ impl App {
                 self.load_threads();
                 self.agent.agent_tab = AgentTab::Session;
             }
+            "settings" | "config" => self.open_settings(),
             "exit" => return true,
             "new" => {
                 if let Some(ws) = self
