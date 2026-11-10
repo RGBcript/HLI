@@ -1,10 +1,9 @@
 # HLI — Harness-Line Interface
 
-> **Beta privada · 0.9.0-beta.1**
+> **Beta pública · 0.9.0-beta.1**
 >
 > HLI no está estable y este repositorio no lo pretende. Es una base de ingeniería
-> que funciona, con pruebas y gates en verde, sobre la que se construirá el proyecto:
-> una reconstrucción de un harness anterior desde cero, con un núcleo más pequeño y verificable.
+> que funciona, con pruebas y gates en verde, pensada para crecer por partes.
 >
 > Lo que **sí** hace hoy: instalar, arrancar el daemon sola, ejecutar tareas con un
 > modelo real (Ollama local o compatible con OpenAI), plan durable con efectos,
@@ -48,13 +47,6 @@ Windows x86_64. Linux es experimental.
 
 La lista de trabajo, con referencias de Command Code y otros CLIs, está en
 [docs/AGENT-PROTOCOL-PROPOSAL.md](docs/AGENT-PROTOCOL-PROPOSAL.md).
-
-## Para qué se construye
-
-No para competir en funciones, sino para servir de base a **el proyecto**, la
-reconstrucción de un harness anterior: un núcleo pequeño, con estado durable y permisos explícitos,
-que sea fácil de auditar y de extender sin arrastrar la superficie de un producto
-completo.
 
 ## Instalación rápida
 
