@@ -263,7 +263,16 @@ fn tool_write_requires_approval() {
     let approved = ctx.json(&["run", "approve", &run_id, "--scope", "once"]);
     assert_eq!(approved["run"]["state"].as_str(), Some("running"));
     // El plan autoriza el efecto; la invocación concreta pide su propio permiso.
-    let waiting = ctx.json(&["run", "wait", &run_id, "--timeout-secs", "5"]);
+    // El estado y el tipo de aprobación se escriben en dos pasos; en release
+    // puede leerse la ventana intermedia. Se reintenta hasta que el permiso de
+    // invocación esté publicado.
+    let mut waiting = ctx.json(&["run", "wait", &run_id, "--timeout-secs", "5"]);
+    let mut tries = 0;
+    while waiting["run"]["approval_kind"].as_str() != Some("tool") && tries < 20 {
+        tries += 1;
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        waiting = ctx.json(&["run", "wait", &run_id, "--timeout-secs", "1"]);
+    }
     assert_eq!(waiting["run"]["state"].as_str(), Some("waiting_approval"));
     assert_eq!(waiting["run"]["approval_kind"].as_str(), Some("tool"));
     let pending = ctx.json(&[
