@@ -1,0 +1,50 @@
+# CodeRabbit · configuración para HLI
+# Se activa al instalar la app en el repo. No requiere que sea público para
+# existir, pero las revisiones completas gratis aplican a repos públicos.
+language: "es"
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_placeholder: "@coderabbitai resumen"
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+
+  path_filters:
+    - "!target/**"
+    - "!dist/**"
+    - "!docs/captures/**"
+    - "!**/*.lock"
+
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: |
+        HLI es un runtime agéntico local con permisos por invocación.
+        Revisa con prioridad:
+        1. Que ninguna tool se ejecute sin un permiso concedido (plan ≠ permiso).
+        2. Que `shell.execute` siga denegado.
+        3. Que no se filtren secretos: solo handles y hashes, nunca valores.
+        4. Que el texto del modelo se saneé antes de pintarlo o exportarlo.
+        5. Que las escrituras en SQLite pasen por el writer del daemon, no por un cliente.
+        Señala cualquier `unwrap()` en rutas de render o parseo de datos del daemon.
+
+    - path: "scripts/**/*.py"
+      instructions: |
+        Los gates deben fallar cuando el artefacto falla. Revisa que no haya
+        asserts tautológicos, que usen binarios reales y que limpien procesos
+        y HLI_HOME temporales.
+
+    - path: "docs/**/*.md"
+      instructions: |
+        Contrasta las afirmaciones con HLI_Specification_Draft_v0.14.docx y
+        HLI_diseno_tecnico_v0.14.docx. Marca como hallazgo cualquier capacidad
+        declarada que no exista en `crates/` o que contradiga la spec.
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: "auto"
